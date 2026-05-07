@@ -1114,38 +1114,59 @@ strategy_advice
 
 后续 `strategy_advice` 必须支持建议生命周期和版本链。
 
-至少需要支持：
+至少需要支持以下字段：
 
-```text
-root_id
-parent_id
-path
-version_no
-advice_code
-status
-chain_status
-```
+1. `root_advice_id`
+2. `parent_id`
+3. `path`
+4. `version_no`
+5. `advice_code`
+6. `status`
 
-例如：
+如后续需要单独记录整条建议链的汇总状态，可以增加：
 
-```text
-A-v1
-A-v2
-A-v3
-A-v4
-```
+1. `chain_status`
 
-其中：
+但 `chain_status` 不能替代单条建议版本自身的 `status`。
 
-```text
-A-v1 status = superseded
-A-v2 status = superseded
-A-v3 status = superseded
-A-v4 status = completed / failed / expired / closed
-chain_status = completed / failed / expired / closed
-```
+例如一条建议链可能包含：
 
-前序版本被新版本替代时，不应被错误标记为失败。
+1. A-v1
+2. A-v2
+3. A-v3
+4. A-v4
+
+其中状态应类似：
+
+1. A-v1 status = `superseded`
+2. A-v2 status = `superseded`
+3. A-v3 status = `superseded`
+4. A-v4 status = `completed` / `invalidated` / `expired` / `closed`
+
+如果保留 `chain_status`，则建议取值为：
+
+1. `completed`
+2. `invalidated`
+3. `expired`
+4. `closed`
+
+前序版本被新版本替代时，不应被错误标记为：
+
+1. `completed`
+2. `invalidated`
+3. `failed`
+
+前序版本的正确状态应是：
+
+1. `superseded`
+
+原因：
+
+1. 前序版本并没有独立完成。
+2. 前序版本也不一定独立失效。
+3. 前序版本只是被后续版本替代。
+4. 如果把前序版本统一改成 `completed` 或 `failed`，会破坏历史事实。
+5. 后续复盘时，应区分单个建议版本状态和整条建议链最终结果。
 
 ---
 
@@ -1169,7 +1190,12 @@ chain_status = completed / failed / expired / closed
 
 ### 12.4 策略复盘不能重复提醒
 
-后续每条建议链关闭、完成、失败或过期后，只应触发一次短周期复盘提醒。
+后续每条建议链关闭、完成、失效或过期后，不应立即复盘，而应进入复盘队列。
+
+系统应根据 `review_due_at_utc` 判断是否到达复盘时间。
+
+到期后，只应触发一次复盘，并只发送一次复盘提醒。
+
 
 数据库中必须有机制记录：
 
