@@ -62,7 +62,7 @@ REST 主要用于：
 1. 历史 K线回补。
 2. 增量 K线采集。
 3. 获取已收盘 K线。
-4. 数据缺口修复。
+4. 数据缺口通过 Binance REST 回补。
 5. 数据质量复查。
 6. 获取服务器时间用于时间校验。
 
@@ -286,7 +286,7 @@ K线连续性必须基于时间判断。
 原因：
 
 1. 后续回补可能导致 id 不连续。
-2. 后续修复历史数据可能导致 id 顺序和行情时间不一致。
+2. 后续通过 Binance REST 回补或更正历史数据，可能导致 id 顺序和行情时间不一致。
 3. 数据库 id 只代表入库顺序，不代表行情顺序。
 4. 策略分析必须以行情时间为准。
 
@@ -313,8 +313,8 @@ K线连续性必须基于时间判断。
 2. 记录采集事件。
 3. 记录数据质量异常。
 4. 触发 Hermes 微信提醒。
-5. 等待人工或自动回补缺口。
-6. 缺口修复后再继续主链路。
+5. 等待手动触发或定时触发 Binance REST 回补任务补齐缺口。
+6. 缺口通过 Binance REST 官方已收盘 K线回补完成后，再继续主链路。
 
 这样做的目的：
 
@@ -328,10 +328,10 @@ K线连续性必须基于时间判断。
 
 1. 缺失 open_time。
 2. 缺失 close_time。
-3. 缺失 open / high / low / close。
-4. high 小于 low。
-5. high 小于 open 或 close。
-6. low 大于 open 或 close。
+3. 缺失 open_price / high_price / low_price / close_price。
+4. high_price 小于 low_price。
+5. high_price 小于 open_price 或 close_price。
+6. low_price 大于 open_price 或 close_price。
 7. volume 为负数。
 8. quote_volume 为负数。
 9. interval 不符合目标周期。
@@ -345,12 +345,32 @@ K线连续性必须基于时间判断。
 
 异常数据应记录到数据质量检查结果中，并根据严重程度触发告警。
 
-## 13. 数据修复原则
+## 13. 数据回补与冲突记录规则
 
-数据修复应遵守以下原则：
+本项目不允许人工直接修改 K线数据。
 
-1. 修复必须可追溯。
-2. 修复前后的数据变化应有记录。
+无论是历史缺口、采集失败、数据异常，还是后续发现交易所返回数据发生变化，正式 K线表中的 K线值都只能来自 Binance REST 官方已收盘 K线。
+
+允许的处理方式：
+
+1. 定时增量采集通过 Binance REST 自动补齐短期漏采。
+2. 用户手动触发回补脚本，由脚本调用 Binance REST 拉取官方已收盘 K线。
+3. 系统针对指定时间范围重新拉取 Binance REST K线并执行幂等写入。
+4. 如果重新拉取后发现同一根 K线关键字段与数据库已有记录不一致，默认不得覆盖正式 K线表，应记录数据冲突、写入数据质量检查结果，并通过 Hermes 报警。
+
+禁止的处理方式：
+
+1. 禁止人工直接修改 `open_price`、`high_price`、`low_price`、`close_price`。
+2. 禁止人工直接修改 `volume`、`quote_volume`、`trade_count`、`taker_buy_volume`、`taker_buy_quote_volume`。
+3. 禁止使用 `manual_repair` 作为 K线数据来源。
+4. 禁止使用 `system_repair` 作为 K线数据来源。
+5. 禁止将人工录入的价格、成交量或成交额写入正式 K线表。
+6. 禁止静默覆盖关键行情字段。
+
+数据回补与更正应遵守以下原则：
+
+1. 回补必须可追溯。
+2. 重新拉取前后的数据变化应有记录。
 3. 不应静默覆盖关键行情字段。
 4. 如果同一根 K线重新获取后价格不同，应记录 changed 状态。
 5. changed 数据需要进入采集事件或审计记录。
@@ -358,7 +378,7 @@ K线连续性必须基于时间判断。
 
 后续策略建议如果已经基于某些 K线生成，应保存当时的行情快照。
 
-不能只依赖主行情表当前值，否则后续行情修正会破坏复盘依据。
+不能只依赖主行情表当前值，否则后续行情更正会破坏复盘依据。
 
 ## 14. Redis 数据需求
 
@@ -445,18 +465,65 @@ K线表必须保存：
 
 如果某些表后续需要 PRC 时间字段，只能作为展示或辅助字段，不能作为行情排序、连续性判断、策略判断依据。
 
-## 17. 数据源标记
+## 17. 数据源标记与任务类型边界
 
-每条行情数据应记录数据来源。
+每条正式 K线数据必须记录权威数据来源，并记录本次写入正式 K线表的实际触发入口。
 
-例如：
+本项目中的 `data_source` 不是“人工是否参与”的标签，而是“行情数值获取通道 + 写入触发入口”的审计标识。
 
-1. `binance_rest`
-2. `binance_rest_backfill`
-3. `binance_rest_incremental`
-4. `binance_websocket`
+对于 4h 主 K线表，`data_source` 第一阶段只允许以下值：
 
-4h 主 K线表的数据来源应主要是 REST。
+1. `binance_rest_by_scheduler`：系统定时任务或服务内自动任务调用 Binance REST 写入。
+2. `binance_rest_by_cli`：用户在命令行手动触发回补脚本，脚本调用 Binance REST 写入。
+
+这两个值都表示：K线 OHLCV 等核心数值只能来自 Binance REST 官方已收盘 K线。区别只在于触发入口不同。
+
+因此，以下值不得作为 4h 主 K线表的 `data_source`：
+
+1. `manual_repair`
+2. `system_repair`
+3. `binance_websocket`
+4. `manual_input`
+5. `human_edit`
+6. `binance_rest_backfill`
+7. `binance_rest_incremental`
+
+必须严格区分以下任务：
+
+1. 增量采集
+2. 手动回补
+3. K线一致性复核
+
+其中：
+
+1. 增量采集和手动回补可能写入正式 4h K线表。
+2. K线一致性复核只检查数据质量，不写入、不修复、不覆盖正式 4h K线表。
+
+如果需要区分写入正式 K线表的采集任务目的，应在采集事件日志中记录 `collection_mode`。
+
+第一阶段 `collection_mode` 只建议允许：
+
+1. `incremental`
+2. `manual_backfill`
+3. `historical_backfill`
+
+示例：
+
+1. 定时任务自动增量采集：`data_source = binance_rest_by_scheduler`，`collection_mode = incremental`。
+2. 用户命令行手动回补缺口：`data_source = binance_rest_by_cli`，`collection_mode = manual_backfill`。
+3. 初始化或较长历史区间回补：`data_source = binance_rest_by_cli`，`collection_mode = historical_backfill`。
+
+`collection_mode` 不得替代 `data_source`，也不得成为允许人工修改 K线值的理由。
+
+K线一致性复核不得使用 `collection_mode = recheck`。复核任务不是采集任务，不应写入正式 K线表，也不应伪装成回补任务。
+
+复核任务应单独记录检查语义，例如：
+
+1. `check_mode = daily_integrity_check`
+2. `check_mode = manual_integrity_check`
+3. `check_trigger = scheduler`
+4. `check_trigger = cli`
+5. `compare_source = binance_rest`
 
 WebSocket 来源不得写入 4h 主 K线表。
 
@@ -465,7 +532,7 @@ WebSocket 来源不得写入 4h 主 K线表。
 ## 18. 采集事件日志
 
 系统应记录采集事件。
-采集事件日志是写入数据库的业务审计记录，用于追踪行情采集、回补、缺口、失败、修复等事件。
+采集事件日志是写入数据库的业务审计记录，用于追踪行情采集、回补、缺口、失败、重新拉取、更正等事件。
 
 采集事件日志不等同于系统文件日志。
 
@@ -531,6 +598,13 @@ WebSocket 来源不得写入 4h 主 K线表。
 4. 数据字段异常。
 5. 主行情表写入失败。
 
+如果 MySQL 不可用：
+1. 不得假装已落库。
+2. 必须写本地 emergency 日志。
+3. 如 Redis 可用，可写短期 outbox / failure key。
+4. 如 Hermes 可用，必须直接发送“数据库不可用”提醒。
+5. MySQL 恢复后，可以由恢复任务补写故障摘要，但不得伪造原始发生时间。
+
 ## 20. 告警触发需求
 
 数据采集层可以触发以下告警：
@@ -577,3 +651,20 @@ WebSocket 来源不得写入 4h 主 K线表。
 18. 所有核心时间判断基于 UTC。
 19. K线排序、连续性判断、缺口判断，必须基于 `open_time_ms` 或 `open_time_utc`，不能基于数据库自增 `id`。
 20. 4h 主行情表只能写入 Binance REST 已收盘 K线，不能使用 WebSocket 数据自行拼接 4h K线后写入主行情表。
+
+## 22. 手动触发 Binance REST K线回补
+
+系统允许提供命令行脚本，由用户手动触发指定交易对、周期、时间范围的 K线回补。
+
+手动触发回补不等于人工修改 K线数据。脚本必须调用 Binance U 本位合约 REST 接口获取官方已收盘 K线，并按系统统一规则解析、校验、幂等写入。
+
+手动 CLI 回补写入正式 K线表时：
+
+- data_source = binance_rest_by_cli
+- collection_mode = manual_backfill
+
+禁止行为：
+
+- 禁止人工录入 K线价格、成交量、成交额。
+- 禁止人工直接修改正式 K线表的 open_price、high_price、low_price、close_price、volume、quote_volume 等核心字段。
+- 禁止使用 manual_repair、system_repair、human_edit、manual_input 作为 K线数据来源。

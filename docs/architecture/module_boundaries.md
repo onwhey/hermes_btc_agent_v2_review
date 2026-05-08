@@ -631,6 +631,26 @@ Hermes 边界：
 3. 在脚本里直接拼接复杂微信提醒。
 4. 在脚本里直接调用 DeepSeek 生成交易建议。
 
+### 12.1 `scripts` 边界
+
+允许提供以下命令行入口：
+
+- 手动 K线 REST 回补命令
+- K线一致性检测命令
+- 基础环境检查命令
+
+scripts 只能作为命令入口，不得直接拼接业务 SQL，不得绕过 Repository 修改正式 K线表。
+
+scripts 必须调用 app 层已有模块：
+
+- Binance REST Client
+- Kline Parser
+- Kline Repository
+- Kline Quality Checker
+- Alert Service
+
+禁止在 scripts 中重复实现 Binance 请求、K线解析、数据库写入、报警逻辑。
+
 ---
 
 ## 13. `configs` 边界

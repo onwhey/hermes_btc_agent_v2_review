@@ -62,6 +62,21 @@
 
 系统应通过 REST 拉取 Binance 已生成的 K线数据，而不是自己根据 tick 或 WebSocket 数据拼接 4h K线。
 
+正式 K线表不允许人工直接修改 K线值。
+
+即便出现缺口、采集失败、数据异常，也只能通过 Binance REST 重新拉取官方已收盘 K线进行回补或更正。
+
+可以提供手动触发回补脚本，但该脚本仍必须调用 Binance REST 获取官方 K线；手动触发不等于手动改数。
+
+4h 主 K线表的 `data_source` 只允许记录 Binance REST 数据通道及实际触发入口：`binance_rest_by_scheduler` 或 `binance_rest_by_cli`。
+
+其中：
+
+1. `binance_rest_by_scheduler` 表示系统定时任务或服务内自动任务调用 Binance REST 写入。
+2. `binance_rest_by_cli` 表示用户在命令行手动触发脚本，脚本调用 Binance REST 写入。
+
+`data_source` 不允许使用 `manual_repair`、`system_repair`、`binance_websocket`、`manual_input`、`human_edit`、`binance_rest_backfill`、`binance_rest_incremental`。
+
 原因：
 
 1. Binance 官方 K线是交易所统一口径。
@@ -292,10 +307,10 @@ K线连续性判断必须基于时间字段，而不是数据库 id。
 1. `open_time_ms`
 2. `open_time_utc`
 3. `close_time_ms`
-4. `open`
-5. `high`
-6. `low`
-7. `close`
+4. `open_price`
+5. `high_price`
+6. `low_price`
+7. `close_price`
 8. `volume`
 9. `quote_volume`
 
@@ -332,7 +347,7 @@ K线连续性判断必须基于时间字段，而不是数据库 id。
 
 此时不应靠普通增量采集强行处理全部缺口。
 
-应转入历史回补流程，或触发专门的缺口修复流程，并通过 Hermes 提醒用户。
+应转入历史回补流程，或触发专门的 Binance REST 缺口回补流程，并通过 Hermes 提醒用户。
 
 ---
 
@@ -569,6 +584,13 @@ PRC 字段不得用于：
 7. 不得调用大模型解释基础采集异常。
 8. 不得因为采集异常自动交易。
 
+如果 MySQL 不可用：
+1. 不得假装已落库。
+2. 必须写本地 emergency 日志。
+3. 如 Redis 可用，可写短期 outbox / failure key。
+4. 如 Hermes 可用，必须直接发送“数据库不可用”提醒。
+5. MySQL 恢复后，可以由恢复任务补写故障摘要，但不得伪造原始发生时间。
+
 ---
 
 ## 15. 对策略层的影响
@@ -633,7 +655,64 @@ Codex 实现相关代码时必须遵守：
 
 ---
 
-## 18. 相关文档
+---
+
+## 18. 手动回补与 K线一致性复核规则
+
+手动 CLI 回补和 K线一致性复核都必须使用 Binance U 本位合约 REST 官方接口作为唯一数据来源或对照来源。
+
+但二者职责不同：
+
+1. 手动 CLI 回补是采集/写入任务。
+2. K线一致性复核是检查/报警任务。
+
+### 18.1 手动 CLI 回补
+
+手动 CLI 回补用于用户发现缺口、采集失败或复核异常后，手动执行命令，要求系统重新调用 Binance REST 拉取指定范围的官方已收盘 K线。
+
+手动 CLI 回补写入正式 K线表时：
+
+- `data_source = binance_rest_by_cli`
+- `collection_mode = manual_backfill`
+
+手动 CLI 回补不是人工修复。用户不得输入 OHLCV 等行情字段，系统不得写入人工录入的 K线数值。
+
+### 18.2 定时任务自动采集
+
+定时任务自动采集写入正式 K线表时：
+
+- `data_source = binance_rest_by_scheduler`
+- `collection_mode = incremental`
+
+### 18.3 K线一致性复核
+
+K线一致性复核用于检查过去已入库 K线是否存在数据错误、不连续、缺失、未收盘误写入、非法 `data_source` 等问题。
+
+复核任务分为：
+
+- 每日自动复核：`check_mode = daily_integrity_check`，`check_trigger = scheduler`
+- CLI 手动复核：`check_mode = manual_integrity_check`，`check_trigger = cli`
+
+复核任务统一使用：
+
+- `compare_source = binance_rest`
+
+复核任务只进行对照检查、记录结果和 Hermes 报警。
+
+复核任务禁止：
+
+1. 禁止写入正式 4h K线表。
+2. 禁止自动回补缺失 K线。
+3. 禁止自动覆盖已有 K线。
+4. 禁止自动修复字段不一致的 K线。
+5. 禁止使用 `collection_mode = recheck`。
+6. 禁止调用 DeepSeek 或其他大模型生成报警内容。
+
+复核任务发现异常后，应直接通过 Hermes 报警，提醒用户检查采集代码、任务调度、数据库写入逻辑、未收盘过滤逻辑或 Binance REST 访问状态。
+
+无论是自动采集、手动回补，还是 K线一致性复核，均禁止人工直接修改正式 K线表的 OHLCV 等核心行情字段。
+
+## 19. 相关文档
 
 相关需求文档：
 

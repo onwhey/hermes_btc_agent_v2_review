@@ -190,7 +190,12 @@
 
 1. 即使表名已经包含周期，也建议保留 `interval` 字段。
 2. `interval` 可以用于数据自检、通用逻辑复用和防止写错表。
-3. `data_source` 用于标识数据来源，例如 `binance_rest`。
+3. `data_source` 用于标识行情数值获取通道和写入触发入口。
+4. 第一阶段 4h 主 K线表的 `data_source` 只允许 `binance_rest_by_scheduler` 和 `binance_rest_by_cli`。
+5. `binance_rest_by_scheduler` 表示系统定时任务或服务内自动任务调用 Binance REST 写入。
+6. `binance_rest_by_cli` 表示用户在命令行手动触发脚本，脚本调用 Binance REST 写入。
+7. `data_source` 不得使用 `manual_repair`、`system_repair`、`binance_websocket`、`manual_input`、`human_edit`、`binance_rest_backfill`、`binance_rest_incremental`。
+8. 手动触发回补脚本不代表人工改数，回补脚本仍必须调用 Binance REST 获取官方已收盘 K线。
 
 ---
 
@@ -220,10 +225,10 @@
 
 建议包含：
 
-1. `open`
-2. `high`
-3. `low`
-4. `close`
+1. `open_price`
+2. `high_price`
+3. `low_price`
+4. `close_price`
 5. `volume`
 6. `quote_volume`
 
@@ -261,8 +266,11 @@
 1. `is_closed`
 2. `is_valid`
 3. `quality_status`
-4. `created_at`
-5. `updated_at`
+4. `created_at_utc`
+5. `updated_at_utc`
+6. `created_at_prc`
+7. `updated_at_prc`
+
 
 规则：
 

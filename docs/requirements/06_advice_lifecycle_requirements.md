@@ -361,10 +361,11 @@ active -> closed
 
 superseded -> 不再恢复为 active
 
-completed -> review_pending -> reviewed
-invalidated -> review_pending -> reviewed
-expired -> review_pending -> reviewed
-closed -> review_pending -> reviewed
+status = completed / invalidated / expired / closed
+    ↓
+review_status = pending
+    ↓
+review_status = completed / failed
 ```
 
 禁止的典型流转：
