@@ -389,101 +389,102 @@ parser 转换为内部 Kline DTO
 
 4h 增量采集用于周期性获取最新已收盘 4h K线。
 
+本节描述的是系统自动增量采集流程。自动增量采集只能由 scheduler 触发，scheduler 必须直接调用 `app/market_data` 内的 collector service，不得调用 `scripts/collect_4h_klines.py`。
+
 数据流如下：
 
 ```text
-    scheduler 或 scripts/collect_4h_klines.py
-        ↓
-    app/market_data/4h collector service
-        ↓
-    创建 collector_event_log
-        status = running
-        symbol = BTCUSDT
-        interval = 4h
-        data_source = binance_rest_by_scheduler
-        collection_mode = incremental
-        ↓
-    Binance REST client
-        ↓
-    拉取最近若干根 4h K线
-        例如最近 N 根，用于重叠校验、补漏和连续性检查
-        ↓
-    parser 转换为内部 Kline DTO
-        ↓
-    过滤未收盘 K线
-        判断标准：
-        Binance server time >= kline.close_time_ms + KLINE_CLOSE_SAFETY_DELAY_MS
-        ↓
-    查询数据库中相关 4h K线
-        包括：
-        1. 当前 REST 返回时间范围内已存在的 DB K线
-        2. 当前批次开始前最近一根 DB K线
-        ↓
-    按 open_time_ms 合并 REST K线与 DB K线
-        ↓
-    校验重叠 K线是否一致
-        如果同一 open_time_ms 同时存在于 REST 和 DB：
-            - 核心字段一致：视为正常重叠，不重复写入
-            - 核心字段不一致：标记异常，记录质量问题，不静默覆盖
-        ↓
-    校验受影响区间是否连续
-        包括：
-            - DB 前置 K线 与 REST 批次第一根 K线是否连续
-            - REST 批次内部 K线是否连续
-            - 本次写入后整体区间是否连续
-        ↓
-    校验字段合理性
-        包括：
-            - open_price > 0
-            - high_price >= max(open_price, close_price)
-            - low_price <= min(open_price, close_price)
-            - high_price >= low_price
-            - volume >= 0
-            - quote_volume >= 0
-            - trade_count >= 0
-            - open_time_ms / close_time_ms 符合 4h 周期规则
-        ↓
-    计算允许写入集合
-        只允许写入：
-            - Binance REST 返回的已收盘 K线
-            - 数据库中缺失的 K线
-            - 通过字段合理性校验的 K线
-            - 通过连续性检查或被明确标记为可补齐缺口的 K线
+scheduler 定时触发
+    ↓
+app/market_data/kline_4h_collector.py
+    ↓
+创建 collector_event_log
+    status = running
+    symbol = BTCUSDT
+    interval = 4h
+    data_source = binance_rest_by_scheduler
+    collection_mode = incremental
+    triggered_by = scheduler
+    ↓
+Binance REST client
+    ↓
+拉取最近若干根 4h K线
+    例如最近 N 根，用于重叠校验、补漏和连续性检查
+    ↓
+parser 转换为内部 Kline DTO
+    ↓
+过滤未收盘 K线
+    判断标准：
+    Binance server time >= kline.close_time_ms + KLINE_CLOSE_SAFETY_DELAY_MS
+    ↓
+查询数据库中相关 4h K线
+    包括：
+    1. 当前 REST 返回时间范围内已存在的 DB K线
+    2. 当前批次开始前最近一根 DB K线
+    ↓
+按 open_time_ms 合并 REST K线与 DB K线
+    ↓
+校验重叠 K线是否一致
+    如果同一 open_time_ms 同时存在于 REST 和 DB：
+        - 核心字段一致：视为正常重叠，不重复写入
+        - 核心字段不一致：标记异常，记录质量问题，不静默覆盖
+    ↓
+校验受影响区间是否连续
+    包括：
+        - DB 前置 K线与 REST 批次第一根 K线是否连续
+        - REST 批次内部 K线是否连续
+        - 本次写入后整体区间是否连续
+    ↓
+校验字段合理性
+    包括：
+        - open_price > 0
+        - high_price >= max(open_price, close_price)
+        - low_price <= min(open_price, close_price)
+        - high_price >= low_price
+        - volume >= 0
+        - quote_volume >= 0
+        - trade_count >= 0
+        - open_time_ms / close_time_ms 符合 4h 周期规则
+    ↓
+计算允许写入集合
+    只允许写入：
+        - Binance REST 返回的已收盘 K线
+        - 数据库中缺失的 K线
+        - 通过字段合理性校验的 K线
+        - 通过连续性检查或被明确标记为可补齐缺口的 K线
 
-        不允许写入：
-            - 未收盘 K线
-            - 已存在且字段一致的重叠 K线
-            - 与数据库已有 K线字段冲突的 K线
-            - 来源不是 Binance REST 的 K线
-            - 人工录入或人工修改的 K线
-        ↓
-    通过 Repository 幂等写入正式 4h K线表
-        data_source 根据触发入口写入：
-            - scheduler 触发：binance_rest_by_scheduler
-            - CLI 手动触发：binance_rest_by_cli
-        ↓
-    写入 data_quality_check 或质量检查结果
-        ↓
-    根据执行结果更新 collector_event_log
-        成功：
-            status = success
+    不允许写入：
+        - 未收盘 K线
+        - 已存在且字段一致的重叠 K线
+        - 与数据库已有 K线字段冲突的 K线
+        - 来源不是 Binance REST 的 K线
+        - 人工录入或人工修改的 K线
+    ↓
+通过 Repository 幂等写入正式 4h K线表
+    data_source = binance_rest_by_scheduler
+    ↓
+写入 data_quality_check 或质量检查结果
+    ↓
+根据执行结果更新 collector_event_log
+    成功：
+        status = success
 
-        部分成功：
-            status = partial_success
-            例如部分 K线写入成功，但存在冲突或缺口需要人工确认
+    部分成功：
+        status = partial_success
+        例如部分 K线写入成功，但存在冲突或缺口需要人工确认
 
-        阻断：
-            status = blocked
-            例如发现关键字段冲突、非法 data_source、连续性严重异常
+    阻断：
+        status = blocked
+        例如发现关键字段冲突、非法 data_source、连续性严重异常
 
-        失败：
-            status = failed
-            例如 Binance REST 请求失败、数据库写入失败、解析失败
-        ↓
-    如存在异常，直接通过 Hermes 发送基础系统报警
-        不调用 DeepSeek 或其他大模型
-        ↓
-    任务结束
+    失败：
+        status = failed
+        例如 Binance REST 请求失败、数据库写入失败、解析失败
+    ↓
+如存在异常，直接通过 Hermes 发送基础系统报警
+    不调用 DeepSeek 或其他大模型
+    ↓
+任务结束
 ```
 
 增量采集规则：
@@ -498,6 +499,44 @@ parser 转换为内部 Kline DTO
 8. 增量采集不得调用大模型。
 9. 增量采集不得生成交易建议。
 10. 增量采集不得自动交易。
+11. scheduler 不得调用 `scripts/collect_4h_klines.py`。
+12. scheduler 不得通过 cron、APScheduler 或其他定时任务系统间接执行 `scripts/*.py`。
+13. 自动增量采集的业务逻辑必须位于 `app/market_data/kline_4h_collector.py` 或同职责 service 中。
+
+### 6.1 手动触发一次 4h 增量采集入口
+
+`scripts/collect_4h_klines.py` 只允许作为人工 CLI 入口，用于用户手动触发一次 4h 增量采集。
+
+该脚本不得被 scheduler、cron、APScheduler 或任何定时任务系统调用。
+
+手动触发流程如下：
+
+```text
+用户手动执行 scripts/collect_4h_klines.py
+    ↓
+scripts/collect_4h_klines.py 解析 CLI 参数并初始化运行环境
+    ↓
+调用 app/market_data/kline_4h_collector.py
+    ↓
+执行一次 4h K线增量采集流程
+    ↓
+写入正式 4h K线表时：
+        data_source = binance_rest_by_cli
+        collection_mode = incremental
+        triggered_by = cli
+    ↓
+任务结束
+```
+
+手动增量采集入口的边界要求：
+
+1. `scripts/collect_4h_klines.py` 只能作为人工 CLI 入口。
+2. scheduler、cron、APScheduler 或任何定时任务系统不得调用 `scripts/collect_4h_klines.py`。
+3. scheduler 必须直接调用 `app/market_data/kline_4h_collector.py` 或同职责 collector service。
+4. `scripts/collect_4h_klines.py` 可以复用 collector service，但不得持有核心采集逻辑。
+5. `scripts/collect_4h_klines.py` 不得直接请求 Binance、不得直接写数据库、不得直接拼接 SQL、不得绕过 Repository。
+6. 手动增量采集不同于手动指定范围回补；手动指定范围回补应使用独立的 `scripts/backfill_4h_klines.py`。
+7. 如果不需要手动触发一次增量采集，第一阶段可以不实现 `scripts/collect_4h_klines.py`。
 
 ---
 
