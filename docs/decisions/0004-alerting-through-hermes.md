@@ -623,4 +623,3 @@ Codex 实现相关代码时必须遵守：
 2. `docs/decisions/0002-kline-source-and-time-rules.md`
 
 后续计划文档不得推翻本决策。
-```
