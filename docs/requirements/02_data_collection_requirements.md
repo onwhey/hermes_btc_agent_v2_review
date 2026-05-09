@@ -286,7 +286,7 @@ K线连续性必须基于时间判断。
 原因：
 
 1. 后续回补可能导致 id 不连续。
-2. 后续通过 Binance REST 回补或更正历史数据，可能导致 id 顺序和行情时间不一致。
+2. 后续通过 Binance REST 回补历史数据或记录历史数据冲突，可能导致 id 顺序和行情时间不一致。
 3. 数据库 id 只代表入库顺序，不代表行情顺序。
 4. 策略分析必须以行情时间为准。
 
@@ -367,18 +367,18 @@ K线连续性必须基于时间判断。
 5. 禁止将人工录入的价格、成交量或成交额写入正式 K线表。
 6. 禁止静默覆盖关键行情字段。
 
-数据回补与更正应遵守以下原则：
+数据回补与冲突记录应遵守以下原则：
 
 1. 回补必须可追溯。
 2. 重新拉取前后的数据变化应有记录。
 3. 不应静默覆盖关键行情字段。
-4. 如果同一根 K线重新获取后价格不同，应记录 changed 状态。
-5. changed 数据需要进入采集事件或审计记录。
+4. 如果同一根 K线重新获取后价格不同，应记录数据冲突状态。
+5. 数据冲突需要进入采集事件、数据质量检查结果或审计记录。
 6. 策略已经引用过的历史 K线，不应被无记录地修改。
 
 后续策略建议如果已经基于某些 K线生成，应保存当时的行情快照。
 
-不能只依赖主行情表当前值，否则后续行情更正会破坏复盘依据。
+不能只依赖主行情表当前值，否则后续行情冲突会破坏复盘依据。
 
 ## 14. Redis 数据需求
 
@@ -467,16 +467,30 @@ K线表必须保存：
 
 ## 17. 数据源标记与任务类型边界
 
-每条正式 K线数据必须记录权威数据来源，并记录本次写入正式 K线表的实际触发入口。
+每条正式 K线数据必须记录权威数据来源，并记录本次写入正式 K线表的实际触发来源。
 
-本项目中的 `data_source` 不是“人工是否参与”的标签，而是“行情数值获取通道 + 写入触发入口”的审计标识。
+本项目中的 `data_source` 不是“人工是否参与”的标签，而是“行情数值获取通道 + 实际触发来源”的审计标识。
 
 对于 4h 主 K线表，`data_source` 第一阶段只允许以下值：
 
-1. `binance_rest_by_scheduler`：系统定时任务或服务内自动任务调用 Binance REST 写入。
-2. `binance_rest_by_cli`：用户在命令行手动触发回补脚本，脚本调用 Binance REST 写入。
+1. `binance_rest_by_scheduler`：定时任务或受控任务以 `trigger_source = scheduler` 触发 Binance REST 写入。
+2. `binance_rest_by_cli`：用户手动命令行以 `trigger_source = cli` 触发 Binance REST 写入。
 
-这两个值都表示：K线 OHLCV 等核心数值只能来自 Binance REST 官方已收盘 K线。区别只在于触发入口不同。
+这两个值都表示：K线 OHLCV 等核心数值只能来自 Binance REST 官方已收盘 K线。区别只在于实际触发来源不同。
+
+触发来源必须显式记录，不得由程序自动猜测。
+
+如果通过脚本触发采集任务，脚本必须携带 `--trigger-source` 参数：
+
+1. `--trigger-source scheduler`
+2. `--trigger-source cli`
+
+`data_source` 的取值由 `trigger_source` 决定：
+
+1. `trigger_source = scheduler` 时，写入 `data_source = binance_rest_by_scheduler`。
+2. `trigger_source = cli` 时，写入 `data_source = binance_rest_by_cli`。
+
+是否经过 `scripts/*.py` 文件不是判断依据；实际触发来源才是判断依据。
 
 因此，以下值不得作为 4h 主 K线表的 `data_source`：
 
@@ -509,9 +523,25 @@ K线表必须保存：
 
 示例：
 
-1. 定时任务自动增量采集：`data_source = binance_rest_by_scheduler`，`collection_mode = incremental`。
-2. 用户命令行手动回补缺口：`data_source = binance_rest_by_cli`，`collection_mode = manual_backfill`。
-3. 初始化或较长历史区间回补：`data_source = binance_rest_by_cli`，`collection_mode = historical_backfill`。
+1. 定时任务通过 scheduler、cron、APScheduler 或受控脚本触发增量采集：
+   - `trigger_source = scheduler`
+   - `data_source = binance_rest_by_scheduler`
+   - `collection_mode = incremental`
+
+2. 用户命令行手动触发一次增量采集：
+   - `trigger_source = cli`
+   - `data_source = binance_rest_by_cli`
+   - `collection_mode = incremental`
+
+3. 用户命令行手动回补缺口：
+   - `trigger_source = cli`
+   - `data_source = binance_rest_by_cli`
+   - `collection_mode = manual_backfill`
+
+4. 初始化或较长历史区间回补：
+   - `trigger_source = cli`
+   - `data_source = binance_rest_by_cli`
+   - `collection_mode = historical_backfill`
 
 `collection_mode` 不得替代 `data_source`，也不得成为允许人工修改 K线值的理由。
 
@@ -532,7 +562,7 @@ WebSocket 来源不得写入 4h 主 K线表。
 ## 18. 采集事件日志
 
 系统应记录采集事件。
-采集事件日志是写入数据库的业务审计记录，用于追踪行情采集、回补、缺口、失败、重新拉取、更正等事件。
+采集事件日志是写入数据库的业务审计记录，用于追踪行情采集、回补、缺口、失败、重新拉取、数据冲突等事件。
 
 采集事件日志不等同于系统文件日志。
 
@@ -549,7 +579,7 @@ WebSocket 来源不得写入 4h 主 K线表。
 7. 数据解析失败。
 8. K线不连续。
 9. 发现缺口。
-10. 数据发生变更。
+10. 数据冲突或重新拉取结果不一致。
 11. 写库成功。
 12. 写库失败。
 13. WebSocket 连接成功。
@@ -560,16 +590,39 @@ WebSocket 来源不得写入 4h 主 K线表。
 
 1. 事件类型。
 2. 事件级别。
-3. 交易所。
-4. 市场类型。
-5. 交易对。
-6. 周期。
-7. 开始时间。
-8. 结束时间。
-9. 影响的数据范围。
-10. 错误信息。
-11. 事件详情 JSON。
-12. 创建时间。
+3. 触发来源 `trigger_source`。
+4. 数据来源 `data_source`。
+5. 采集任务类型 `collection_mode`。
+6. 交易所。
+7. 市场类型。
+8. 交易对。
+9. 周期。
+10. 开始时间。
+11. 结束时间。
+12. 影响的数据范围。
+13. 请求参数摘要。
+14. 返回数量。
+15. 写入数量。
+16. 跳过数量。
+17. 错误信息。
+18. 事件详情 JSON。
+19. 创建时间。
+
+`trigger_source` 必须显式记录。
+
+允许值：
+
+1. `scheduler`
+2. `cli`
+
+要求：
+
+1. `trigger_source` 不得为空。
+2. `trigger_source` 不得由程序猜测。
+3. 通过脚本触发采集时，必须显式传入 `--trigger-source`。
+4. `trigger_source` 必须与 `data_source` 保持一致。
+5. `trigger_source = scheduler` 时，`data_source` 必须为 `binance_rest_by_scheduler`。
+6. `trigger_source = cli` 时，`data_source` 必须为 `binance_rest_by_cli`。
 
 ## 19. 数据质量检查
 

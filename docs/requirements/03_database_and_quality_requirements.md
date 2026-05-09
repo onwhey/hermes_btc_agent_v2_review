@@ -379,7 +379,7 @@ taker_buy_quote_volume
 
 ### 5.6 数据来源字段
 
-K线表必须保存权威数据来源，并记录实际触发入口。
+K线表必须保存权威数据来源，并记录实际触发来源。
 
 建议字段：
 
@@ -392,12 +392,29 @@ K线表必须保存权威数据来源，并记录实际触发入口。
 
 说明：
 
-1. `data_source` 表示“行情数值获取通道 + 写入触发入口”。
+1. `data_source` 表示“行情数值获取通道 + 实际触发来源”。
 2. 4h 标准 K线的数值来源必须是 Binance U 本位合约 REST 接口返回的官方已收盘 K线。
-3. `binance_rest_by_scheduler` 表示系统定时任务或服务内自动任务调用 Binance REST 写入。
-4. `binance_rest_by_cli` 表示用户在命令行手动触发回补脚本，脚本调用 Binance REST 写入。
-5. 手动触发回补脚本时，脚本也必须调用 Binance REST 获取官方已收盘 K线，并写入 `data_source = binance_rest_by_cli`。
+3. `binance_rest_by_scheduler` 表示 `trigger_source = scheduler` 的任务调用 Binance REST 写入。
+4. `binance_rest_by_cli` 表示 `trigger_source = cli` 的任务调用 Binance REST 写入。
+5. 是否经过 `scripts/*.py` 文件不是判断依据；实际触发来源才是判断依据。
 6. 周期信息已经由 `interval` 字段表达，不建议在 `data_source` 中写成 `binance_rest_4h`。
+
+`data_source` 的 scheduler / cli 后缀必须由显式触发来源决定。
+
+如果任务通过脚本启动，脚本必须显式携带 `--trigger-source` 参数。
+
+允许值：
+
+- `trigger_source = scheduler`
+- `trigger_source = cli`
+
+映射规则：
+
+- `trigger_source = scheduler` → `data_source = binance_rest_by_scheduler`
+- `trigger_source = cli` → `data_source = binance_rest_by_cli`
+
+禁止脚本根据运行环境、进程名称、调用方路径自动猜测触发来源。
+禁止在缺少 `trigger_source` 的情况下写入正式 K线表。
 
 禁止值：
 
@@ -416,7 +433,7 @@ K线表必须保存权威数据来源，并记录实际触发入口。
 3. 禁止使用 `manual_repair` 作为 K线 `data_source`。
 4. 禁止使用 `system_repair` 作为 K线 `data_source`。
 5. 禁止使用 WebSocket 作为 4h K线标准来源。
-6. 禁止把 `binance_rest_by_cli` 理解为人工改数；它只表示人工触发脚本，数据仍来自 Binance REST。
+6. 禁止把 `binance_rest_by_cli` 理解为人工改数；它只表示 `trigger_source = cli` 的任务触发脚本，数据仍来自 Binance REST。
 
 如果需要区分采集任务目的，应在 `collector_event_log` 中记录 `collection_mode`。
 
@@ -428,18 +445,27 @@ K线表必须保存权威数据来源，并记录实际触发入口。
 
 示例：
 
-自动增量采集：
+定时任务触发增量采集：
 
+- `trigger_source = scheduler`
 - `data_source = binance_rest_by_scheduler`
+- `collection_mode = incremental`
+
+用户命令行手动触发一次增量采集：
+
+- `trigger_source = cli`
+- `data_source = binance_rest_by_cli`
 - `collection_mode = incremental`
 
 命令行手动回补缺口：
 
+- `trigger_source = cli`
 - `data_source = binance_rest_by_cli`
 - `collection_mode = manual_backfill`
 
 命令行历史区间回补：
 
+- `trigger_source = cli`
 - `data_source = binance_rest_by_cli`
 - `collection_mode = historical_backfill`
 
@@ -463,11 +489,6 @@ K线表必须保存权威数据来源，并记录实际触发入口。
 - `compare_source = binance_rest`
 
 如果后续需要表结构承载复核结果，应优先写入 `data_quality_check`，或者单独设计 `kline_integrity_check_log`，不得把复核任务伪装成采集写入任务。
-
----
-
-
-
 
 ### 5.7 K线 Upsert 规则
 
@@ -592,6 +613,7 @@ idx_market_kline_4h_symbol_interval_open_time_utc
 4. 按状态查询。
 5. 按创建时间倒序查询。
 6. 查询最近失败的采集任务。
+7. 按 `trigger_source` 查询。
 
 ### 6.4 alert_message 索引要求
 
@@ -622,28 +644,51 @@ collector_event_log
 应记录：
 
 1. 采集任务名称。
-2. 数据来源。
-3. 交易所。
-4. 市场类型。
-5. 交易对。
-6. K线周期。
-7. 任务开始时间 UTC。
-8. 任务开始时间 PRC。
-9. 任务结束时间 UTC。
-10. 任务结束时间 PRC。
-11. 任务状态。
-12. 请求参数摘要。
-13. 返回数量。
-14. 写入数量。
-15. 更新数量。
-16. 跳过数量。
-17. 异常类型。
-18. 异常信息摘要。
-19. 错误堆栈摘要。
-20. 关联的数据质量检查记录。
-21. 关联的提醒记录。
-22. 创建时间 UTC。
-23. 创建时间 PRC。
+2. 触发来源 `trigger_source`。
+3. 数据来源 `data_source`。
+4. 采集任务类型 `collection_mode`。
+5. 交易所。
+6. 市场类型。
+7. 交易对。
+8. K线周期。
+9. 任务开始时间 UTC。
+10. 任务开始时间 PRC。
+11. 任务结束时间 UTC。
+12. 任务结束时间 PRC。
+13. 任务状态。
+14. 请求参数摘要。
+15. 返回数量。
+16. 写入数量。
+17. 更新数量。
+18. 跳过数量。
+19. 异常类型。
+20. 异常信息摘要。
+21. 错误堆栈摘要。
+22. 关联的数据质量检查记录。
+23. 关联的提醒记录。
+24. 创建时间 UTC。
+25. 创建时间 PRC。
+
+`collector_event_log` 必须记录 `trigger_source`。
+
+允许值：
+
+- `scheduler`
+- `cli`
+
+含义：
+
+- `scheduler`：由定时任务、scheduler、cron、APScheduler 等系统任务触发。
+- `cli`：由用户在命令行手动触发。
+
+要求：
+
+1. `trigger_source` 不得为空。
+2. `trigger_source` 不得由程序猜测。
+3. 通过脚本触发采集时，必须显式传入 `--trigger-source`。
+4. `trigger_source` 必须与 `data_source` 保持一致。
+5. `trigger_source = scheduler` 时，`data_source = binance_rest_by_scheduler`。
+6. `trigger_source = cli` 时，`data_source = binance_rest_by_cli`。
 
 任务状态至少包括：
 
@@ -662,6 +707,7 @@ blocked
 3. 数据质量异常导致停止写入时，必须记录 `blocked`。
 4. 采集日志不能只写本地文件，必须有数据库记录。
 5. 错误信息必须脱敏，不能包含密钥。
+6. `collector_event_log` 建议支持按 `trigger_source` 查询。
 
 ---
 

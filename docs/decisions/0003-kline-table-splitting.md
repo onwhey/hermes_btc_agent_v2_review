@@ -190,12 +190,15 @@
 
 1. 即使表名已经包含周期，也建议保留 `interval` 字段。
 2. `interval` 可以用于数据自检、通用逻辑复用和防止写错表。
-3. `data_source` 用于标识行情数值获取通道和写入触发入口。
+3. `data_source` 用于标识行情数值获取通道和实际触发来源。
 4. 第一阶段 4h 主 K线表的 `data_source` 只允许 `binance_rest_by_scheduler` 和 `binance_rest_by_cli`。
-5. `binance_rest_by_scheduler` 表示系统定时任务或服务内自动任务调用 Binance REST 写入。
-6. `binance_rest_by_cli` 表示用户在命令行手动触发脚本，脚本调用 Binance REST 写入。
-7. `data_source` 不得使用 `manual_repair`、`system_repair`、`binance_websocket`、`manual_input`、`human_edit`、`binance_rest_backfill`、`binance_rest_incremental`。
-8. 手动触发回补脚本不代表人工改数，回补脚本仍必须调用 Binance REST 获取官方已收盘 K线。
+5. `data_source` 必须由显式 `trigger_source` 映射得到。
+6. `trigger_source = scheduler` 时，写入 `data_source = binance_rest_by_scheduler`。
+7. `trigger_source = cli` 时，写入 `data_source = binance_rest_by_cli`。
+8. 是否经过 `scripts/*.py` 文件不是判断依据；实际触发来源才是判断依据。
+9. 缺少 `trigger_source` 时，不得写入正式 K线表。
+10. `data_source` 不得使用 `manual_repair`、`system_repair`、`binance_websocket`、`manual_input`、`human_edit`、`binance_rest_backfill`、`binance_rest_incremental`。
+11. 手动触发回补脚本不代表人工改数，回补脚本仍必须调用 Binance REST 获取官方已收盘 K线。
 
 ---
 

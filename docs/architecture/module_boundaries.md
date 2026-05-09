@@ -610,31 +610,46 @@ Hermes 边界：
 
 1. 脚本应尽量短。
 2. 脚本负责读取参数。
-3. 脚本负责初始化配置和日志。
-4. 脚本调用业务服务。
-5. 脚本输出结果。
-6. 核心逻辑必须下沉到 `app/` 模块。
+3. 脚本负责校验 `trigger_source` 或 `check_trigger`。
+4. 脚本负责初始化配置和日志。
+5. 脚本调用业务服务。
+6. 脚本输出结果。
+7. 核心逻辑必须下沉到 `app/` 模块。
 
-例如：
+`scripts` 可以作为人工命令入口，也可以作为受控的定时任务命令入口，但必须显式声明触发来源。
+
+通过 scripts 触发采集类任务时，必须携带 `--trigger-source` 参数：
+
+1. `--trigger-source scheduler`
+2. `--trigger-source cli`
+
+禁止：
+
+1. 禁止 scripts 自动猜测触发来源。
+2. 禁止不带 `trigger_source` 写入正式 K线表。
+3. 禁止 scheduler 随意调用任意 scripts。
+4. 禁止 scheduler 调用手动回补脚本。
+5. 禁止 scheduler 调用临时脚本或未纳入计划的脚本。
+6. 禁止 scripts 承载核心业务逻辑。
+7. 禁止在脚本里写完整 Repository。
+8. 禁止在脚本里写完整 K线连续性算法。
+9. 禁止在脚本里直接拼接复杂微信提醒。
+10. 禁止在脚本里直接调用 DeepSeek 生成交易建议。
 
 允许：
 
 1. `scripts/check_infra.py` 调用基础设施检查服务。
 2. `scripts/check_binance_rest.py` 调用 Binance REST 客户端。
-3. `scripts/backfill_4h_klines.py` 调用 4h 回补服务。
-4. `scripts/collect_4h_klines.py` 调用 4h 增量采集服务。
-
-禁止：
-
-1. 在脚本里写完整 Repository。
-2. 在脚本里写完整 K线连续性算法。
-3. 在脚本里直接拼接复杂微信提醒。
-4. 在脚本里直接调用 DeepSeek 生成交易建议。
+3. `scripts/collect_4h_klines.py --trigger-source scheduler` 作为定时增量采集入口。
+4. `scripts/collect_4h_klines.py --trigger-source cli` 作为用户手动触发一次增量采集入口。
+5. `scripts/backfill_4h_klines.py --trigger-source cli` 作为用户手动回补入口。
+6. `scripts/check_kline_integrity.py --check-trigger cli` 作为用户手动复核入口。
 
 ### 12.1 `scripts` 边界
 
 允许提供以下命令行入口：
 
+- 受控的 4h 增量采集命令
 - 手动 K线 REST 回补命令
 - K线一致性检测命令
 - 基础环境检查命令
@@ -648,6 +663,8 @@ scripts 必须调用 app 层已有模块：
 - Kline Repository
 - Kline Quality Checker
 - Alert Service
+
+即使由 scheduler 调用 scripts，scripts 仍只能做参数解析、配置初始化、日志初始化和调用 app service，不得直接请求 Binance、不得直接写数据库、不得直接拼接 SQL。
 
 禁止在 scripts 中重复实现 Binance 请求、K线解析、数据库写入、报警逻辑。
 

@@ -64,16 +64,28 @@
 
 正式 K线表不允许人工直接修改 K线值。
 
-即便出现缺口、采集失败、数据异常，也只能通过 Binance REST 重新拉取官方已收盘 K线进行回补或更正。
+即便出现缺口、采集失败、数据异常，也只能通过 Binance REST 重新拉取官方已收盘 K线进行回补；如果重新拉取结果与库内已有 K线冲突，默认记录数据冲突并报警，不得静默覆盖。
 
 可以提供手动触发回补脚本，但该脚本仍必须调用 Binance REST 获取官方 K线；手动触发不等于手动改数。
 
-4h 主 K线表的 `data_source` 只允许记录 Binance REST 数据通道及实际触发入口：`binance_rest_by_scheduler` 或 `binance_rest_by_cli`。
+4h 主 K线表的 `data_source` 只允许记录 Binance REST 数据通道及实际触发来源：
 
-其中：
+1. `binance_rest_by_scheduler`
+2. `binance_rest_by_cli`
 
-1. `binance_rest_by_scheduler` 表示系统定时任务或服务内自动任务调用 Binance REST 写入。
-2. `binance_rest_by_cli` 表示用户在命令行手动触发脚本，脚本调用 Binance REST 写入。
+实际触发来源必须由显式参数 `trigger_source` 决定。
+
+允许值：
+
+1. `trigger_source = scheduler`
+2. `trigger_source = cli`
+
+映射规则：
+
+1. `trigger_source = scheduler` → `data_source = binance_rest_by_scheduler`
+2. `trigger_source = cli` → `data_source = binance_rest_by_cli`
+
+是否经过 `scripts/*.py` 文件不是判断依据；`trigger_source` 才是判断依据。
 
 `data_source` 不允许使用 `manual_repair`、`system_repair`、`binance_websocket`、`manual_input`、`human_edit`、`binance_rest_backfill`、`binance_rest_incremental`。
 
@@ -655,8 +667,6 @@ Codex 实现相关代码时必须遵守：
 
 ---
 
----
-
 ## 18. 手动回补与 K线一致性复核规则
 
 手动 CLI 回补和 K线一致性复核都必须使用 Binance U 本位合约 REST 官方接口作为唯一数据来源或对照来源。
@@ -672,19 +682,44 @@ Codex 实现相关代码时必须遵守：
 
 手动 CLI 回补写入正式 K线表时：
 
+- `trigger_source = cli`
 - `data_source = binance_rest_by_cli`
 - `collection_mode = manual_backfill`
 
 手动 CLI 回补不是人工修复。用户不得输入 OHLCV 等行情字段，系统不得写入人工录入的 K线数值。
 
+手动回补脚本不得由 scheduler、cron、APScheduler 或其他定时任务自动触发。
+
 ### 18.2 定时任务自动采集
+
+定时任务可以直接调用 app service，也可以调用受控的采集脚本入口。
+
+如果定时任务调用脚本入口，必须显式携带：
+
+- `--trigger-source scheduler`
 
 定时任务自动采集写入正式 K线表时：
 
+- `trigger_source = scheduler`
 - `data_source = binance_rest_by_scheduler`
 - `collection_mode = incremental`
 
-### 18.3 K线一致性复核
+禁止定时任务在不传递 `trigger_source` 的情况下写入正式 K线表。
+
+### 18.3 用户手动触发一次增量采集
+
+用户可以通过 CLI 手动触发一次增量采集。
+
+手动触发一次增量采集时：
+
+- `--trigger-source cli`
+- `trigger_source = cli`
+- `data_source = binance_rest_by_cli`
+- `collection_mode = incremental`
+
+该入口仍然只能调用 Binance REST 官方已收盘 K线，不得人工输入 K线数值。
+
+### 18.4 K线一致性复核
 
 K线一致性复核用于检查过去已入库 K线是否存在数据错误、不连续、缺失、未收盘误写入、非法 `data_source` 等问题。
 

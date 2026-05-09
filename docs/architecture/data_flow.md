@@ -389,12 +389,28 @@ parser 转换为内部 Kline DTO
 
 4h 增量采集用于周期性获取最新已收盘 4h K线。
 
-本节描述的是系统自动增量采集流程。自动增量采集只能由 scheduler 触发，scheduler 必须直接调用 `app/market_data` 内的 collector service，不得调用 `scripts/collect_4h_klines.py`。
-
 数据流如下：
 
 ```text
-scheduler 定时触发
+触发入口：
+    1. scheduler / cron / APScheduler 定时触发
+       命令必须显式携带：
+       --trigger-source scheduler
+
+    2. 用户命令行手动触发
+       命令必须显式携带：
+       --trigger-source cli
+    ↓
+scripts/collect_4h_klines.py
+    ↓
+校验 trigger_source
+    允许值：
+        - scheduler
+        - cli
+    禁止：
+        - 缺省 trigger_source
+        - 自动猜测 trigger_source
+        - 非法 trigger_source
     ↓
 app/market_data/kline_4h_collector.py
     ↓
@@ -402,9 +418,11 @@ app/market_data/kline_4h_collector.py
     status = running
     symbol = BTCUSDT
     interval = 4h
-    data_source = binance_rest_by_scheduler
+    trigger_source = scheduler 或 cli
     collection_mode = incremental
-    triggered_by = scheduler
+    data_source 根据 trigger_source 映射：
+        - trigger_source = scheduler → binance_rest_by_scheduler
+        - trigger_source = cli → binance_rest_by_cli
     ↓
 Binance REST client
     ↓
@@ -431,7 +449,7 @@ parser 转换为内部 Kline DTO
     ↓
 校验受影响区间是否连续
     包括：
-        - DB 前置 K线与 REST 批次第一根 K线是否连续
+        - DB 前置 K线 与 REST 批次第一根 K线是否连续
         - REST 批次内部 K线是否连续
         - 本次写入后整体区间是否连续
     ↓
@@ -461,11 +479,18 @@ parser 转换为内部 Kline DTO
         - 人工录入或人工修改的 K线
     ↓
 通过 Repository 幂等写入正式 4h K线表
-    data_source = binance_rest_by_scheduler
+    data_source 根据 trigger_source 写入：
+        - trigger_source = scheduler：binance_rest_by_scheduler
+        - trigger_source = cli：binance_rest_by_cli
     ↓
 写入 data_quality_check 或质量检查结果
     ↓
 根据执行结果更新 collector_event_log
+    必须记录：
+        - trigger_source
+        - data_source
+        - collection_mode = incremental
+
     成功：
         status = success
 
@@ -499,44 +524,6 @@ parser 转换为内部 Kline DTO
 8. 增量采集不得调用大模型。
 9. 增量采集不得生成交易建议。
 10. 增量采集不得自动交易。
-11. scheduler 不得调用 `scripts/collect_4h_klines.py`。
-12. scheduler 不得通过 cron、APScheduler 或其他定时任务系统间接执行 `scripts/*.py`。
-13. 自动增量采集的业务逻辑必须位于 `app/market_data/kline_4h_collector.py` 或同职责 service 中。
-
-### 6.1 手动触发一次 4h 增量采集入口
-
-`scripts/collect_4h_klines.py` 只允许作为人工 CLI 入口，用于用户手动触发一次 4h 增量采集。
-
-该脚本不得被 scheduler、cron、APScheduler 或任何定时任务系统调用。
-
-手动触发流程如下：
-
-```text
-用户手动执行 scripts/collect_4h_klines.py
-    ↓
-scripts/collect_4h_klines.py 解析 CLI 参数并初始化运行环境
-    ↓
-调用 app/market_data/kline_4h_collector.py
-    ↓
-执行一次 4h K线增量采集流程
-    ↓
-写入正式 4h K线表时：
-        data_source = binance_rest_by_cli
-        collection_mode = incremental
-        triggered_by = cli
-    ↓
-任务结束
-```
-
-手动增量采集入口的边界要求：
-
-1. `scripts/collect_4h_klines.py` 只能作为人工 CLI 入口。
-2. scheduler、cron、APScheduler 或任何定时任务系统不得调用 `scripts/collect_4h_klines.py`。
-3. scheduler 必须直接调用 `app/market_data/kline_4h_collector.py` 或同职责 collector service。
-4. `scripts/collect_4h_klines.py` 可以复用 collector service，但不得持有核心采集逻辑。
-5. `scripts/collect_4h_klines.py` 不得直接请求 Binance、不得直接写数据库、不得直接拼接 SQL、不得绕过 Repository。
-6. 手动增量采集不同于手动指定范围回补；手动指定范围回补应使用独立的 `scripts/backfill_4h_klines.py`。
-7. 如果不需要手动触发一次增量采集，第一阶段可以不实现 `scripts/collect_4h_klines.py`。
 
 ---
 
@@ -1363,6 +1350,8 @@ Codex 实现数据流相关功能时，必须遵守：
 
 手动 CLI 回补不是人工修复。用户只能输入交易对、周期、起止时间等查询参数，不允许输入价格、成交量、成交额等行情字段。
 
+手动回补脚本只允许 `trigger_source = cli`。不得由 scheduler、cron、APScheduler 或其他定时任务自动触发手动回补脚本。
+
 流程：
 
 1. 用户执行 CLI 回补命令。
@@ -1398,7 +1387,7 @@ Codex 实现数据流相关功能时，必须遵守：
    - `interval = 4h`
    - `data_source = binance_rest_by_cli`
    - `collection_mode = manual_backfill`
-   - `triggered_by = cli`
+   - `trigger_source = cli`
    - `started_at_utc`
    - `started_at_prc`
 
