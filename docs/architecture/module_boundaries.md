@@ -245,7 +245,7 @@ REST 客户端可以提供：
 WebSocket 客户端可以提供：
 
 1. 最新价格订阅。
-2. ticker 数据接收。
+2. `aggTrade` 最新成交价事件接收。
 3. 连接状态管理。
 4. 断线重连。
 5. 原始价格事件输出。
@@ -255,8 +255,10 @@ WebSocket 客户端可以提供：
 1. 4h 主 K线必须来自 Binance REST 已收盘 K线。
 2. WebSocket 不允许作为 4h 主 K线最终数据源。
 3. WebSocket 不允许自己拼接正式 4h K线。
-4. WebSocket 只用于最新价格监控和价格事件提醒。
-5. Binance 接入层不得知道策略规则。
+4. WebSocket 只用于最新成交价监控和价格事件提醒。
+5. Binance WebSocket 连接层应放在 `app/exchange/binance`。
+6. 价格监控业务判断应放在 `app/market_data/price_monitor`。
+7. Binance 接入层不得知道策略规则。
 
 如果 Binance 请求失败：
 
@@ -644,6 +646,7 @@ Hermes 边界：
 4. `scripts/collect_4h_klines.py --trigger-source cli` 作为用户手动触发一次增量采集入口。
 5. `scripts/backfill_4h_klines.py --trigger-source cli` 作为用户手动回补入口。
 6. `scripts/check_kline_integrity.py --check-trigger cli` 作为用户手动复核入口。
+7. `app/scheduler/jobs/daily_kline_integrity_check.py` 作为每日自动复核入口。
 
 ### 12.1 `scripts` 边界
 

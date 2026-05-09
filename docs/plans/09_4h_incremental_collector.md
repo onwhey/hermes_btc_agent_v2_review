@@ -77,7 +77,7 @@ Codex 开始本阶段前必须阅读：
 16. `docs/plans/05_binance_rest_client.md`
 17. `docs/plans/06_market_kline_4h.md`
 18. `docs/plans/07_kline_quality_checker.md`
-19. `docs/plans/08_4h_kline_manual_backfill.md`
+19. `docs/plans/08_4h_backfill.md`
 20. `docs/implementation/01_project_skeleton.md`
 21. `docs/implementation/02_core_config_logging.md`
 22. `docs/implementation/03_infra_mysql_redis.md`
@@ -405,9 +405,53 @@ app/market_data/collector/kline_4h_collector_service.py::run_incremental_4h_coll
 7. 执行交易。
 8. 实现价格监控。
 
-## 12. 标准调用链
+## 12. K线写入任务锁要求
 
-### 12.1 scheduler 触发调用链
+增量采集会写入正式 K线表，因此启动前必须先获取同一 `symbol + interval` 的 K线写入任务锁。
+
+推荐锁 key：
+
+```text
+kline_write:BTCUSDT:4h
+```
+
+推荐 owner：
+
+```text
+trace_id
+```
+
+要求：
+
+1. 获取锁必须具备原子性，例如 Redis `SET key value NX EX seconds`。
+2. 锁必须设置 TTL，避免进程异常退出后永久阻塞。
+3. 如果锁已存在，本次增量采集必须拒绝或跳过，并记录 `collector_event_log.status = skipped`。
+4. 锁存在时不得继续请求 Binance、不得继续质量检查、不得继续写正式 K线表。
+5. 释放锁时必须校验 owner，只能释放当前任务自己持有的锁。
+6. 不得只依赖 `collector_event_log.status = running` 判断是否并发。
+7. 增量采集和手动回补必须共用同一 `symbol + interval` 写入锁，避免互相并发写入。
+
+标准锁流程：
+
+```text
+生成 trace_id
+    ↓
+尝试获取 kline_write:BTCUSDT:4h 锁
+    ↓
+获取失败：记录 collector_event_log = skipped，并退出
+    ↓
+获取成功：创建 collector_event_log = running
+    ↓
+执行 Binance REST、解析、质量检查、幂等写库
+    ↓
+更新 collector_event_log = success / blocked / failed
+    ↓
+finally 校验 owner 后释放锁
+```
+
+## 13. 标准调用链
+
+### 13.1 scheduler 触发调用链
 
 ```
 scheduler
@@ -415,6 +459,8 @@ scheduler
 app/scheduler/jobs/collect_4h_klines_job.py::run_collect_4h_klines_job
     ↓
 app/market_data/collector/kline_4h_collector_service.py::run_incremental_4h_collection(trigger_source="scheduler")
+    ↓
+app/core/task_lock.py 获取 kline_write:BTCUSDT:4h 锁
     ↓
 collector_event_log_repository.create_running_event
     ↓
@@ -441,7 +487,7 @@ collector_event_log_repository.mark_success
 返回采集结果
 ```
 
-### 12.2 CLI 触发调用链
+### 13.2 CLI 触发调用链
 
 ```
 用户 CLI
@@ -453,7 +499,7 @@ app/market_data/collector/kline_4h_collector_service.py::run_incremental_4h_coll
 后续流程与 scheduler 相同
 ```
 
-### 12.3 异常链路
+### 13.3 异常链路
 
 ```
 任意步骤失败
@@ -467,7 +513,7 @@ collector_event_log_repository.mark_failed 或 mark_blocked
 CLI 返回非 0 状态码，scheduler job 记录失败
 ```
 
-## 13. 重叠拉取要求
+## 14. 重叠拉取要求
 
 增量采集不得只拉最新一根 K线。
 
@@ -523,7 +569,7 @@ CLI 返回非 0 状态码，scheduler job 记录失败
 4. 不得因为 04:00、08:00 已存在就整体跳过。
 5. 不得只写 16:00 导致 12:00 永久缺失。
 
-## 14. 拉取数量要求
+## 15. 拉取数量要求
 
 建议配置项：
 
@@ -554,7 +600,7 @@ KLINE_4H_COLLECT_MAX_LIMIT=100
 4. 不得每次全量拉取历史数据。
 5. 大范围历史补齐应使用 08 手动回补，不应放在 09 增量采集。
 
-## 15. Binance REST 请求要求
+## 16. Binance REST 请求要求
 
 本阶段只能通过：
 
@@ -587,7 +633,7 @@ KLINE_4H_COLLECT_MAX_LIMIT=100
 6. listenKey。
 7. ticker price endpoint。
 
-## 16. 未收盘过滤要求
+## 17. 未收盘过滤要求
 
 增量采集必须过滤未收盘 K线。
 
@@ -607,7 +653,7 @@ KLINE_4H_COLLECT_MAX_LIMIT=100
 4. 自动修复未收盘 K线。
 5. 后续再覆盖未收盘 K线。
 
-## 17. Parser 要求
+## 18. Parser 要求
 
 本阶段必须复用 06 阶段：
 
@@ -632,7 +678,7 @@ KLINE_4H_COLLECT_MAX_LIMIT=100
 3. 手工写 PRC 时间转换。
 4. 使用 `+ timedelta(hours=8)` 代替 `app/core/time_utils.py`。
 
-## 18. 质量检查要求
+## 19. 质量检查要求
 
 正式写入 `market_kline_4h` 前，必须通过 07 阶段质量检查。
 
@@ -664,7 +710,7 @@ KLINE_4H_COLLECT_MAX_LIMIT=100
 4. 静默跳过异常 K线后继续写入。
 5. 调用 DeepSeek 判断是否可以写入。
 
-## 19. 正式 K线写入要求
+## 20. 正式 K线写入要求
 
 正式 K线写入必须通过：
 
@@ -693,7 +739,7 @@ KLINE_4H_COLLECT_MAX_LIMIT=100
 6. conflict_count
 7. filtered_unclosed_count
 
-## 20. collector_event_log 要求
+## 21. collector_event_log 要求
 
 本阶段复用 08 阶段创建的：
 
@@ -751,8 +797,9 @@ data_source = binance_rest_by_cli
 3. `blocked`：质量检查阻断。
 4. `failed`：请求、解析、数据库或未预期异常。
 5. `partial_success`：本阶段原则上不应出现。
+6. `skipped`：任务锁已存在，本次任务跳过或拒绝。
 
-## 21. Event 状态规则
+## 22. Event 状态规则
 
 ### running
 
@@ -811,7 +858,7 @@ blocked 表示系统按规则拒绝写入，不是程序崩溃。
 2. 如果出现 partial_success，implementation 必须写明原因。
 3. 不得把 partial_success 当作普通成功。
 
-## 22. 事务要求
+## 23. 事务要求
 
 本阶段必须明确事务边界。
 
@@ -834,7 +881,7 @@ implementation 必须写清楚：
 4. 是否可能出现 event log 存在但 K线未写入。
 5. 是否可能出现 K线写入但 event log 更新失败。
 
-## 23. 幂等要求
+## 24. 幂等要求
 
 增量采集必须支持幂等。
 
@@ -848,7 +895,7 @@ implementation 必须写清楚：
 6. 不得人工修复已有字段。
 7. 重复运行应能通过 event log 看出每次运行结果。
 
-## 24. 初次运行要求
+## 25. 初次运行要求
 
 如果数据库中没有任何 `market_kline_4h` 数据，本阶段不得自动拉取无限历史。
 
@@ -879,7 +926,7 @@ implementation 必须写清楚：
 3. 数据库为空时用本机时间随便推算起点。
 4. 数据库为空时无记录地静默退出。
 
-## 25. Hermes 报警要求
+## 26. Hermes 报警要求
 
 本阶段允许异常时调用 `app/alerting`。
 
@@ -933,7 +980,7 @@ kline_data_quality_error
 5. 在 `app/exchange/binance` 中直接报警。
 6. 在 `app/storage/mysql` 中直接报警。
 
-## 26. 配置要求
+## 27. 配置要求
 
 建议新增配置：
 
@@ -956,7 +1003,7 @@ KLINE_4H_COLLECT_SEND_ALERT=true
 4. 写入账户信息。
 5. 写入交易权限配置。
 
-## 27. Scheduler 频率要求
+## 28. Scheduler 频率要求
 
 4h K线采集不应刚好卡在 4h 整点立刻执行。
 
@@ -975,7 +1022,7 @@ KLINE_4H_COLLECT_SEND_ALERT=true
 3. 未来如何接入 scheduler。
 4. 当前是否已经真的创建定时任务。
 
-## 28. CLI 参数要求
+## 29. CLI 参数要求
 
 `scripts/collect_4h_klines.py` 建议支持参数：
 
@@ -1007,7 +1054,7 @@ KLINE_4H_COLLECT_SEND_ALERT=true
 
 如果用户需要按指定历史范围补数据，应使用 08 的手动回补脚本，不应使用 09 增量采集脚本。
 
-## 29. 与 08 手动回补的边界
+## 30. 与 08 手动回补的边界
 
 08 手动回补：
 
@@ -1042,7 +1089,7 @@ scheduler 或 CLI 触发
 5. 08 和 09 都不允许人工改数。
 6. 08 和 09 都必须使用 Binance REST 官方 K线。
 
-## 30. 数据库影响
+## 31. 数据库影响
 
 本阶段允许：
 
@@ -1063,21 +1110,33 @@ scheduler 或 CLI 触发
 8. 创建建议表。
 9. 人工修复 K线字段。
 
-## 31. Redis 影响
+## 32. Redis 影响
 
-本阶段不得连接 Redis。
+本阶段允许连接 Redis，但仅允许用于 K线写入任务锁。
 
-本阶段不得写 Redis。
+允许使用的锁 key 示例：
 
-本阶段不得读取 Redis。
+```text
+kline_write:BTCUSDT:4h
+```
 
-本阶段不得创建：
+允许操作：
 
-`bitcoin_price`
+1. 获取任务锁。
+2. 查询任务锁。
+3. 校验 owner 后释放任务锁。
 
-价格监控和 Redis 写入应在后续 WebSocket 价格监控阶段实现。
+本阶段不得创建或写入：
 
-## 32. Binance 影响
+```text
+bitcoin_price
+```
+
+本阶段不得把 Redis 用作行情缓存、K线存储或长期审计数据源。
+
+价格监控和 `bitcoin_price` 写入应在后续 WebSocket 价格监控阶段实现。
+
+## 33. Binance 影响
 
 本阶段允许调用：
 
@@ -1095,7 +1154,7 @@ scheduler 或 CLI 触发
 7. margin endpoint。
 8. listenKey。
 
-## 33. Hermes 影响
+## 34. Hermes 影响
 
 本阶段允许异常时调用 Hermes。
 
@@ -1116,7 +1175,7 @@ scheduler 或 CLI 触发
 3. 不得因此修改正式 K线表。
 4. 不得无限重试。
 
-## 34. WebSocket 和价格监控边界
+## 35. WebSocket 和价格监控边界
 
 本阶段不得实现 WebSocket。
 
@@ -1134,7 +1193,7 @@ scheduler 或 CLI 触发
 
 10s 价格监控后续必须使用 Binance WebSocket 单独实现。
 
-## 35. K线不可人工修改原则
+## 36. K线不可人工修改原则
 
 本阶段必须严格遵守：
 
@@ -1149,7 +1208,7 @@ scheduler 或 CLI 触发
 
 即使数据出现问题，也只能通过 08 手动 CLI 回补任务从 Binance REST 官方接口重新获取官方已收盘 K线，并按规则写入。
 
-## 36. 交易安全边界
+## 37. 交易安全边界
 
 本阶段以及后续所有阶段均禁止实现：
 
@@ -1167,7 +1226,7 @@ scheduler 或 CLI 触发
 
 如果 Codex 添加任何交易执行相关代码，应直接拒绝合并。
 
-## 37. 测试要求
+## 38. 测试要求
 
 建议创建：
 
@@ -1198,7 +1257,7 @@ scheduler 或 CLI 触发
 19. 数据库为空时不会自动大范围回补。
 20. 异常时可以调用 alerting mock。
 21. 不调用 DeepSeek。
-22. 不写 Redis。
+22. 不写 Redis 行情缓存；任务锁通过 Redis mock 或测试替身覆盖。
 23. 不实现 WebSocket。
 24. 不涉及交易接口。
 
@@ -1210,7 +1269,7 @@ RUN_4H_COLLECTOR_INTEGRATION_TESTS=true
 
 默认 `pytest` 不应访问真实外部服务。
 
-## 38. 日志要求
+## 39. 日志要求
 
 本阶段必须复用：
 
@@ -1247,7 +1306,7 @@ RUN_4H_COLLECTOR_INTEGRATION_TESTS=true
 9. 持仓信息。
 10. 交易信息。
 
-## 39. 异常要求
+## 40. 异常要求
 
 本阶段应复用或扩展 `app/core/exceptions.py`。
 
@@ -1278,7 +1337,7 @@ RUN_4H_COLLECTOR_INTEGRATION_TESTS=true
 4. AutoTradingError。
 5. StrategySignalError。
 
-## 40. 交付物要求
+## 41. 交付物要求
 
 本阶段完成后，Codex 必须交付：
 
@@ -1310,6 +1369,7 @@ RUN_4H_COLLECTOR_INTEGRATION_TESTS=true
 13. `market_kline_4h` 写入流程。
 14. 事务边界。
 15. 幂等规则。
+16. K线写入任务锁获取、失败、释放流程。
 16. Hermes 报警流程。
 17. `trigger_source` 与 `data_source` 的映射。
 18. 不允许人工修改 K线的边界。
@@ -1328,7 +1388,7 @@ RUN_4H_COLLECTOR_INTEGRATION_TESTS=true
 
 原因：这些能力本阶段不实现。
 
-## 41. 验收标准
+## 42. 验收标准
 
 本阶段完成后，必须满足：
 
@@ -1342,7 +1402,7 @@ RUN_4H_COLLECTOR_INTEGRATION_TESTS=true
 8. `pytest` 默认可以运行成功。
 9. 默认测试不请求真实 Binance。
 10. 默认测试不连接真实 MySQL。
-11. 默认测试不连接 Redis。
+11. 默认测试不连接真实 Redis，任务锁使用 mock 或测试替身。
 12. 默认测试不发送真实 Hermes。
 13. 未创建策略表。
 14. 未创建建议表。
@@ -1357,11 +1417,12 @@ RUN_4H_COLLECTOR_INTEGRATION_TESTS=true
 23. 不调用 DeepSeek。
 24. 不实现 WebSocket。
 25. 不写入 Redis `bitcoin_price`。
+26. 写正式 K线前必须获取 `kline_write:BTCUSDT:4h` 任务锁。
 26. 不实现交易建议。
 27. 不实现交易执行相关代码。
 28. `docs/implementation/09_4h_kline_incremental_collector.md` 已创建或补齐。
 
-## 42. 人工审查清单
+## 43. 人工审查清单
 
 合并前用户应人工检查：
 
@@ -1412,7 +1473,7 @@ grep -R "delete from market_kline_4h" app scripts tests
 
 如果这些出现在增量采集模块中，应拒绝合并。
 
-## 43. Codex 禁止事项汇总
+## 44. Codex 禁止事项汇总
 
 Codex 在本阶段禁止：
 
@@ -1445,7 +1506,7 @@ Codex 在本阶段禁止：
 27. 删除、清空或覆盖已有文档。
 28. 把核心采集逻辑写进 `scripts`。
 
-## 44. 完成后的人工 Git 操作建议
+## 45. 完成后的人工 Git 操作建议
 
 以下操作由用户人工执行，不要求 Codex 自动执行：
 

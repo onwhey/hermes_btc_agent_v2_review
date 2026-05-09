@@ -6,7 +6,7 @@
 
 如果任何文档或代码与本文档冲突，以本文档为准。
 
-如果 Codex 在实现过程中发现本文档与某个 plan、architecture、decision 或现有代码存在冲突，必须停止实现并提示用户确认，不得自行猜测。
+如果 Codex 在实现过程中发现本文档与某个 plan、architecture、decision 或现有代码存在冲突，必须停止实现并提示用户确认，不得自行猜测或绕过。
 
 ---
 
@@ -91,7 +91,7 @@
 系统请求 Binance REST 官方 K线
     ↓
 系统解析、校验、记录、写入
-````
+```
 
 手动回补不是：
 
@@ -194,7 +194,7 @@ Hermes 价格波动提醒
 1. 10s 价格监控不得写入 `market_kline_4h`。
 2. 4h K线采集不得写入 Redis `bitcoin_price`。
 3. 10s 价格监控不得使用 REST 每 10 秒轮询价格。
-4. 10s 价格监控必须使用 WebSocket。
+4. 10s 价格监控必须使用 Binance WebSocket。
 5. 4h 正式 K线不得使用 WebSocket 生成。
 6. `bitcoin_price` 不是长期历史行情库。
 7. MySQL K线表不是实时价格缓存。
@@ -229,7 +229,7 @@ Binance WebSocket 用于：
 
 ## 9. scripts 边界
 
-1. `scripts/*.py` 只能作为 CLI 入口或检查入口。
+1. `scripts/*.py` 只能作为 CLI 入口、进程启动入口或检查入口。
 2. `scripts/*.py` 不得承载核心业务逻辑。
 3. `scripts/*.py` 不得直接写复杂业务流程。
 4. `scripts/*.py` 应解析参数、初始化配置、调用 `app/` 内 service。
@@ -293,6 +293,7 @@ Redis 用于：
 2. `bitcoin_price`。
 3. 短期缓存。
 4. 后续可能的报警冷却状态。
+5. K线写入任务锁。
 
 Redis 不用于：
 
@@ -415,22 +416,117 @@ Redis 不用于：
 
 ---
 
-## 19. 代码结构边界
+## 19. 数据库迁移铁律
 
-1. `app/core` 放配置、日志、异常、时间工具等基础能力。
-2. `app/exchange/binance` 只封装 Binance 公开行情接口和基础连接检查。
+1. 数据库结构变更必须通过 Alembic migration。
+2. 不允许通过 Navicat、手写 SQL、临时脚本直接修改生产表结构。
+3. Codex 只允许生成 migration 文件，不得自动执行 `alembic upgrade head`。
+4. migration 不得删除已有业务表。
+5. migration 不得删除已有业务字段。
+6. migration 不得清空业务数据。
+7. migration 不得插入真实业务数据。
+8. 如需破坏性变更，必须单独写 decision 文档并由用户确认。
+9. Alembic migration 文件必须可追溯、可回滚，或明确说明不可回滚原因。
+10. 生产环境执行 migration 必须由用户人工触发。
+
+---
+
+## 20. 任务并发铁律
+
+1. 同一 `symbol + interval` 的 K线采集任务不得并发运行。
+2. 同一 `symbol + interval` 的手动回补任务不得与增量采集任务同时写入正式 K线表。
+3. scheduler 触发任务前必须具备防重入机制。
+4. 所有写入正式 K线表的任务启动前，必须先获取同一 `symbol + interval` 的任务锁。
+5. 如果任务锁已存在，本次任务必须拒绝或跳过，并记录 `collector_event_log`，不得继续写入正式 K线表。
+6. 任务锁必须具备 TTL，避免进程异常退出后永久阻塞。
+7. 释放任务锁时必须校验锁 owner，禁止误删其他任务持有的锁。
+8. 仅检查 `collector_event_log.status = running` 不足以防并发，不能作为唯一并发控制手段。
+9. 不得因为并发任务导致重复写入、乱序写入或冲突覆盖。
+10. 所有写入正式 K线表的任务必须具备幂等能力。
+11. 所有任务重复执行后，结果必须可解释、可追溯。
+
+说明：`collector_event_log` 用于审计追踪，不用于充当唯一并发锁。并发控制必须依赖具备原子性的任务锁，例如 Redis `SET key value NX EX seconds`，或后续明确设计的 MySQL 原子锁机制。
+
+---
+
+## 21. 外部请求铁律
+
+1. 所有 Binance REST 请求必须设置超时时间。
+2. 所有 Hermes 请求必须设置超时时间。
+3. 所有外部请求失败必须记录明确错误类型。
+4. 不得无限重试。
+5. 重试次数、退避策略必须可配置。
+6. Binance REST 请求失败不得写入正式 K线表。
+7. Binance server time 获取失败时，不得继续写入需要判断收盘状态的 K线。
+8. WebSocket 断线可以重连，但不得切换为 REST 轮询价格，除非后续 plan 明确允许。
+9. 外部请求错误日志不得包含密钥、token、webhook、Authorization。
+
+---
+
+## 22. 删除操作铁律
+
+1. 默认禁止删除正式业务数据。
+2. 禁止删除 `market_kline_4h` 中的正式 K线。
+3. 禁止通过脚本批量删除业务表数据。
+4. 禁止 Codex 生成清库脚本、重置脚本、truncate 脚本。
+5. 测试数据清理只能作用于测试环境。
+6. 如确需删除数据，必须单独写 decision 文档并由用户人工确认。
+7. 删除操作不得伪装成修复操作。
+
+---
+
+## 23. 配置与环境铁律
+
+1. 所有环境变量必须通过统一配置模块读取。
+2. 不得在业务代码中直接散落读取 `os.getenv`，除非位于配置模块内部。
+3. 不得在代码中硬编码数据库地址、Redis 地址、Hermes 地址等环境差异配置。
+4. `.env.example` 只能写示例值，不得写真实密钥。
+5. 新增配置项必须同步更新 `.env.example`。
+6. 生产、测试、开发环境配置必须可区分。
+7. `APP_DEBUG` 不得在生产环境默认开启。
+8. 日志级别必须可配置。
+
+---
+
+## 24. 依赖管理铁律
+
+1. 新增 Python 依赖必须写入 `pyproject.toml`。
+2. 不得随意引入大型依赖解决小问题。
+3. 不得引入来历不明、长期不维护或安全风险高的依赖。
+4. 不得在代码中要求用户手动 `pip install` 未记录的包。
+5. Codex 新增依赖时，必须说明用途和必要性。
+6. 不得把开发依赖用于生产核心逻辑。
+7. 项目必须在虚拟环境中运行，不得依赖系统全局 Python 包。
+
+---
+
+## 25. 审计与 trace_id 铁律
+
+1. 关键任务必须生成 `trace_id`。
+2. K线采集、手动回补、质量复核、价格监控报警必须记录 `trace_id`。
+3. `collector_event_log`、`data_quality_check`、`alert_message` 之间应尽量通过 `trace_id` 或关联 ID 串联。
+4. 日志中必须包含 `trace_id`，便于排查完整链路。
+5. 同一次任务的 Binance 请求、质量检查、数据库写入、Hermes 报警必须能通过 `trace_id` 追踪。
+6. `trace_id` 不得包含密钥、账户信息或敏感数据。
+
+---
+
+## 26. 代码结构边界
+
+1. `app/core` 放配置、日志、异常、时间工具、任务锁等基础能力。
+2. `app/exchange/binance` 只封装 Binance 公开行情接口、公开 WebSocket 连接和基础连接检查。
 3. `app/storage/mysql` 只负责 MySQL model、session、repository。
 4. `app/storage/redis` 只负责 Redis 客户端和 Redis 状态读写。
-5. `app/market_data` 放行情数据采集、解析、校验、回补、复核、价格监控。
+5. `app/market_data` 放行情数据采集、解析、校验、回补、复核、价格监控业务逻辑。
 6. `app/alerting` 放 Hermes 报警业务层。
 7. `app/scheduler` 放定时任务入口和 job。
-8. `scripts` 只放人工或进程启动入口。
+8. `scripts` 只放人工入口、进程启动入口或检查入口。
 9. `docs/implementation` 必须按功能记录实现说明。
 10. 禁止把多个模块职责混进一个大文件。
 
 ---
 
-## 20. 实现说明边界
+## 27. 实现说明边界
 
 每个阶段完成后，必须创建或更新：
 
@@ -465,7 +561,7 @@ implementation 必须写清楚：
 
 ---
 
-## 21. 安全与密钥铁律
+## 28. 安全与密钥铁律
 
 禁止提交：
 
@@ -495,7 +591,7 @@ implementation 必须写清楚：
 
 ---
 
-## 22. 测试边界
+## 29. 测试边界
 
 1. 默认 `pytest` 不应请求真实 Binance。
 2. 默认 `pytest` 不应连接真实 MySQL。
@@ -510,7 +606,7 @@ implementation 必须写清楚：
 
 ---
 
-## 23. Codex 实现铁律
+## 30. Codex 实现铁律
 
 Codex 实现时必须：
 
@@ -540,7 +636,7 @@ Codex 禁止：
 
 ---
 
-## 24. 人工审查铁律
+## 31. 人工审查铁律
 
 每次 Codex 完成一个阶段后，用户应至少检查：
 
@@ -562,7 +658,7 @@ Codex 禁止：
 
 ---
 
-## 25. 文档冲突处理规则
+## 32. 文档冲突处理规则
 
 如果 requirements、architecture、decisions、plans、implementation 之间发生冲突：
 
@@ -576,91 +672,3 @@ Codex 禁止：
 如果本文档本身存在错误，应由用户明确修改本文档后，再继续开发。
 
 Codex 不得自行绕过本文档。
-
-````
-
-建议后续在 `AGENTS.md` 里加一句：
-
-```md
-Codex 在实现任何 plan 前，必须先阅读 `docs/rules/project_invariants.md`。如果当前任务、现有代码或 plan 与该文件冲突，必须停止实现并提示用户确认，不得自行猜测或绕过。
-````
-## 26. 数据库迁移铁律
-
-1. 数据库结构变更必须通过 Alembic migration。
-2. 不允许通过 Navicat、手写 SQL、临时脚本直接修改生产表结构。
-3. Codex 只允许生成 migration 文件，不得自动执行 `alembic upgrade head`。
-4. migration 不得删除已有业务表。
-5. migration 不得删除已有业务字段。
-6. migration 不得清空业务数据。
-7. migration 不得插入真实业务数据。
-8. 如需破坏性变更，必须单独写 decision 文档并由用户确认。
-9. Alembic migration 文件必须可追溯、可回滚或明确说明不可回滚原因。
-10. 生产环境执行 migration 必须由用户人工触发。
-
-## 27. 任务并发铁律
-
-## 任务并发铁律
-
-1. 同一 `symbol + interval` 的 K线采集任务不得并发运行。
-2. 同一 `symbol + interval` 的手动回补任务不得与增量采集任务同时写入正式 K线表。
-3. scheduler 触发任务前必须具备防重入机制。
-4. 所有写入正式 K线表的任务启动前，必须先获取同一 `symbol + interval` 的任务锁。
-5. 如果任务锁已存在，本次任务必须拒绝或跳过，并记录 `collector_event_log`，不得继续写入正式 K线表。
-6. 任务锁必须具备 TTL，避免进程异常退出后永久阻塞。
-7. 释放任务锁时必须校验锁 owner，禁止误删其他任务持有的锁。
-8. 仅检查 `collector_event_log.status = running` 不足以防并发，不能作为唯一并发控制手段。
-9. 不得因为并发任务导致重复写入、乱序写入或冲突覆盖。
-10. 所有写入正式 K线表的任务必须具备幂等能力。
-11. 所有任务重复执行后，结果必须可解释、可追溯。
-
-## 28. 外部请求铁律
-
-1. 所有 Binance REST 请求必须设置超时时间。
-2. 所有 Hermes 请求必须设置超时时间。
-3. 所有外部请求失败必须记录明确错误类型。
-4. 不得无限重试。
-5. 重试次数、退避策略必须可配置。
-6. Binance REST 请求失败不得写入正式 K线表。
-7. Binance server time 获取失败时，不得继续写入需要判断收盘状态的 K线。
-8. WebSocket 断线可以重连，但不得切换为 REST 轮询价格，除非后续 plan 明确允许。
-9. 外部请求错误日志不得包含密钥、token、webhook、Authorization。
-
-## 29. 删除操作铁律
-
-1. 默认禁止删除正式业务数据。
-2. 禁止删除 `market_kline_4h` 中的正式 K线。
-3. 禁止通过脚本批量删除业务表数据。
-4. 禁止 Codex 生成清库脚本、重置脚本、truncate 脚本。
-5. 测试数据清理只能作用于测试环境。
-6. 如确需删除数据，必须单独写 decision 文档并由用户人工确认。
-7. 删除操作不得伪装成修复操作。
-
-## 30. 配置与环境铁律
-
-1. 所有环境变量必须通过统一配置模块读取。
-2. 不得在业务代码中直接散落读取 `os.getenv`，除非配置模块内部。
-3. 不得在代码中硬编码数据库地址、Redis 地址、Hermes 地址、Binance URL 以外的环境差异配置。
-4. `.env.example` 只能写示例值，不得写真实密钥。
-5. 新增配置项必须同步更新 `.env.example`。
-6. 生产、测试、开发环境配置必须可区分。
-7. APP_DEBUG 不得在生产环境默认开启。
-8. 日志级别必须可配置。
-
-## 31. 依赖管理铁律
-
-1. 新增 Python 依赖必须写入 `pyproject.toml`。
-2. 不得随意引入大型依赖解决小问题。
-3. 不得引入来历不明、长期不维护或安全风险高的依赖。
-4. 不得在代码中要求用户手动 pip install 未记录的包。
-5. Codex 新增依赖时，必须说明用途和必要性。
-6. 不得把开发依赖用于生产核心逻辑。
-7. 项目必须在虚拟环境中运行，不得依赖系统全局 Python 包。
-
-## 31. 审计与 trace_id 铁律
-
-1. 关键任务必须生成 trace_id。
-2. K线采集、手动回补、质量复核、价格监控报警必须记录 trace_id。
-3. collector_event_log、data_quality_check、alert_message 之间应尽量通过 trace_id 或关联 ID 串联。
-4. 日志中必须包含 trace_id，便于排查完整链路。
-5. 同一次任务的 Binance 请求、质量检查、数据库写入、Hermes 报警必须能通过 trace_id 追踪。
-6. trace_id 不得包含密钥、账户信息或敏感数据。

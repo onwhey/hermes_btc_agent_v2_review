@@ -644,13 +644,27 @@ parser 转换为内部 Kline DTO
 
 10s 最新价格监控用于基础价格波动提醒，不用于生成正式 4h K线。
 
+数据来源必须是 Binance U 本位合约 WebSocket `btcusdt@aggTrade` 最新成交价。
+
+本数据流禁止使用 REST 最新价格轮询，禁止由 scheduler 每 10 秒反复拉起脚本。
+
 数据流如下：
 ```text
-    scheduler 每 10s 触发
+    systemd / supervisor / 用户 CLI 启动常驻价格监控进程
         ↓
-    WebSocket ticker client 或最新价格服务
+    scripts/run_price_monitor_10s.py
         ↓
-    获取 BTCUSDT 最新价格 current_price
+    app/market_data/price_monitor/price_monitor_service
+        ↓
+    app/exchange/binance/websocket_market_client 连接 Binance WebSocket market stream
+        ↓
+    持续接收 BTCUSDT aggTrade 最新成交价事件
+        ↓
+    parser 转换为内部 PriceEvent
+        ↓
+    内存中保存最近一次有效 PriceEvent
+        ↓
+    进程内部每 10 秒执行一次监控判断
         ↓
     读取 Redis 中上一轮价格 previous_price
         ↓
@@ -664,17 +678,15 @@ parser 转换为内部 Kline DTO
         ↓
     构造 AlertEvent
         ↓
-    写 alert_message
+    通过 app/alerting 写 alert_message 并发送 Hermes 微信提醒
         ↓
-    Hermes 微信提醒
-        ↓
-    写 channel_response
+    记录 channel_response
         ↓
     无论是否提醒，都把 current_price 写入 Redis
         key = bitcoin_price
         TTL = 2 分钟
         ↓
-    任务结束
+    常驻进程继续运行
 ```
 
 价格监控规则：

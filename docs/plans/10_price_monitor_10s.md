@@ -1,23 +1,25 @@
-下面是 `docs/plans/10_price_monitor_10s.md` 的可直接复制版。
-
----
-
 # 10 Price Monitor 10s Plan
 
 ## 1. 阶段目标
 
-本阶段实现 BTCUSDT 合约实时价格监控能力。
+本阶段实现 BTCUSDT U 本位合约 10s 实时价格监控能力。
 
 本阶段目标是：
 
-1. 通过 Binance U 本位合约 WebSocket（网络套接字）获取 BTCUSDT 实时成交价。
-2. 每 10 秒对最新价格做一([Binance 开发者中心][1])ce`。
-3. Redis TTL 固定为 2 分钟。
-4. 当价格相对上一次记录价格变化超过阈值时，通过 Hermes 发送固定模板报警。
-5. 避免重复刷屏。
-6. 保证该模块不写 MySQL K线表、不生成交易建议、不调用 DeepSeek、不自动交易。
+1. 通过 Binance U 本位合约 WebSocket market stream 获取 BTCUSDT 最新成交价。
+2. 默认使用 `btcusdt@aggTrade` 作为成交价事件来源。
+3. 启动一个常驻价格监控进程，而不是由 scheduler 每 10 秒反复拉起脚本。
+4. WebSocket 持续接收价格事件，进程内部每 10 秒读取最近一次有效价格。
+5. 将当前最新价格写入 Redis `bitcoin_price`。
+6. Redis TTL 固定为 2 分钟。
+7. 将当前价格与 Redis 中上一轮价格比较。
+8. 当价格变化幅度超过阈值时，通过 Hermes 发送固定模板报警。
+9. 报警必须有冷却机制，避免重复刷屏。
+10. 不写 MySQL K线表，不生成交易建议，不调用 DeepSeek，不自动交易。
 
 本阶段是实时价格监控，不是 4h K线采集。
+
+---
 
 ## 2. 本阶段明确不做
 
@@ -43,24 +45,27 @@
 
 如果 Codex 在本阶段添加以上功能，应视为越界。
 
+---
+
 ## 3. 依赖文档
 
 Codex 开始本阶段前必须阅读：
 
-1. `docs/requirements/01_project_scope.md`
-2. `docs/requirements/02_data_collection_requirements.md`
-3. `docs/requirements/03_database_and_quality_requirements.md`
-4. `docs/requirements/04_alerting_requirements.md`
-5. `docs/architecture/system_architecture.md`
-6. `docs/architecture/module_boundaries.md`
-7. `docs/architecture/data_flow.md`
-8. `docs/decisions/0001-no-auto-trading.md`
-9. `docs/decisions/0002-kline-source-and-time-rules.md`
-10. `docs/decisions/0004-alerting-through-hermes.md`
-11. `docs/plans/02_core_config_logging.md`
-12. `docs/plans/03_infra_mysql_redis.md`
-13. `docs/plans/04_alerting_through_hermes.md`
-14. `docs/plans/09_4h_kline_incremental_collector.md`
+1. `docs/rules/project_invariants.md`
+2. `docs/requirements/01_project_scope.md`
+3. `docs/requirements/02_data_collection_requirements.md`
+4. `docs/requirements/03_database_and_quality_requirements.md`
+5. `docs/requirements/04_alerting_requirements.md`
+6. `docs/architecture/system_architecture.md`
+7. `docs/architecture/module_boundaries.md`
+8. `docs/architecture/data_flow.md`
+9. `docs/decisions/0001-no-auto-trading.md`
+10. `docs/decisions/0002-kline-source-and-time-rules.md`
+11. `docs/decisions/0004-alerting-through-hermes.md`
+12. `docs/plans/02_core_config_logging.md`
+13. `docs/plans/03_infra_mysql_redis.md`
+14. `docs/plans/04_alerting_through_hermes.md`
+15. `docs/plans/09_4h_incremental_collector.md`
 
 本阶段必须复用：
 
@@ -70,41 +75,50 @@ Codex 开始本阶段前必须阅读：
 4. `app/core/exceptions.py`
 5. `app/storage/redis/`
 6. `app/alerting`
+7. `app/exchange/binance/` 中的 WebSocket market client
 
 本阶段不得重复实现配置读取、日志初始化、Redis 客户端和 Hermes 发送逻辑。
+
+---
 
 ## 4. 官方数据源说明
 
 本阶段使用 Binance U 本位合约 WebSocket market stream。
 
-优先使用：
+默认 stream：
 
+```text
+btcusdt@aggTrade
 ```
-<symbol>@aggTrade
-```
 
-用于获取 BTCUSDT 最新成交价。
+用途：
 
-原因：
+1. 获取 BTCUSDT U 本位合约最新成交价。
+2. 作为 Redis `bitcoin_price` 的数据来源。
+3. 作为 10s 价格变化报警的计算输入。
 
-1. `aggTrade` 是成交聚合流。
-2. 它直接包含成交价格字段。
-3. 它适合作为“最新成交价”监控来源。
-4. Binance U 本位合约官方文档中，`aggTrade` 属于 `/market` 路由，推送频率为 100ms。
+官方 WebSocket 路由：
 
-官方 WebSocket 路由要求：
-
-```
+```text
 wss://fstream.binance.com/market/ws/btcusdt@aggTrade
 ```
 
-或者 combined stream：
+或 combined stream：
 
-```
+```text
 wss://fstream.binance.com/market/stream?streams=btcusdt@aggTrade
 ```
 
-Binance 官方文档说明，U 本位合约 WebSocket market stream 当前使用 `wss://fstream.binance.com/market` 路由，`aggTrade` stream 名称为 `<symbol>@aggTrade`，更新速度为 100ms。([Binance 开发者中心][1])ce 边界说明
+注意：
+
+1. WebSocket 只用于实时成交价事件。
+2. WebSocket 不得用于生成正式 4h K线。
+3. WebSocket 不得写入 `market_kline_4h`。
+4. 本阶段不得使用 REST 最新价格接口替代 WebSocket。
+
+---
+
+## 5. markPrice 边界说明
 
 本阶段默认不使用 `markPrice` 作为 `bitcoin_price` 的来源。
 
@@ -117,22 +131,30 @@ Binance 官方文档说明，U 本位合约 WebSocket market stream 当前使用
 
 但本阶段的 `bitcoin_price` 代表：
 
-```
+```text
 BTCUSDT U 本位合约最新成交价
 ```
 
 不是：
 
-```
+```text
 标记价格
 指数价格
 结算价格
 现货价格
 ```
 
-Binance 官方文档显示，`markPrice` stream 提供 mark price、index price、funding rate 等字段，更新速度为 1 秒或 3 秒。它和成交价不是同一个概念，不能混写进同一个 Redis key。([Binance 开发者中心][2])议分支名：
+如果后续要同时保存 mark price，必须使用单独 Redis key，例如 `bitcoin_mark_price`，不得混写到 `bitcoin_price`。
 
-`feature/10-price-monitor-10s`
+---
+
+## 6. 建议分支
+
+建议分支名：
+
+```text
+feature/10-price-monitor-10s
+```
 
 分支创建、切换、提交、推送、合并由用户人工执行。
 
@@ -147,12 +169,14 @@ Codex 不应自动执行以下 Git 操作：
 
 Codex 只负责在用户已经切换好的当前分支内，根据本 plan 修改文件。
 
+---
+
 ## 7. 需要检查和补齐的目录
 
 本阶段应检查以下目录是否存在，不存在才创建：
 
-```
-app/market_data/
+```text
+app/exchange/binance/
 app/market_data/price_monitor/
 app/storage/redis/
 scripts/
@@ -168,14 +192,17 @@ docs/implementation/
 4. 只允许补齐当前缺失的目录或占位文件。
 5. `.gitkeep` 只在目录为空且需要 Git 跟踪时创建，不得覆盖已有文件。
 
+---
+
 ## 8. 需要检查和补齐的文件
 
 本阶段建议检查和补齐：
 
-```
+```text
+app/exchange/binance/websocket_market_client.py
+
 app/market_data/price_monitor/__init__.py
 app/market_data/price_monitor/types.py
-app/market_data/price_monitor/websocket_client.py
 app/market_data/price_monitor/price_event_parser.py
 app/market_data/price_monitor/redis_price_state.py
 app/market_data/price_monitor/price_change_detector.py
@@ -196,62 +223,91 @@ docs/implementation/10_price_monitor_10s.md
 4. 不得删除已有 README、AGENTS、docs 文档或配置文件。
 5. 如果现有文件内容与本 plan 不一致，应进行最小范围修改，并保留已有有效内容。
 
-## 9. 模块定位
+---
 
-模块路径：
+## 9. 模块职责划分
 
-`app/market_data/price_monitor/`
+### 9.1 `app/exchange/binance/websocket_market_client.py`
 
-该模块负责：
+这是 Binance WebSocket market stream 连接层。
 
-1. 连接 Binance WebSocket。
-2. 接收 BTCUSDT 实时成交事件。
-3. 解析最新成交价。
-4. 在内存中保存最近收到的最新价格事件。
-5. 每 10 秒执行一次价格监控判断。
-6. 从 Redis 读取上一次保存的价格。
-7. 判断价格变化是否超过阈值。
-8. 将当前最新价格写入 Redis。
-9. Redis TTL 设置为 2 分钟。
-10. 必要时调用 `app/alerting` 发送 Hermes 固定模板报警。
-11. 处理 WebSocket 断线重连。
+负责：
 
-该模块不负责：
+1. 构建 Binance WebSocket URL。
+2. 连接 `btcusdt@aggTrade`。
+3. 接收原始 WebSocket 消息。
+4. 处理 ping / pong。
+5. 处理断线和重连。
+6. 将原始消息交给上层业务 callback。
 
-1. K线采集。
+不负责：
+
+1. 写 Redis。
+2. 发送 Hermes。
+3. 写 MySQL。
+4. 判断价格变化。
+5. 生成交易建议。
+6. 调用 DeepSeek。
+
+### 9.2 `app/market_data/price_monitor/`
+
+这是价格监控业务层。
+
+负责：
+
+1. 解析 `aggTrade` 原始消息。
+2. 保存最新 PriceEvent 到内存状态。
+3. 每 10 秒读取最新 PriceEvent。
+4. 从 Redis 读取上一次价格。
+5. 判断价格变化是否超过阈值。
+6. 写入 Redis `bitcoin_price` 并刷新 TTL。
+7. 执行报警冷却判断。
+8. 通过 `app/alerting` 发送 Hermes 固定模板报警。
+
+不负责：
+
+1. 4h K线采集。
 2. K线回补。
 3. K线复核。
 4. MySQL K线写入。
 5. 策略分析。
-6. DeepSeek 分析。
-7. 交易建议。
-8. 自动交易。
+6. 自动交易。
+
+---
 
 ## 10. 启动方式要求
 
 本阶段建议创建：
 
-`scripts/run_price_monitor_10s.py`
+```text
+scripts/run_price_monitor_10s.py
+```
 
 该脚本是价格监控进程启动入口。
 
 允许用户手动执行：
 
-```
+```bash
 python -m scripts.run_price_monitor_10s --symbol BTCUSDT --trigger-source cli
 ```
 
 生产环境后续可以由 systemd 或 supervisor 启动：
 
-```
+```bash
 python -m scripts.run_price_monitor_10s --symbol BTCUSDT --trigger-source systemd
 ```
 
-本阶段不建议使用 scheduler 每 10 秒启动一次脚本。
+或：
+
+```bash
+python -m scripts.run_price_monitor_10s --symbol BTCUSDT --trigger-source supervisor
+```
+
+本阶段不允许 scheduler 每 10 秒启动一次脚本。
 
 错误方式：
 
-```
+```text
 scheduler 每 10 秒启动一次脚本
     ↓
 连接一次 WebSocket
@@ -261,11 +317,9 @@ scheduler 每 10 秒启动一次脚本
 退出
 ```
 
-这个方式禁止。
-
 正确方式：
 
-```
+```text
 systemd / supervisor / 用户 CLI
     ↓
 启动一个常驻进程
@@ -274,8 +328,10 @@ systemd / supervisor / 用户 CLI
     ↓
 持续接收价格
     ↓
-每 10 秒执行监控判断
+每 10 秒执行一次监控判断
 ```
+
+---
 
 ## 11. 脚本入口要求
 
@@ -310,11 +366,13 @@ systemd / supervisor / 用户 CLI
 7. 不生成交易建议。
 8. 不自动交易。
 
+---
+
 ## 12. 参数要求
 
 建议支持参数：
 
-```
+```text
 --symbol BTCUSDT
 --trigger-source cli|systemd|supervisor
 --monitor-interval-seconds 10
@@ -344,11 +402,13 @@ systemd / supervisor / 用户 CLI
 5. 使用 REST price endpoint 参数。
 6. 输入人工价格。
 
+---
+
 ## 13. 配置要求
 
 建议新增配置：
 
-```
+```text
 PRICE_MONITOR_SYMBOL=BTCUSDT
 PRICE_MONITOR_WS_STREAM=aggTrade
 PRICE_MONITOR_INTERVAL_SECONDS=10
@@ -359,9 +419,12 @@ PRICE_MONITOR_ALERT_COOLDOWN_SECONDS=60
 PRICE_MONITOR_SEND_ALERT=true
 PRICE_MONITOR_WS_RECONNECT_MIN_SECONDS=1
 PRICE_MONITOR_WS_RECONNECT_MAX_SECONDS=60
+PRICE_MONITOR_NO_EVENT_TIMEOUT_SECONDS=30
 ```
 
 如果 `.env.example` 已存在，只补齐缺失项，不得清空重写。
+
+本阶段使用公开 WebSocket market stream，不需要 Binance API key。
 
 禁止写入：
 
@@ -371,13 +434,15 @@ PRICE_MONITOR_WS_RECONNECT_MAX_SECONDS=60
 4. 账户信息。
 5. 真实 webhook secret。
 
-本阶段使用公开 WebSocket market stream，不需要 Binance API key。
+---
 
 ## 14. WebSocket client 要求
 
 建议文件：
 
-`app/market_data/price_monitor/websocket_client.py`
+```text
+app/exchange/binance/websocket_market_client.py
+```
 
 职责：
 
@@ -387,7 +452,7 @@ PRICE_MONITOR_WS_RECONNECT_MAX_SECONDS=60
 4. 处理 ping / pong。
 5. 检测断线。
 6. 按退避策略重连。
-7. 将原始消息交给上层 parser。
+7. 将原始消息交给上层 parser 或 callback。
 8. 不做业务判断。
 
 要求：
@@ -401,12 +466,17 @@ PRICE_MONITOR_WS_RECONNECT_MAX_SECONDS=60
 7. 不发送 Hermes。
 8. 不写 MySQL。
 9. 不调用 DeepSeek。
+10. 不请求 REST 最新价格接口作为降级方案。
 
-Binance 官方文档说明，WebSocket 连接支持 `/ws/<streamName>` 和 `/stream?streams=...` 两种模式，symbol 使用小写；单连接有 24 小时有效期，且服务端会发送 ping frame，客户端需要响应 pong。实现时必须考虑重连和 ping / pong。([Binance 开发者中心][1])vent parser 要求
+---
+
+## 15. PriceEvent parser 要求
 
 建议文件：
 
-`app/market_data/price_monitor/price_event_parser.py`
+```text
+app/market_data/price_monitor/price_event_parser.py
+```
 
 职责：
 
@@ -419,7 +489,7 @@ Binance 官方文档说明，WebSocket 连接支持 `/ws/<streamName>` 和 `/str
 
 `aggTrade` 字段映射：
 
-```
+```text
 e  event type
 E  event time
 s  symbol
@@ -447,11 +517,15 @@ m  buyer is maker
 7. parser 不发 Hermes。
 8. parser 不写 MySQL。
 
+---
+
 ## 16. 类型定义要求
 
 建议文件：
 
-`app/market_data/price_monitor/types.py`
+```text
+app/market_data/price_monitor/types.py
+```
 
 建议定义：
 
@@ -464,7 +538,7 @@ m  buyer is maker
 
 `PriceEvent` 至少包含：
 
-```
+```text
 symbol
 price
 event_time_ms
@@ -476,7 +550,7 @@ source
 
 `PriceState` 至少包含：
 
-```
+```text
 symbol
 price
 event_time_ms
@@ -488,33 +562,37 @@ source
 
 `source` 固定为：
 
-```
+```text
 binance_ws_agg_trade
 ```
 
 禁止使用：
 
-```
+```text
 binance_rest_price
 manual_input
 human_edit
 ```
 
+---
+
 ## 17. Redis 状态要求
 
 建议文件：
 
-`app/market_data/price_monitor/redis_price_state.py`
+```text
+app/market_data/price_monitor/redis_price_state.py
+```
 
 Redis key：
 
-```
+```text
 bitcoin_price
 ```
 
 TTL：
 
-```
+```text
 120 秒
 ```
 
@@ -530,7 +608,7 @@ TTL：
 
 Redis value 建议保存 JSON 字符串：
 
-```
+```json
 {
   "symbol": "BTCUSDT",
   "price": "65000.12",
@@ -549,27 +627,31 @@ Redis value 建议保存 JSON 字符串：
 
 本阶段默认建议使用 JSON，因为可排查性更好。
 
+---
+
 ## 18. 价格变化检测要求
 
 建议文件：
 
-`app/market_data/price_monitor/price_change_detector.py`
+```text
+app/market_data/price_monitor/price_change_detector.py
+```
 
 检测规则：
 
-```
+```text
 abs(current_price - previous_price) / previous_price >= threshold
 ```
 
 默认 threshold：
 
-```
+```text
 0.01
 ```
 
 表示：
 
-```
+```text
 1%
 ```
 
@@ -590,13 +672,15 @@ abs(current_price - previous_price) / previous_price >= threshold
 3. 没有旧价格时胡乱报警。
 4. 把价格变化报警解释成交易建议。
 
+---
+
 ## 19. 10 秒监控节奏要求
 
 本阶段不是每收到一条 WebSocket 消息就报警。
 
 正确逻辑：
 
-```
+```text
 WebSocket 持续接收价格
     ↓
 内存中只保留最新 PriceEvent
@@ -621,16 +705,21 @@ WebSocket 持续接收价格
 5. 不得每个 WebSocket tick 都写 Redis。
 6. 不得每个 WebSocket tick 都发 Hermes。
 7. 不得每 10 秒重连 WebSocket。
+8. 不得由 scheduler 每 10 秒拉起脚本。
+
+---
 
 ## 20. 报警冷却要求
 
 建议文件：
 
-`app/market_data/price_monitor/alert_throttle.py`
+```text
+app/market_data/price_monitor/alert_throttle.py
+```
 
 默认冷却时间：
 
-```
+```text
 60 秒
 ```
 
@@ -644,7 +733,7 @@ WebSocket 持续接收价格
 
 报警类型建议：
 
-```
+```text
 price_change_threshold_exceeded
 price_monitor_ws_disconnected
 price_monitor_redis_write_failed
@@ -658,11 +747,15 @@ price_monitor_no_recent_price
 3. 把冷却状态写入 MySQL K线表。
 4. 用 DeepSeek 判断是否报警。
 
+---
+
 ## 21. PriceMonitorService 要求
 
 建议文件：
 
-`app/market_data/price_monitor/price_monitor_service.py`
+```text
+app/market_data/price_monitor/price_monitor_service.py
+```
 
 建议方法：
 
@@ -682,7 +775,7 @@ price_monitor_no_recent_price
 
 职责：
 
-1. 协调 WebSocket client。
+1. 协调 WebSocket market client。
 2. 协调 parser。
 3. 协调 Redis state。
 4. 协调 price detector。
@@ -700,18 +793,20 @@ price_monitor_no_recent_price
 6. 生成交易建议。
 7. 执行交易。
 
+---
+
 ## 22. 标准调用链
 
 标准调用链：
 
-```
+```text
 用户 CLI / systemd / supervisor
     ↓
 scripts/run_price_monitor_10s.py::main
     ↓
 app/market_data/price_monitor/price_monitor_service.py::run_price_monitor
     ↓
-websocket_client.connect_and_listen
+app/exchange/binance/websocket_market_client.py::connect_and_listen
     ↓
 price_event_parser.parse_agg_trade_event
     ↓
@@ -732,7 +827,7 @@ app/alerting 发送 Hermes 固定模板报警
 
 异常链路：
 
-```
+```text
 WebSocket 断线 / Redis 失败 / parser 异常 / 无最新价格
     ↓
 记录日志
@@ -747,6 +842,8 @@ WebSocket 断线按退避策略重连
     ↓
 不自动交易
 ```
+
+---
 
 ## 23. WebSocket 断线重连要求
 
@@ -765,11 +862,13 @@ WebSocket 断线按退避策略重连
 
 需要考虑：
 
-1. Binance 单连接 24 小时有效期。
+1. Binance 单连接可能有生命周期限制。
 2. 服务端 ping / pong。
 3. 网络断开。
 4. JSON 解析错误。
 5. 空消息或异常消息。
+
+---
 
 ## 24. 无最新价格处理
 
@@ -777,7 +876,7 @@ WebSocket 断线按退避策略重连
 
 建议配置：
 
-```
+```text
 PRICE_MONITOR_NO_EVENT_TIMEOUT_SECONDS=30
 ```
 
@@ -790,13 +889,17 @@ PRICE_MONITOR_NO_EVENT_TIMEOUT_SECONDS=30
 5. 不生成交易建议。
 6. 不自动交易。
 
+---
+
 ## 25. Hermes 报警要求
 
 本阶段允许调用 Hermes。
 
 必须通过：
 
-`app/alerting`
+```text
+app/alerting
+```
 
 允许报警场景：
 
@@ -814,7 +917,7 @@ PRICE_MONITOR_NO_EVENT_TIMEOUT_SECONDS=30
 
 建议模板类型：
 
-```
+```text
 price_change_threshold_exceeded
 price_monitor_ws_disconnected
 price_monitor_redis_error
@@ -845,25 +948,27 @@ price_monitor_runtime_error
 5. 在 WebSocket client 中直接报警。
 6. 在 Redis repository 中直接报警。
 
+---
+
 ## 26. Redis 影响
 
 本阶段允许读写 Redis。
 
 允许 key：
 
-```
+```text
 bitcoin_price
 ```
 
 可选 key：
 
-```
+```text
 bitcoin_price_meta
 ```
 
 如果实现 Redis 冷却锁，可选：
 
-```
+```text
 price_monitor_alert_cooldown:BTCUSDT:price_change_threshold_exceeded
 ```
 
@@ -882,6 +987,8 @@ price_monitor_alert_cooldown:BTCUSDT:price_change_threshold_exceeded
 3. 写入账户、订单、持仓信息。
 4. 写入密钥。
 
+---
+
 ## 27. MySQL 影响
 
 本阶段默认不写 MySQL。
@@ -897,11 +1004,9 @@ price_monitor_alert_cooldown:BTCUSDT:price_change_threshold_exceeded
 7. 创建策略表。
 8. 创建建议表。
 
-说明：
+说明：价格变化报警如果 `app/alerting` 内部会写 `alert_message`，可以复用 04 阶段已有报警记录逻辑。但 price monitor 自身不得直接写业务 MySQL 表。
 
-价格变化报警如果 `app/alerting` 内部会写 `alert_message`，可以复用 04 阶段已有报警记录逻辑。
-
-但 price monitor 自身不得直接写业务 MySQL 表。
+---
 
 ## 28. Binance 影响
 
@@ -923,9 +1028,11 @@ price_monitor_alert_cooldown:BTCUSDT:price_change_threshold_exceeded
 9. margin endpoint。
 10. listenKey。
 
+---
+
 ## 29. Scheduler 影响
 
-本阶段不建议 scheduler 每 10 秒调用脚本。
+本阶段不允许 scheduler 每 10 秒调用脚本。
 
 允许后续 scheduler 做：
 
@@ -942,11 +1049,13 @@ price_monitor_alert_cooldown:BTCUSDT:price_change_threshold_exceeded
 3. scheduler 直接写 Redis price。
 4. scheduler 直接发送价格变化报警。
 
+---
+
 ## 30. 与 09 K线采集的边界
 
 09 负责：
 
-```
+```text
 Binance REST /fapi/v1/klines
     ↓
 官方已收盘 4h K线
@@ -956,7 +1065,7 @@ MySQL market_kline_4h
 
 10 负责：
 
-```
+```text
 Binance WebSocket aggTrade
     ↓
 最新成交价
@@ -974,6 +1083,8 @@ Hermes 价格波动报警
 4. 09 不使用 WebSocket 最新价。
 5. 10 的价格报警不是交易建议。
 6. 09 的 K线采集不是实时价格监控。
+
+---
 
 ## 31. 交易安全边界
 
@@ -993,77 +1104,15 @@ Hermes 价格波动报警
 
 如果 Codex 添加任何交易执行相关代码，应直接拒绝合并。
 
-## 32. 日志要求
+---
 
-本阶段必须复用：
-
-`app/core/logger.py`
-
-允许记录：
-
-1. price monitor 启动。
-2. WebSocket URL，但不得包含密钥。
-3. WebSocket 连接成功。
-4. WebSocket 断开。
-5. WebSocket 重连。
-6. 解析价格成功。
-7. 解析价格失败。
-8. 当前价格。
-9. 上一次 Redis 价格。
-10. 价格变化百分比。
-11. Redis 写入成功或失败。
-12. Hermes 报警是否发送。
-13. 冷却命中。
-14. 进程退出。
-
-禁止记录：
-
-1. 完整 `.env`。
-2. Redis 密码。
-3. Hermes webhook。
-4. Hermes secret。
-5. token。
-6. Authorization。
-7. cookie。
-8. 账户信息。
-9. 持仓信息。
-10. 交易信息。
-
-## 33. 异常要求
-
-本阶段应复用或扩展 `app/core/exceptions.py`。
-
-允许新增异常：
-
-1. `PriceMonitorError`
-2. `PriceEventParseError`
-3. `PriceMonitorRedisError`
-4. `PriceMonitorWebSocketError`
-5. `PriceMonitorConfigError`
-
-异常要求：
-
-1. WebSocket 异常必须明确是连接异常、消息异常或重连异常。
-2. Redis 异常必须明确是读取失败还是写入失败。
-3. parser 异常必须明确缺失字段或非法字段。
-4. 配置异常必须明确参数名。
-5. 异常消息不得包含敏感信息。
-6. 异常不得触发自动交易。
-7. 异常不得触发 DeepSeek 分析。
-
-禁止新增：
-
-1. OrderError。
-2. PositionError。
-3. TradeExecutionError。
-4. AutoTradingError。
-5. StrategySignalError。
-
-## 34. 测试要求
+## 32. 测试要求
 
 建议创建：
 
-`tests/test_price_monitor_10s.py`
+```text
+tests/test_price_monitor_10s.py
+```
 
 默认测试不得依赖真实 Binance、真实 Redis、真实 Hermes、真实 MySQL。
 
@@ -1094,17 +1143,21 @@ Hermes 价格波动报警
 
 如果需要真实集成测试，必须使用显式开关，例如：
 
-```
+```text
 RUN_PRICE_MONITOR_INTEGRATION_TESTS=true
 ```
 
 默认 `pytest` 不应访问真实外部服务。
 
-## 35. implementation 文档要求
+---
+
+## 33. implementation 文档要求
 
 本阶段完成后，Codex 必须创建：
 
-`docs/implementation/10_price_monitor_10s.md`
+```text
+docs/implementation/10_price_monitor_10s.md
+```
 
 说明文件必须描述：
 
@@ -1126,10 +1179,13 @@ RUN_PRICE_MONITOR_INTEGRATION_TESTS=true
 16. 本模块不写 MySQL K线表的边界。
 17. 本模块不调用 REST 最新价格接口的边界。
 18. 本模块不生成交易建议、不自动交易的边界。
+19. `app/exchange/binance` 与 `app/market_data/price_monitor` 的职责划分。
 
 本阶段 implementation 文档必须遵守 `AGENTS.md` 中的“代码可读性与实现说明强制要求”，按功能写清楚入口文件、方法调用链、数据流、异常处理、测试方式和本模块边界。
 
-## 36. 验收标准
+---
+
+## 34. 验收标准
 
 本阶段完成后，必须满足：
 
@@ -1160,7 +1216,9 @@ RUN_PRICE_MONITOR_INTEGRATION_TESTS=true
 25. 不实现交易执行相关代码。
 26. `docs/implementation/10_price_monitor_10s.md` 已创建或补齐。
 
-## 37. 人工审查清单
+---
+
+## 35. 人工审查清单
 
 合并前用户应人工检查：
 
@@ -1183,7 +1241,7 @@ RUN_PRICE_MONITOR_INTEGRATION_TESTS=true
 
 建议搜索：
 
-```
+```bash
 grep -R "ticker/price" app scripts tests
 grep -R "/fapi/v1/ticker" app scripts tests
 grep -R "get_price" app scripts tests
@@ -1202,7 +1260,9 @@ grep -R "account" app scripts tests
 
 如果发现交易执行相关代码，应拒绝合并。
 
-## 38. Codex 禁止事项汇总
+---
+
+## 36. Codex 禁止事项汇总
 
 Codex 在本阶段禁止：
 
@@ -1233,22 +1293,30 @@ Codex 在本阶段禁止：
 25. 提交 `.env`。
 26. 删除、清空或覆盖已有文档。
 
-## 39. 完成后的人工 Git 操作建议
+---
+
+## 37. 完成后的人工 Git 操作建议
 
 以下操作由用户人工执行，不要求 Codex 自动执行：
 
 1. 查看变更：
 
-   git status
-   git diff
+```bash
+git status
+git diff
+```
 
 2. 运行测试：
 
-   pytest
+```bash
+pytest
+```
 
 3. 查看 CLI 帮助：
 
-   python -m scripts.run_price_monitor_10s --help
+```bash
+python -m scripts.run_price_monitor_10s --help
+```
 
 4. 人工确认没有 REST 最新价格轮询。
 
@@ -1258,10 +1326,9 @@ Codex 在本阶段禁止：
 
 7. 用户确认无问题后再提交：
 
-   git add .
-   git commit -m "完成 10s WebSocket 价格监控能力"
+```bash
+git add .
+git commit -m "完成 10s WebSocket 价格监控能力"
+```
 
 8. 用户自行推送分支，并进入代码审查流程。
-
-[1]: https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams "Connect | Binance Open Platform"
-[2]: https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Mark-Price-Stream "Mark Price Stream | Binance Open Platform"
