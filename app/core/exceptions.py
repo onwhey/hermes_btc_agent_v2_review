@@ -91,3 +91,27 @@ class RedisError(InfrastructureError):
     本类不负责 Redis 业务 key、价格监控、冷却逻辑或自动交易。
     """
 
+
+class AlertingError(ExternalServiceError):
+    """报警模块错误基类。
+
+    参数：`message` 描述报警模板、发送或记录失败的脱敏原因。
+    返回值：异常对象本身。
+    失败场景：报警事件非法、固定模板缺失、Hermes 发送失败或记录更新失败。
+    外部服务：本类本身不访问外部服务。
+    数据影响：本类不读写 MySQL，不读写 Redis，不发送 Hermes。
+    本类不负责生成交易建议、调用 DeepSeek、修复 K 线数据或自动交易。
+    """
+
+
+class HermesError(AlertingError):
+    """Hermes 发送错误。
+
+    参数：`message` 描述 Hermes webhook 调用失败的脱敏摘要。
+    返回值：异常对象本身。
+    失败场景：Hermes 配置缺失、超时、网络失败或响应异常。
+    外部服务：本类本身不访问外部服务。
+    数据影响：本类不读写 MySQL，不读写 Redis，不保存 channel_response。
+    本类不负责重试策略之外的补偿队列、DeepSeek 内容生成或自动交易。
+    """
+

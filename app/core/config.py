@@ -19,6 +19,10 @@ from app.core.constants import (
     APP_ENV_TEST,
     DEFAULT_APP_NAME,
     DEFAULT_BINANCE_BASE_URL,
+    DEFAULT_HERMES_DRY_RUN,
+    DEFAULT_HERMES_ENABLED,
+    DEFAULT_HERMES_MAX_RETRIES,
+    DEFAULT_HERMES_TIMEOUT_SECONDS,
     DEFAULT_LOG_LEVEL,
     DEFAULT_MYSQL_CHARSET,
     DEFAULT_MYSQL_MAX_OVERFLOW,
@@ -80,6 +84,10 @@ class AppSettings:
     binance_base_url: str = DEFAULT_BINANCE_BASE_URL
     hermes_webhook_url: str = ""
     hermes_secret: str = ""
+    hermes_timeout_seconds: float = DEFAULT_HERMES_TIMEOUT_SECONDS
+    hermes_max_retries: int = DEFAULT_HERMES_MAX_RETRIES
+    hermes_enabled: bool = DEFAULT_HERMES_ENABLED
+    hermes_dry_run: bool = DEFAULT_HERMES_DRY_RUN
 
     def redacted_dict(self) -> dict[str, object]:
         """返回脱敏后的配置字典。
@@ -330,6 +338,42 @@ def load_settings(
         ),
         hermes_webhook_url=_get_config_value(merged_values, "HERMES_WEBHOOK_URL"),
         hermes_secret=_get_config_value(merged_values, "HERMES_SECRET"),
+        hermes_timeout_seconds=_parse_float_config(
+            _get_config_value(
+                merged_values,
+                "HERMES_TIMEOUT_SECONDS",
+                str(DEFAULT_HERMES_TIMEOUT_SECONDS),
+            ),
+            "HERMES_TIMEOUT_SECONDS",
+            DEFAULT_HERMES_TIMEOUT_SECONDS,
+        ),
+        hermes_max_retries=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "HERMES_MAX_RETRIES",
+                str(DEFAULT_HERMES_MAX_RETRIES),
+            ),
+            "HERMES_MAX_RETRIES",
+            DEFAULT_HERMES_MAX_RETRIES,
+        ),
+        hermes_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "HERMES_ENABLED",
+                str(DEFAULT_HERMES_ENABLED).lower(),
+            ),
+            "HERMES_ENABLED",
+            DEFAULT_HERMES_ENABLED,
+        ),
+        hermes_dry_run=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "HERMES_DRY_RUN",
+                str(DEFAULT_HERMES_DRY_RUN).lower(),
+            ),
+            "HERMES_DRY_RUN",
+            DEFAULT_HERMES_DRY_RUN,
+        ),
     )
 
 
