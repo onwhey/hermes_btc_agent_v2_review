@@ -136,7 +136,7 @@
 
 异常路径：
 
-1. Python 版本低于 3.10 时，`collect_project_skeleton_errors()` 返回错误信息。
+1. Python 版本低于 3.11 时，`collect_project_skeleton_errors()` 返回错误信息。
 2. 关键目录缺失时，`collect_project_skeleton_errors()` 返回错误信息。
 3. 关键文件缺失时，`collect_project_skeleton_errors()` 返回错误信息。
 4. `app` 包无法导入时，`collect_project_skeleton_errors()` 捕获 `ImportError` 并返回错误信息。

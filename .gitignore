@@ -15,3 +15,7 @@ logs/*.txt
 
 !logs/.gitkeep
 
+.env.*
+!.env.example
+
+*.egg-info/

@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MINIMUM_PYTHON = (3, 10)
+MINIMUM_PYTHON = (3, 11)
 
 REQUIRED_DIRECTORIES = [
     "app",
