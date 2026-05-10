@@ -115,15 +115,15 @@ def _build_formatter() -> UtcFormatter:
 
 
 def _replace_sensitive_filters(
-    logger: logging.Logger,
+    filter_owner: logging.Logger | logging.Handler,
     sensitive_values: Iterable[str],
 ) -> None:
-    logger.filters = [
+    filter_owner.filters = [
         log_filter
-        for log_filter in logger.filters
+        for log_filter in filter_owner.filters
         if not isinstance(log_filter, SensitiveDataFilter)
     ]
-    logger.addFilter(SensitiveDataFilter(sensitive_values))
+    filter_owner.addFilter(SensitiveDataFilter(sensitive_values))
 
 
 def _has_handler(logger: logging.Logger, handler_key: str) -> bool:
@@ -178,6 +178,7 @@ def configure_logging(
     for handler in logger.handlers:
         handler.setLevel(logger.level)
         handler.setFormatter(formatter)
+        _replace_sensitive_filters(handler, sensitive_values)
 
     return logger
 
@@ -193,8 +194,11 @@ def get_logger(name: str | None = None) -> logging.Logger:
     本函数不负责连接基础设施、写业务表或自动交易。
     """
 
-    configure_logging()
+    logger = logging.getLogger(LOGGER_NAME)
+    if not logger.handlers:
+        configure_logging()
     if name:
-        return logging.getLogger(f"{LOGGER_NAME}.{name}")
-    return logging.getLogger(LOGGER_NAME)
-
+        child_logger = logging.getLogger(f"{LOGGER_NAME}.{name}")
+        child_logger.propagate = True
+        return child_logger
+    return logger
