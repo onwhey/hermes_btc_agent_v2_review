@@ -114,16 +114,22 @@ def _build_formatter() -> UtcFormatter:
     return UtcFormatter(fmt=LOG_FORMAT, datefmt=DATE_FORMAT)
 
 
-def _replace_sensitive_filters(
+def _remove_sensitive_filters(
     filter_owner: logging.Logger | logging.Handler,
-    sensitive_values: Iterable[str],
 ) -> None:
     filter_owner.filters = [
         log_filter
         for log_filter in filter_owner.filters
         if not isinstance(log_filter, SensitiveDataFilter)
     ]
-    filter_owner.addFilter(SensitiveDataFilter(sensitive_values))
+
+
+def _replace_sensitive_filters(
+    handler: logging.Handler,
+    sensitive_values: Iterable[str],
+) -> None:
+    _remove_sensitive_filters(handler)
+    handler.addFilter(SensitiveDataFilter(sensitive_values))
 
 
 def _has_handler(logger: logging.Logger, handler_key: str) -> bool:
@@ -155,12 +161,13 @@ def configure_logging(
 
     formatter = _build_formatter()
     sensitive_values = _collect_sensitive_values(active_settings)
-    _replace_sensitive_filters(logger, sensitive_values)
+    _remove_sensitive_filters(logger)
 
     if enable_console and not _has_handler(logger, "console"):
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(formatter)
         console_handler.setLevel(logger.level)
+        _replace_sensitive_filters(console_handler, sensitive_values)
         console_handler._hermes_handler_key = "console"  # type: ignore[attr-defined]
         logger.addHandler(console_handler)
 
@@ -172,6 +179,7 @@ def configure_logging(
             file_handler = logging.FileHandler(resolved_log_file, encoding="utf-8")
             file_handler.setFormatter(formatter)
             file_handler.setLevel(logger.level)
+            _replace_sensitive_filters(file_handler, sensitive_values)
             file_handler._hermes_handler_key = file_key  # type: ignore[attr-defined]
             logger.addHandler(file_handler)
 

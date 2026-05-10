@@ -1,0 +1,1694 @@
+From b509d1578419b4679c5ab3b7b44b25bdea15bcf3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=E7=8E=8B=E4=BB=8E=E9=91=AB?= <913994412@qq.com>
+Date: Sun, 10 May 2026 23:33:55 +0800
+Subject: [PATCH 1/2] 02_plans init
+
+---
+ .env.example                                  |   6 +-
+ app/core/__init__.py                          |  22 +-
+ app/core/config.py                            | 256 +++++++++++++++++
+ app/core/constants.py                         |  45 +++
+ app/core/exceptions.py                        |  57 ++++
+ app/core/logger.py                            | 200 ++++++++++++++
+ app/core/time_utils.py                        | 166 +++++++++++
+ docs/implementation/02_core_config_logging.md | 378 ++++++++++++++++++++++++++
+ scripts/check_core_config_logging.py          | 112 ++++++++
+ tests/test_core_config_logging.py             | 114 ++++++++
+ 10 files changed, 1351 insertions(+), 5 deletions(-)
+ create mode 100644 app/core/config.py
+ create mode 100644 app/core/constants.py
+ create mode 100644 app/core/exceptions.py
+ create mode 100644 app/core/logger.py
+ create mode 100644 app/core/time_utils.py
+ create mode 100644 docs/implementation/02_core_config_logging.md
+ create mode 100644 scripts/check_core_config_logging.py
+ create mode 100644 tests/test_core_config_logging.py
+
+diff --git a/.env.example b/.env.example
+index 1436a18..aa0c058 100644
+--- a/.env.example
++++ b/.env.example
+@@ -5,16 +5,16 @@ LOG_LEVEL=INFO
+ TIMEZONE=UTC
+ 
+ MYSQL_HOST=
+-MYSQL_PORT=
++MYSQL_PORT=3306
+ MYSQL_DATABASE=
+ MYSQL_USER=
+ MYSQL_PASSWORD=
+ 
+ REDIS_HOST=
+-REDIS_PORT=
++REDIS_PORT=6379
+ REDIS_PASSWORD=
+ 
+-BINANCE_BASE_URL=
++BINANCE_BASE_URL=https://fapi.binance.com
+ HERMES_WEBHOOK_URL=
+ HERMES_SECRET=
+ 
+diff --git a/app/core/__init__.py b/app/core/__init__.py
+index 41fd518..f65cba7 100644
+--- a/app/core/__init__.py
++++ b/app/core/__init__.py
+@@ -1,6 +1,24 @@
+ """核心基础能力包边界。
+ 
+-本包后续承载配置、日志、异常和时间工具。01 阶段只保留包结构，
+-不读取环境配置，不初始化日志，不访问外部服务，不读写 MySQL 或 Redis。
++本包承载配置读取、日志初始化、异常、常量和时间工具等基础能力。
++本包不访问外部服务，不连接 MySQL 或 Redis，不发送 Hermes，不调用 DeepSeek，
++不实现 K 线采集、策略建议、scheduler 或任何交易执行能力。
+ """
+ 
++from app.core.config import AppSettings, get_settings, load_settings
++from app.core.exceptions import AppError, ConfigError, ExternalServiceError, ValidationError
++from app.core.logger import configure_logging, get_logger
++
++__all__ = [
++    "AppError",
++    "AppSettings",
++    "ConfigError",
++    "ExternalServiceError",
++    "ValidationError",
++    "configure_logging",
++    "get_logger",
++    "get_settings",
++    "load_settings",
++]
++
++
+diff --git a/app/core/config.py b/app/core/config.py
+new file mode 100644
+index 0000000..6747068
+--- /dev/null
++++ b/app/core/config.py
+@@ -0,0 +1,256 @@
++"""统一配置读取模块。
++
++本文件属于 `app/core` 基础能力层，负责从 `.env` 和系统环境变量读取配置。
++本文件不负责建立 MySQL 或 Redis 连接，不请求 Binance，不发送 Hermes，
++不调用 DeepSeek，不实现 K 线采集、scheduler 或任何交易执行能力。
++主要被脚本入口、后续基础设施模块和测试调用。
++"""
++
++from __future__ import annotations
++
++import os
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Mapping
++
++from app.core.constants import (
++    APP_ENV_DEV,
++    APP_ENV_PROD,
++    APP_ENV_TEST,
++    DEFAULT_APP_NAME,
++    DEFAULT_BINANCE_BASE_URL,
++    DEFAULT_LOG_LEVEL,
++    DEFAULT_MYSQL_PORT,
++    DEFAULT_REDIS_PORT,
++    DEFAULT_TIMEZONE,
++    SENSITIVE_FIELD_NAMES,
++)
++from app.core.exceptions import ConfigError
++
++ROOT_DIR = Path(__file__).resolve().parents[2]
++DEFAULT_ENV_FILE = ROOT_DIR / ".env"
++ALLOWED_APP_ENVS = {APP_ENV_DEV, APP_ENV_TEST, APP_ENV_PROD}
++TRUE_VALUES = {"1", "true", "yes", "on"}
++FALSE_VALUES = {"0", "false", "no", "off"}
++
++_SETTINGS: AppSettings | None = None
++
++
++@dataclass(frozen=True, repr=False)
++class AppSettings:
++    """应用配置值对象。
++
++    参数：字段来自 `.env`、系统环境变量或安全默认值。
++    返回值：不可变配置对象。
++    失败场景：对象创建前由 `load_settings()` 完成类型转换与校验。
++    外部服务：本类不访问外部服务。
++    数据影响：本类不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本类不负责连接基础设施、校验真实服务可用性或自动交易。
++    """
++
++    app_name: str = DEFAULT_APP_NAME
++    app_env: str = APP_ENV_DEV
++    app_debug: bool = False
++    log_level: str = DEFAULT_LOG_LEVEL
++    timezone: str = DEFAULT_TIMEZONE
++    mysql_host: str = ""
++    mysql_port: int = DEFAULT_MYSQL_PORT
++    mysql_database: str = ""
++    mysql_user: str = ""
++    mysql_password: str = ""
++    redis_host: str = ""
++    redis_port: int = DEFAULT_REDIS_PORT
++    redis_password: str = ""
++    binance_base_url: str = DEFAULT_BINANCE_BASE_URL
++    hermes_webhook_url: str = ""
++    hermes_secret: str = ""
++
++    def redacted_dict(self) -> dict[str, object]:
++        """返回脱敏后的配置字典。
++
++        参数：无。
++        返回值：字典，敏感字段存在值时显示为 `***REDACTED***`。
++        失败场景：无预期失败场景。
++        外部服务：不访问外部服务。
++        数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++        本方法不负责输出日志或暴露完整配置。
++        """
++
++        result: dict[str, object] = {}
++        for field_name, value in self.__dict__.items():
++            if field_name in SENSITIVE_FIELD_NAMES and value:
++                result[field_name] = "***REDACTED***"
++            else:
++                result[field_name] = value
++        return result
++
++    def public_dict(self) -> dict[str, object]:
++        """返回允许展示的非敏感配置摘要。
++
++        参数：无。
++        返回值：只包含 `APP_NAME`、`APP_ENV`、`APP_DEBUG`、`LOG_LEVEL`、`TIMEZONE`。
++        失败场景：无预期失败场景。
++        外部服务：不访问外部服务。
++        数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++        本方法不负责打印 `.env` 或敏感字段。
++        """
++
++        return {
++            "APP_NAME": self.app_name,
++            "APP_ENV": self.app_env,
++            "APP_DEBUG": self.app_debug,
++            "LOG_LEVEL": self.log_level,
++            "TIMEZONE": self.timezone,
++        }
++
++    def __repr__(self) -> str:
++        return f"AppSettings({self.redacted_dict()!r})"
++
++
++def _parse_dotenv_line(raw_line: str, line_no: int) -> tuple[str, str] | None:
++    stripped = raw_line.strip()
++    if not stripped or stripped.startswith("#"):
++        return None
++    if "=" not in stripped:
++        raise ConfigError(f".env 第 {line_no} 行格式错误，必须使用 KEY=VALUE")
++
++    key, value = stripped.split("=", 1)
++    key = key.strip()
++    value = value.strip()
++    if not key:
++        raise ConfigError(f".env 第 {line_no} 行配置名为空")
++    if (value.startswith('"') and value.endswith('"')) or (
++        value.startswith("'") and value.endswith("'")
++    ):
++        value = value[1:-1]
++    return key, value
++
++
++def load_dotenv_values(env_file: Path | None = DEFAULT_ENV_FILE) -> dict[str, str]:
++    """读取 `.env` 文件中的键值对。
++
++    参数：`env_file` 是可选 `.env` 路径，传入 `None` 时跳过文件读取。
++    返回值：配置键值字典；文件不存在时返回空字典。
++    失败场景：文件行格式错误或读取失败时抛出 `ConfigError`。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本函数不负责把配置写入系统环境变量，也不打印配置内容。
++    """
++
++    if env_file is None or not env_file.exists():
++        return {}
++
++    try:
++        lines = env_file.read_text(encoding="utf-8").splitlines()
++    except OSError as exc:
++        raise ConfigError(f"无法读取 .env 文件：{env_file}") from exc
++
++    values: dict[str, str] = {}
++    for line_no, line in enumerate(lines, start=1):
++        parsed = _parse_dotenv_line(line, line_no)
++        if parsed is None:
++            continue
++        key, value = parsed
++        values[key] = value
++    return values
++
++
++def _get_config_value(values: Mapping[str, str], key: str, default: str = "") -> str:
++    return values.get(key, default).strip()
++
++
++def _parse_bool_config(raw_value: str, key: str) -> bool:
++    normalized = raw_value.strip().lower()
++    if normalized in TRUE_VALUES:
++        return True
++    if normalized in FALSE_VALUES:
++        return False
++    raise ConfigError(f"{key} 必须是布尔值：true/false/1/0/yes/no/on/off")
++
++
++def _parse_int_config(raw_value: str, key: str, default: int) -> int:
++    if raw_value.strip() == "":
++        return default
++    try:
++        return int(raw_value)
++    except ValueError as exc:
++        raise ConfigError(f"{key} 必须是整数") from exc
++
++
++def load_settings(
++    *,
++    env_file: Path | None = DEFAULT_ENV_FILE,
++    environ: Mapping[str, str] | None = None,
++) -> AppSettings:
++    """加载应用配置。
++
++    参数：`env_file` 是 `.env` 路径；`environ` 是可注入的环境变量映射。
++    返回值：`AppSettings` 配置对象。
++    失败场景：配置文件格式错误、布尔值或端口无法转换、运行环境非法。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes，不修改质量记录。
++    本函数只读取配置，不负责连接真实基础设施或自动交易。
++    """
++
++    merged_values = load_dotenv_values(env_file)
++    runtime_environ = os.environ if environ is None else environ
++    merged_values.update({key: value for key, value in runtime_environ.items()})
++
++    app_env = _get_config_value(merged_values, "APP_ENV", APP_ENV_DEV).lower()
++    if app_env not in ALLOWED_APP_ENVS:
++        allowed = ", ".join(sorted(ALLOWED_APP_ENVS))
++        raise ConfigError(f"APP_ENV 必须是以下值之一：{allowed}")
++
++    log_level = _get_config_value(merged_values, "LOG_LEVEL", DEFAULT_LOG_LEVEL).upper()
++
++    return AppSettings(
++        app_name=_get_config_value(merged_values, "APP_NAME", DEFAULT_APP_NAME),
++        app_env=app_env,
++        app_debug=_parse_bool_config(
++            _get_config_value(merged_values, "APP_DEBUG", "false"),
++            "APP_DEBUG",
++        ),
++        log_level=log_level,
++        timezone=_get_config_value(merged_values, "TIMEZONE", DEFAULT_TIMEZONE),
++        mysql_host=_get_config_value(merged_values, "MYSQL_HOST"),
++        mysql_port=_parse_int_config(
++            _get_config_value(merged_values, "MYSQL_PORT", str(DEFAULT_MYSQL_PORT)),
++            "MYSQL_PORT",
++            DEFAULT_MYSQL_PORT,
++        ),
++        mysql_database=_get_config_value(merged_values, "MYSQL_DATABASE"),
++        mysql_user=_get_config_value(merged_values, "MYSQL_USER"),
++        mysql_password=_get_config_value(merged_values, "MYSQL_PASSWORD"),
++        redis_host=_get_config_value(merged_values, "REDIS_HOST"),
++        redis_port=_parse_int_config(
++            _get_config_value(merged_values, "REDIS_PORT", str(DEFAULT_REDIS_PORT)),
++            "REDIS_PORT",
++            DEFAULT_REDIS_PORT,
++        ),
++        redis_password=_get_config_value(merged_values, "REDIS_PASSWORD"),
++        binance_base_url=_get_config_value(
++            merged_values,
++            "BINANCE_BASE_URL",
++            DEFAULT_BINANCE_BASE_URL,
++        ),
++        hermes_webhook_url=_get_config_value(merged_values, "HERMES_WEBHOOK_URL"),
++        hermes_secret=_get_config_value(merged_values, "HERMES_SECRET"),
++    )
++
++
++def get_settings(*, reload: bool = False) -> AppSettings:
++    """获取缓存的应用配置对象。
++
++    参数：`reload` 为 True 时重新读取 `.env` 与系统环境变量。
++    返回值：`AppSettings` 配置对象。
++    失败场景：同 `load_settings()`。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本函数不负责打印配置、连接基础设施或自动交易。
++    """
++
++    global _SETTINGS
++    if _SETTINGS is None or reload:
++        _SETTINGS = load_settings()
++    return _SETTINGS
++
+diff --git a/app/core/constants.py b/app/core/constants.py
+new file mode 100644
+index 0000000..b8b24d7
+--- /dev/null
++++ b/app/core/constants.py
+@@ -0,0 +1,45 @@
++"""核心常量模块。
++
++本文件属于 `app/core` 基础能力层，负责保存 02 阶段允许的通用常量。
++本文件不负责策略参数、交易参数、外部请求、数据库读写、Redis 读写、
++Hermes 发送、DeepSeek 调用或任何交易执行能力。
++主要被 `app/core/config.py`、测试和后续基础模块调用。
++"""
++
++from __future__ import annotations
++
++APP_ENV_DEV = "dev"
++APP_ENV_TEST = "test"
++APP_ENV_PROD = "prod"
++
++DEFAULT_APP_NAME = "hermes_btc_agent"
++DEFAULT_LOG_LEVEL = "INFO"
++DEFAULT_TIMEZONE = "UTC"
++DEFAULT_SYMBOL = "BTCUSDT"
++DEFAULT_INTERVAL = "4h"
++
++DEFAULT_MYSQL_PORT = 3306
++DEFAULT_REDIS_PORT = 6379
++DEFAULT_BINANCE_BASE_URL = "https://fapi.binance.com"
++
++LOG_DIR_NAME = "logs"
++DEFAULT_LOG_FILE_NAME = "app.log"
++
++SENSITIVE_FIELD_NAMES = frozenset(
++    {
++        "mysql_password",
++        "redis_password",
++        "hermes_webhook_url",
++        "hermes_secret",
++    }
++)
++
++SENSITIVE_TEXT_MARKERS = (
++    "password",
++    "secret",
++    "token",
++    "webhook",
++    "authorization",
++    "cookie",
++)
++
+diff --git a/app/core/exceptions.py b/app/core/exceptions.py
+new file mode 100644
+index 0000000..2887fc9
+--- /dev/null
++++ b/app/core/exceptions.py
+@@ -0,0 +1,57 @@
++"""核心异常模块。
++
++本文件属于 `app/core` 基础能力层，负责定义项目通用异常基类。
++本文件不负责 MySQL、Redis、Binance、Hermes、DeepSeek 或交易执行的具体逻辑。
++主要被后续业务模块、脚本入口和测试复用。
++"""
++
++from __future__ import annotations
++
++
++class AppError(Exception):
++    """项目异常基类。
++
++    参数：`message` 是面向开发和排查的脱敏错误摘要。
++    返回值：异常对象本身。
++    失败场景：由调用方在业务或基础能力失败时显式抛出。
++    外部服务：本类不访问外部服务。
++    数据影响：本类不读写 MySQL，不读写 Redis，不发送 Hermes，不修改质量记录。
++    本类不负责自动修复、自动重试或任何交易执行。
++    """
++
++
++class ConfigError(AppError):
++    """配置错误。
++
++    参数：`message` 描述缺失、非法或不可转换的配置项，不能包含敏感值。
++    返回值：异常对象本身。
++    失败场景：配置读取、类型转换或环境校验失败。
++    外部服务：本类不访问外部服务。
++    数据影响：本类不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本类不负责连接数据库、连接 Redis、请求外部接口或自动交易。
++    """
++
++
++class ValidationError(AppError):
++    """通用校验错误。
++
++    参数：`message` 描述校验失败原因，必须保持脱敏。
++    返回值：异常对象本身。
++    失败场景：基础字段、参数或调用前置条件不满足。
++    外部服务：本类不访问外部服务。
++    数据影响：本类不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本类不负责 K 线质量检查、策略判断或自动交易。
++    """
++
++
++class ExternalServiceError(AppError):
++    """外部服务错误基类。
++
++    参数：`message` 描述外部服务失败摘要，不能包含密钥、token 或 webhook。
++    返回值：异常对象本身。
++    失败场景：后续外部服务客户端可以用它包装超时、网络错误或响应异常。
++    外部服务：本类本身不访问外部服务。
++    数据影响：本类不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本类不负责重试、报警、数据库写入或自动交易。
++    """
++
+diff --git a/app/core/logger.py b/app/core/logger.py
+new file mode 100644
+index 0000000..98a8dce
+--- /dev/null
++++ b/app/core/logger.py
+@@ -0,0 +1,200 @@
++"""统一日志初始化模块。
++
++本文件属于 `app/core` 基础能力层，负责初始化项目 logger、控制日志级别、
++提供控制台与文件输出，并对敏感信息做基础脱敏。
++本文件不负责连接 MySQL、Redis、Binance 或 Hermes，不调用 DeepSeek，
++不写业务表，不实现 scheduler、K 线采集或任何交易执行能力。
++主要被脚本入口、后续基础设施模块和测试调用。
++"""
++
++from __future__ import annotations
++
++import logging
++import re
++import time
++from pathlib import Path
++from typing import Iterable
++
++from app.core.config import AppSettings, get_settings
++from app.core.constants import (
++    DEFAULT_LOG_FILE_NAME,
++    LOG_DIR_NAME,
++    SENSITIVE_FIELD_NAMES,
++    SENSITIVE_TEXT_MARKERS,
++)
++
++ROOT_DIR = Path(__file__).resolve().parents[2]
++DEFAULT_LOG_DIR = ROOT_DIR / LOG_DIR_NAME
++LOGGER_NAME = "hermes_btc_agent"
++LOG_FORMAT = "%(asctime)sZ %(levelname)s %(name)s %(message)s"
++DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
++
++
++class UtcFormatter(logging.Formatter):
++    """UTC 日志时间 formatter。
++
++    参数：同 `logging.Formatter`。
++    返回值：formatter 对象。
++    失败场景：格式字符串非法时由 logging 抛出异常。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本类不负责业务审计记录、数据库事件记录或自动交易。
++    """
++
++    converter = time.gmtime
++
++
++class SensitiveDataFilter(logging.Filter):
++    """日志敏感信息脱敏 filter。
++
++    参数：`sensitive_values` 是需要从日志消息中替换掉的实际敏感值集合。
++    返回值：filter 对象。
++    失败场景：无预期失败场景；异常由 logging 调用链处理。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本类只做日志文本脱敏，不负责配置读取、密钥管理或自动交易。
++    """
++
++    def __init__(self, sensitive_values: Iterable[str] = ()) -> None:
++        super().__init__()
++        self._sensitive_values = tuple(value for value in sensitive_values if value)
++
++    def filter(self, record: logging.LogRecord) -> bool:
++        message = record.getMessage()
++        record.msg = redact_sensitive_text(message, self._sensitive_values)
++        record.args = ()
++        return True
++
++
++def redact_sensitive_text(
++    message: str,
++    sensitive_values: Iterable[str] = (),
++) -> str:
++    """脱敏日志文本。
++
++    参数：`message` 是日志消息；`sensitive_values` 是必须隐藏的实际敏感值。
++    返回值：脱敏后的字符串。
++    失败场景：无预期失败场景。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本函数不负责打印日志或保存配置。
++    """
++
++    redacted = message
++    for value in sensitive_values:
++        if value:
++            redacted = redacted.replace(value, "***REDACTED***")
++
++    marker_pattern = "|".join(re.escape(marker) for marker in SENSITIVE_TEXT_MARKERS)
++    redacted = re.sub(
++        rf"(?i)\b({marker_pattern})\b(\s*[:=]\s*)([^,\s]+)",
++        r"\1\2***REDACTED***",
++        redacted,
++    )
++    return redacted
++
++
++def _collect_sensitive_values(settings: AppSettings) -> tuple[str, ...]:
++    values: list[str] = []
++    for field_name in SENSITIVE_FIELD_NAMES:
++        value = getattr(settings, field_name, "")
++        if isinstance(value, str) and value:
++            values.append(value)
++    return tuple(values)
++
++
++def _resolve_log_level(log_level: str) -> int:
++    level = getattr(logging, log_level.upper(), None)
++    if not isinstance(level, int):
++        return logging.INFO
++    return level
++
++
++def _build_formatter() -> UtcFormatter:
++    return UtcFormatter(fmt=LOG_FORMAT, datefmt=DATE_FORMAT)
++
++
++def _replace_sensitive_filters(
++    logger: logging.Logger,
++    sensitive_values: Iterable[str],
++) -> None:
++    logger.filters = [
++        log_filter
++        for log_filter in logger.filters
++        if not isinstance(log_filter, SensitiveDataFilter)
++    ]
++    logger.addFilter(SensitiveDataFilter(sensitive_values))
++
++
++def _has_handler(logger: logging.Logger, handler_key: str) -> bool:
++    return any(getattr(handler, "_hermes_handler_key", "") == handler_key for handler in logger.handlers)
++
++
++def configure_logging(
++    settings: AppSettings | None = None,
++    *,
++    enable_console: bool = True,
++    enable_file: bool = True,
++    log_file: Path | None = None,
++) -> logging.Logger:
++    """初始化项目 logger。
++
++    参数：`settings` 提供日志级别和敏感配置；`enable_console` / `enable_file`
++    控制输出目标；`log_file` 可覆盖默认日志文件路径。
++    返回值：已配置的 `logging.Logger`。
++    失败场景：日志目录或文件无法创建时由 Python 运行时抛出异常。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本函数不负责业务事件入库、Hermes 报警或自动交易。
++    """
++
++    active_settings = settings or get_settings()
++    logger = logging.getLogger(LOGGER_NAME)
++    logger.setLevel(_resolve_log_level(active_settings.log_level))
++    logger.propagate = False
++
++    formatter = _build_formatter()
++    sensitive_values = _collect_sensitive_values(active_settings)
++    _replace_sensitive_filters(logger, sensitive_values)
++
++    if enable_console and not _has_handler(logger, "console"):
++        console_handler = logging.StreamHandler()
++        console_handler.setFormatter(formatter)
++        console_handler.setLevel(logger.level)
++        console_handler._hermes_handler_key = "console"  # type: ignore[attr-defined]
++        logger.addHandler(console_handler)
++
++    if enable_file:
++        resolved_log_file = log_file or (DEFAULT_LOG_DIR / DEFAULT_LOG_FILE_NAME)
++        resolved_log_file.parent.mkdir(parents=True, exist_ok=True)
++        file_key = f"file:{resolved_log_file.resolve()}"
++        if not _has_handler(logger, file_key):
++            file_handler = logging.FileHandler(resolved_log_file, encoding="utf-8")
++            file_handler.setFormatter(formatter)
++            file_handler.setLevel(logger.level)
++            file_handler._hermes_handler_key = file_key  # type: ignore[attr-defined]
++            logger.addHandler(file_handler)
++
++    for handler in logger.handlers:
++        handler.setLevel(logger.level)
++        handler.setFormatter(formatter)
++
++    return logger
++
++
++def get_logger(name: str | None = None) -> logging.Logger:
++    """获取项目 logger。
++
++    参数：`name` 是可选子 logger 名称。
++    返回值：项目根 logger 或子 logger。
++    失败场景：配置读取失败时由 `get_settings()` 抛出异常。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本函数不负责连接基础设施、写业务表或自动交易。
++    """
++
++    configure_logging()
++    if name:
++        return logging.getLogger(f"{LOGGER_NAME}.{name}")
++    return logging.getLogger(LOGGER_NAME)
++
+diff --git a/app/core/time_utils.py b/app/core/time_utils.py
+new file mode 100644
+index 0000000..72fcf71
+--- /dev/null
++++ b/app/core/time_utils.py
+@@ -0,0 +1,166 @@
++"""UTC / PRC 时间工具模块。
++
++本文件属于 `app/core` 基础能力层，负责统一处理 UTC 与 PRC 时间转换。
++本文件不负责 K 线采集、数据库读写、Redis 读写、Hermes 发送、DeepSeek 调用
++或任何交易执行能力。主要被后续行情、提醒、日志和测试模块复用。
++"""
++
++from __future__ import annotations
++
++from datetime import datetime, timedelta, timezone
++from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
++
++UTC = timezone.utc
++DEFAULT_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
++
++
++def _build_prc_timezone() -> timezone | ZoneInfo:
++    """构建 PRC 时区对象。
++
++    参数：无。
++    返回值：优先返回 `ZoneInfo("Asia/Shanghai")`，系统缺少时区库时返回固定 offset。
++    失败场景：无预期失败场景。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本函数只为集中时间工具提供时区对象，不负责业务排序或自动交易。
++    """
++
++    try:
++        return ZoneInfo("Asia/Shanghai")
++    except ZoneInfoNotFoundError:
++        return timezone(timedelta(seconds=28800), name="Asia/Shanghai")
++
++
++PRC_TIME_ZONE = _build_prc_timezone()
++
++
++def now_utc() -> datetime:
++    """返回当前 UTC aware 时间。
++
++    参数：无。
++    返回值：`tzinfo=UTC` 的当前 datetime。
++    失败场景：系统时间不可用时由 Python 运行时抛出异常。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本函数不负责业务排序、K 线收盘判断或自动交易。
++    """
++
++    return datetime.now(tz=UTC)
++
++
++def now_prc() -> datetime:
++    """返回当前 PRC aware 时间。
++
++    参数：无。
++    返回值：`tzinfo=Asia/Shanghai` 的当前 datetime，仅用于展示和排查。
++    失败场景：系统时间不可用时由 Python 运行时抛出异常。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本函数不负责业务排序、K 线连续性判断或自动交易。
++    """
++
++    return now_utc().astimezone(PRC_TIME_ZONE)
++
++
++def utc_naive_to_prc_naive(value: datetime) -> datetime:
++    """将 UTC naive datetime 转为 PRC naive datetime。
++
++    参数：`value` 必须是不带 tzinfo 的 UTC datetime。
++    返回值：不带 tzinfo 的 PRC datetime，仅用于用户阅读、排查和展示。
++    失败场景：传入 aware datetime 时抛出 `ValueError`。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本函数不负责业务排序，PRC 结果不得用于 K 线连续性判断。
++    """
++
++    if value.tzinfo is not None:
++        raise ValueError("utc_naive_to_prc_naive 只接受 UTC naive datetime")
++    return value.replace(tzinfo=UTC).astimezone(PRC_TIME_ZONE).replace(tzinfo=None)
++
++
++def utc_aware_to_prc_aware(value: datetime) -> datetime:
++    """将 UTC aware datetime 转为 PRC aware datetime。
++
++    参数：`value` 必须是带 tzinfo 的 datetime，会先转换到 UTC 再转换到 PRC。
++    返回值：`tzinfo=Asia/Shanghai` 的 datetime。
++    失败场景：传入 naive datetime 时抛出 `ValueError`。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本函数不负责业务排序，PRC 结果不得用于 K 线连续性判断。
++    """
++
++    if value.tzinfo is None:
++        raise ValueError("utc_aware_to_prc_aware 只接受 aware datetime")
++    return value.astimezone(UTC).astimezone(PRC_TIME_ZONE)
++
++
++def timestamp_ms_to_utc_datetime(timestamp_ms: int) -> datetime:
++    """将毫秒时间戳转换为 UTC aware datetime。
++
++    参数：`timestamp_ms` 是以 UTC 为准的毫秒时间戳。
++    返回值：`tzinfo=UTC` 的 datetime。
++    失败场景：时间戳类型非法时由 Python 运行时抛出异常。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本函数不负责请求 Binance 或判断 K 线是否收盘。
++    """
++
++    return datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
++
++
++def utc_datetime_to_timestamp_ms(value: datetime) -> int:
++    """将 UTC datetime 转换为毫秒时间戳。
++
++    参数：`value` 是 UTC naive 或 aware datetime；naive 值按 UTC 解释。
++    返回值：整数毫秒时间戳。
++    失败场景：传入非 datetime 时由 Python 运行时抛出异常。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本函数不负责业务排序、K 线校验或自动交易。
++    """
++
++    if value.tzinfo is None:
++        value = value.replace(tzinfo=UTC)
++    else:
++        value = value.astimezone(UTC)
++    return int(value.timestamp() * 1000)
++
++
++def is_utc_datetime(value: datetime) -> bool:
++    """判断 datetime 是否为 UTC aware 时间。
++
++    参数：`value` 是待检查 datetime。
++    返回值：带 tzinfo 且 UTC offset 为 0 时返回 True，否则 False。
++    失败场景：传入非 datetime 时由 Python 运行时抛出异常。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本函数不负责转换时间或自动修复调用方数据。
++    """
++
++    return value.tzinfo is not None and value.utcoffset() == UTC.utcoffset(value)
++
++
++def format_datetime_with_timezone(
++    value: datetime,
++    *,
++    fmt: str = DEFAULT_DATETIME_FORMAT,
++) -> str:
++    """格式化 datetime 并显式标注时区。
++
++    参数：`value` 是待展示时间；`fmt` 是 `strftime` 格式。
++    返回值：带 `UTC`、`北京时间` 或 offset 标记的字符串。
++    失败场景：naive datetime 无法判断时区时抛出 `ValueError`。
++    外部服务：不访问外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本函数不负责生成业务提醒或策略建议。
++    """
++
++    if value.tzinfo is None:
++        raise ValueError("格式化带时区展示时必须传入 aware datetime")
++    if is_utc_datetime(value):
++        suffix = "UTC"
++    elif value.utcoffset() == PRC_TIME_ZONE.utcoffset(value):
++        suffix = "北京时间"
++    else:
++        suffix = value.strftime("%z")
++    return f"{value.strftime(fmt)} {suffix}"
+diff --git a/docs/implementation/02_core_config_logging.md b/docs/implementation/02_core_config_logging.md
+new file mode 100644
+index 0000000..406a9de
+--- /dev/null
++++ b/docs/implementation/02_core_config_logging.md
+@@ -0,0 +1,378 @@
++# 02 Core Config Logging 实现说明
++
++## 1. 功能：统一配置读取
++
++### 1.1 发起方式
++
++本功能由 Python 代码导入调用，不提供业务 CLI。
++
++本阶段人工检查入口为：
++
++    python -m scripts.check_core_config_logging
++
++### 1.2 入口文件
++
++`app/core/config.py`
++
++入口方法：
++
++`load_settings()`
++
++缓存入口：
++
++`get_settings()`
++
++### 1.3 核心调用链路
++
++    scripts/check_core_config_logging.py::main
++        ↓
++    scripts/check_core_config_logging.py::collect_core_config_logging_errors
++        ↓
++    app/core/config.py::load_settings
++        ↓
++    app/core/config.py::load_dotenv_values
++
++### 1.4 配置读取方式
++
++`app/core/config.py` 只在配置模块内部读取环境变量。
++
++读取顺序：
++
++1. 读取项目根目录 `.env`，如果不存在则跳过。
++2. 读取系统环境变量。
++3. 系统环境变量覆盖 `.env` 同名配置。
++4. 将基础字段转换为明确类型。
++5. 返回不可变 `AppSettings` 对象。
++
++本阶段支持配置项：
++
++- `APP_NAME`
++- `APP_ENV`
++- `APP_DEBUG`
++- `LOG_LEVEL`
++- `TIMEZONE`
++- `MYSQL_HOST`
++- `MYSQL_PORT`
++- `MYSQL_DATABASE`
++- `MYSQL_USER`
++- `MYSQL_PASSWORD`
++- `REDIS_HOST`
++- `REDIS_PORT`
++- `REDIS_PASSWORD`
++- `BINANCE_BASE_URL`
++- `HERMES_WEBHOOK_URL`
++- `HERMES_SECRET`
++
++配置边界：
++
++本功能不请求外部接口。
++本功能不读取数据库。
++本功能不写入数据库。
++本功能不读取 Redis。
++本功能不写入 Redis。
++本功能不发送 Hermes。
++本功能不调用 DeepSeek 或其他大模型。
++本功能不涉及 scheduler。
++本功能不涉及 `trigger_source`。
++本功能不涉及 `data_source`。
++
++## 2. 功能：统一日志初始化
++
++### 2.1 入口文件
++
++`app/core/logger.py`
++
++入口方法：
++
++`configure_logging()`
++
++辅助入口：
++
++`get_logger()`
++
++### 2.2 核心调用链路
++
++    scripts/check_core_config_logging.py::collect_core_config_logging_errors
++        ↓
++    app/core/logger.py::configure_logging
++        ↓
++    app/core/logger.py::redact_sensitive_text
++
++### 2.3 日志流程
++
++日志初始化流程：
++
++1. 调用 `configure_logging(settings)`。
++2. 根据 `settings.log_level` 设置日志级别。
++3. 使用 UTC 时间 formatter。
++4. 可启用控制台输出。
++5. 可启用文件输出到 `logs/app.log`。
++6. 日志目录不存在时安全创建。
++7. 重复调用不会重复添加同一个 handler。
++8. `SensitiveDataFilter` 对敏感文本做基础脱敏。
++
++敏感信息脱敏原则：
++
++- 不打印完整 `.env`。
++- 不打印完整 settings。
++- `AppSettings.__repr__()` 默认返回脱敏视图。
++- 日志 filter 会脱敏配置中已知敏感值。
++- 日志 filter 会脱敏 `password`、`secret`、`token`、`webhook`、`authorization`、`cookie` 等标记后的值。
++
++日志边界：
++
++本功能不请求外部接口。
++本功能不读取数据库。
++本功能不写入数据库。
++本功能不读取 Redis。
++本功能不写入 Redis。
++本功能不发送 Hermes。
++本功能不调用 DeepSeek 或其他大模型。
++本功能不替代 `collector_event_log`、`data_quality_check` 或 `alert_message`。
++
++## 3. 功能：UTC / PRC 时间工具
++
++### 3.1 入口文件
++
++`app/core/time_utils.py`
++
++主要方法：
++
++- `now_utc()`
++- `now_prc()`
++- `utc_naive_to_prc_naive()`
++- `utc_aware_to_prc_aware()`
++- `timestamp_ms_to_utc_datetime()`
++- `utc_datetime_to_timestamp_ms()`
++- `is_utc_datetime()`
++- `format_datetime_with_timezone()`
++
++### 3.2 核心调用链路
++
++    scripts/check_core_config_logging.py::collect_core_config_logging_errors
++        ↓
++    app/core/time_utils.py::now_utc
++        ↓
++    app/core/time_utils.py::now_prc
++        ↓
++    app/core/time_utils.py::utc_naive_to_prc_naive
++
++### 3.3 时间规则
++
++UTC 用于：
++
++- 后续 Binance 原始时间解释。
++- 后续 K 线排序。
++- 后续 K 线连续性判断。
++- 后续任务时间判断。
++
++PRC / 北京时间只用于：
++
++- 用户阅读。
++- 日志辅助展示。
++- 人工排查。
++- 必要展示字段。
++
++实现边界：
++
++- UTC 转 PRC 统一通过 `app/core/time_utils.py`。
++- 代码没有在业务模块中手写 `+ timedelta(hours=8)`。
++- Windows 或缺少系统时区数据库的环境下，`time_utils.py` 会在统一模块内部使用 PRC 固定时区 fallback，不要求业务代码自行处理时区偏移。
++- `utc_naive_to_prc_naive()` 已保留，供后续写入展示字段时复用。
++- PRC 结果不得作为业务排序或 K 线连续性判断依据。
++
++本功能不请求外部接口。
++本功能不读取数据库。
++本功能不写入数据库。
++本功能不读取 Redis。
++本功能不写入 Redis。
++本功能不发送 Hermes。
++
++## 4. 功能：基础异常与常量
++
++### 4.1 入口文件
++
++异常文件：
++
++`app/core/exceptions.py`
++
++常量文件：
++
++`app/core/constants.py`
++
++### 4.2 异常类
++
++本阶段定义：
++
++- `AppError`
++- `ConfigError`
++- `ValidationError`
++- `ExternalServiceError`
++
++本阶段未定义：
++
++- 交易执行异常。
++- 策略异常。
++- DeepSeek 异常。
++- K 线采集业务异常。
++- MySQL / Redis 具体连接异常。
++
++### 4.3 常量
++
++本阶段只定义基础常量：
++
++- 应用环境：`dev`、`test`、`prod`
++- 默认应用名
++- 默认日志级别
++- 默认时区
++- 默认交易对与周期占位
++- 基础端口默认值
++- 日志目录与日志文件名
++- 敏感字段与敏感文本标记
++
++本阶段未定义策略参数、止盈止损参数、仓位参数、交易信号参数或交易执行相关常量。
++
++## 5. 脚本入口
++
++脚本文件：
++
++`scripts/check_core_config_logging.py`
++
++入口方法：
++
++`main()`
++
++脚本只负责：
++
++1. 加载配置模块。
++2. 初始化 logger。
++3. 调用 UTC / PRC 时间工具。
++4. 实例化基础异常类。
++5. 输出检查结果与退出码。
++
++脚本不负责：
++
++- 不请求 Binance。
++- 不连接 MySQL。
++- 不连接 Redis。
++- 不发送 Hermes。
++- 不写数据库。
++- 不写 Redis。
++- 不创建业务表。
++- 不调用 DeepSeek。
++- 不触发 scheduler。
++- 不执行任何交易相关逻辑。
++
++## 6. 异常处理
++
++异常可能发生在：
++
++- `app/core/config.py::load_dotenv_values`
++- `app/core/config.py::load_settings`
++- `app/core/logger.py::configure_logging`
++- `app/core/time_utils.py::utc_naive_to_prc_naive`
++- `app/core/time_utils.py::utc_aware_to_prc_aware`
++- `scripts/check_core_config_logging.py::collect_core_config_logging_errors`
++
++异常路径：
++
++1. `.env` 行格式非法时，`load_dotenv_values()` 抛出 `ConfigError`。
++2. `APP_DEBUG` 不能转成布尔值时，`load_settings()` 抛出 `ConfigError`。
++3. `MYSQL_PORT` 或 `REDIS_PORT` 不能转成整数时，`load_settings()` 抛出 `ConfigError`。
++4. `APP_ENV` 不属于 `dev/test/prod` 时，`load_settings()` 抛出 `ConfigError`。
++5. 日志目录或文件无法创建时，`configure_logging()` 由 Python 运行时抛出异常。
++6. 时间工具收到不符合函数要求的 naive / aware datetime 时抛出 `ValueError`。
++7. 检查脚本捕获异常类型摘要并返回非 0 状态码。
++
++本阶段不写入事件日志。
++本阶段不发送 Hermes。
++本阶段不重试。
++本阶段不允许 `partial_success` 作为业务状态。
++本阶段不修改正式数据。
++本阶段不自动修复。
++
++## 7. 对应测试
++
++测试文件：
++
++`tests/test_core_config_logging.py`
++
++覆盖内容：
++
++- settings 默认值加载。
++- `APP_DEBUG` 布尔转换。
++- settings repr 脱敏。
++- logger 重复初始化不重复添加同一文件 handler。
++- 日志文本脱敏。
++- UTC / PRC 当前时间返回 aware datetime。
++- `utc_naive_to_prc_naive()` 转换正确。
++- aware UTC 转 PRC aware。
++- 毫秒时间戳与 UTC datetime 互转。
++- 基础异常类可实例化。
++- 检查脚本函数不访问外部服务且返回通过。
++
++测试类型：
++
++- 全部是本地单元测试。
++- 默认 `pytest` 不访问外部服务。
++- 默认 `pytest` 不连接真实 MySQL。
++- 默认 `pytest` 不连接真实 Redis。
++- 默认 `pytest` 不发送真实 Hermes。
++- 默认 `pytest` 不调用 DeepSeek。
++- 默认 `pytest` 不访问交易接口。
++
++本阶段没有集成测试开关。
++
++## 8. 人工运行检查
++
++建议按顺序运行：
++
++    python -m scripts.check_project_skeleton
++    python -m scripts.check_core_config_logging
++    python -m scripts.check_project_invariants
++    pytest
++
++这些命令都只做本地检查，不请求外部接口，不连接数据库，不连接 Redis，不发送 Hermes。
++
++## 9. 本阶段明确没有实现
++
++- 没有实现 03 及后续 plans。
++- 没有连接 MySQL。
++- 没有连接 Redis。
++- 没有请求 Binance。
++- 没有发送 Hermes。
++- 没有实现 K 线采集。
++- 没有实现 K 线回补。
++- 没有实现 K 线质量检查。
++- 没有实现 10s 价格监控。
++- 没有实现 scheduler。
++- 没有实现策略分析。
++- 没有实现 DeepSeek 或其他大模型调用。
++- 没有实现交易建议。
++- 没有实现自动交易相关任何能力。
++- 没有执行 Alembic migration。
++- 没有提交 `.env`、真实密钥或真实日志。
++
++## 10. 后续模块复用
++
++- `03_infra_mysql_redis.md`：复用配置、日志、异常、UTC / PRC 时间工具。
++- `04_alerting_through_hermes.md`：复用配置、日志、异常、时间展示和敏感信息脱敏原则。
++- `05_binance_rest_client.md`：复用配置、日志、异常和 UTC 时间工具。
++- `06_market_kline_4h.md`：复用 UTC / PRC 时间工具和基础异常。
++- `07_kline_quality_checker.md`：复用 UTC 时间判断和基础异常。
++- `08_4h_backfill.md`、`09_4h_incremental_collector.md`、`11_daily_kline_integrity_check.md`：复用配置、日志、异常与时间工具。
++- `10_price_monitor_10s.md`：复用配置、日志、异常与时间工具。
++
++## 11. 边界自检
++
++- 自动交易：未实现。
++- K 线数据来源：未实现采集，因此未写入任何 K 线。
++- manual_repair / human_edit / manual_input / system_repair：未作为代码能力实现。
++- REST / WebSocket 边界：未实现请求。
++- trigger_source / data_source：本阶段不涉及正式 K 线写入。
++- scripts 边界：检查脚本只做本地核心模块检查。
++- scheduler 边界：未实现 scheduler。
++- DeepSeek 调用边界：未调用。
++- Hermes 固定模板报警边界：未实现报警。
++- MySQL / Redis 边界：未连接、未读写。
++- 敏感信息提交：未提交真实密钥、真实日志或 `.env`。
+diff --git a/scripts/check_core_config_logging.py b/scripts/check_core_config_logging.py
+new file mode 100644
+index 0000000..b7a2bbe
+--- /dev/null
++++ b/scripts/check_core_config_logging.py
+@@ -0,0 +1,112 @@
++"""02 核心配置、日志、时间工具检查入口。
++
++触发方式：用户手动执行 `python -m scripts.check_core_config_logging`。
++是否允许用户手动执行：允许。
++是否允许 scheduler 调用：本阶段不需要也不允许作为 scheduler 任务。
++必须参数：无。
++调用的 app service：无，只调用 `app.core` 基础模块。
++不负责：不实现业务流程、不采集行情、不检查 K 线连续性、不修复数据。
++数据库影响：不连接 MySQL，不创建表，不写入数据。
++Redis 影响：不连接 Redis，不读取或写入 key。
++Hermes 影响：不发送 Hermes，不生成提醒记录。
++正式 K 线影响：不读取、不写入、不修改正式 K 线表。
++自动修复：不允许。
++自动交易：不允许。
++"""
++
++from __future__ import annotations
++
++from datetime import datetime
++
++from app.core.config import load_settings
++from app.core.exceptions import AppError, ConfigError, ExternalServiceError, ValidationError
++from app.core.logger import configure_logging
++from app.core.time_utils import now_prc, now_utc, utc_naive_to_prc_naive
++
++
++def collect_core_config_logging_errors() -> list[str]:
++    """检查 02 阶段核心模块是否可用。
++
++    参数：无。
++    返回值：错误信息列表，空列表表示检查通过。
++    失败场景：配置加载失败、logger 初始化失败、时间工具不可调用或异常类不可实例化。
++    外部服务：不访问任何外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes，不修改数据质量记录。
++    本方法不负责业务校验、K 线校验、数据库迁移或自动交易。
++    """
++
++    errors: list[str] = []
++
++    try:
++        settings = load_settings()
++    except Exception as exc:  # noqa: BLE001 - 检查脚本需要汇总错误返回码。
++        errors.append(f"配置模块加载失败：{type(exc).__name__}")
++        return errors
++
++    try:
++        logger = configure_logging(settings, enable_file=False)
++        logger.info("core config logging check initialized")
++    except Exception as exc:  # noqa: BLE001 - 检查脚本需要汇总错误返回码。
++        errors.append(f"logger 初始化失败：{type(exc).__name__}")
++
++    try:
++        utc_now = now_utc()
++        prc_now = now_prc()
++        converted = utc_naive_to_prc_naive(datetime(2026, 1, 1, 0, 0, 0))
++        if utc_now.tzinfo is None:
++            errors.append("now_utc 返回了 naive datetime")
++        if prc_now.tzinfo is None:
++            errors.append("now_prc 返回了 naive datetime")
++        if converted.tzinfo is not None:
++            errors.append("utc_naive_to_prc_naive 应返回 naive datetime")
++    except Exception as exc:  # noqa: BLE001 - 检查脚本需要汇总错误返回码。
++        errors.append(f"时间工具检查失败：{type(exc).__name__}")
++
++    for error_class in (AppError, ConfigError, ValidationError, ExternalServiceError):
++        try:
++            error_class("check")
++        except Exception as exc:  # noqa: BLE001 - 检查脚本需要汇总错误返回码。
++            errors.append(f"异常类不可实例化：{error_class.__name__} -> {type(exc).__name__}")
++
++    return errors
++
++
++def print_core_config_logging_report(errors: list[str]) -> None:
++    """输出核心模块检查结果。
++
++    参数：`errors` 是 `collect_core_config_logging_errors` 返回的错误列表。
++    返回值：无。
++    失败场景：标准输出不可用时由 Python 运行时抛出异常。
++    外部服务：不访问任何外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
++    本方法不负责创建缺失文件或自动修复配置。
++    """
++
++    if errors:
++        print("核心配置日志检查失败：")
++        for error in errors:
++            print(f"- {error}")
++        return
++
++    print("核心配置日志检查通过。")
++
++
++def main() -> int:
++    """脚本入口函数。
++
++    参数：无命令行参数。
++    返回值：检查通过返回 0，检查失败返回 1。
++    失败场景：配置、日志、时间工具或异常类检查失败。
++    外部服务：不访问任何外部服务。
++    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes，不修改正式数据。
++    本入口不负责业务采集、scheduler 调度、数据修复或自动交易。
++    """
++
++    errors = collect_core_config_logging_errors()
++    print_core_config_logging_report(errors)
++    return 1 if errors else 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
++
+diff --git a/tests/test_core_config_logging.py b/tests/test_core_config_logging.py
+new file mode 100644
+index 0000000..c7594fe
+--- /dev/null
++++ b/tests/test_core_config_logging.py
+@@ -0,0 +1,114 @@
++from __future__ import annotations
++
++from datetime import datetime, timezone
++
++from app.core.config import AppSettings, load_settings
++from app.core.exceptions import AppError, ConfigError, ExternalServiceError, ValidationError
++from app.core.logger import configure_logging, redact_sensitive_text
++from app.core.time_utils import (
++    PRC_TIME_ZONE,
++    now_prc,
++    now_utc,
++    timestamp_ms_to_utc_datetime,
++    utc_aware_to_prc_aware,
++    utc_datetime_to_timestamp_ms,
++    utc_naive_to_prc_naive,
++)
++from scripts.check_core_config_logging import collect_core_config_logging_errors
++
++
++def test_settings_can_load_with_defaults_without_external_services() -> None:
++    settings = load_settings(env_file=None, environ={})
++
++    assert settings.app_name == "hermes_btc_agent"
++    assert settings.app_env == "dev"
++    assert settings.app_debug is False
++    assert settings.log_level == "INFO"
++
++
++def test_app_debug_can_be_converted_from_environment() -> None:
++    settings = load_settings(env_file=None, environ={"APP_DEBUG": "true"})
++
++    assert settings.app_debug is True
++
++
++def test_settings_repr_redacts_sensitive_values() -> None:
++    settings = load_settings(
++        env_file=None,
++        environ={
++            "MYSQL_PASSWORD": "mysql-secret",
++            "HERMES_SECRET": "hermes-secret",
++            "HERMES_WEBHOOK_URL": "https://example.invalid/private",
++        },
++    )
++
++    rendered = repr(settings)
++
++    assert "mysql-secret" not in rendered
++    assert "hermes-secret" not in rendered
++    assert "https://example.invalid/private" not in rendered
++
++
++def test_logger_repeated_initialization_does_not_duplicate_same_file_handler(tmp_path) -> None:
++    settings = AppSettings(log_level="INFO")
++    log_file = tmp_path / "app.log"
++
++    logger = configure_logging(settings, enable_console=False, enable_file=True, log_file=log_file)
++    configure_logging(settings, enable_console=False, enable_file=True, log_file=log_file)
++
++    matching_handlers = [
++        handler
++        for handler in logger.handlers
++        if getattr(handler, "_hermes_handler_key", "") == f"file:{log_file.resolve()}"
++    ]
++
++    assert len(matching_handlers) == 1
++
++
++def test_logger_redacts_sensitive_text() -> None:
++    message = redact_sensitive_text(
++        "password=abc secret:xyz webhook=https://example.invalid/hook",
++        sensitive_values=("abc", "xyz"),
++    )
++
++    assert "abc" not in message
++    assert "xyz" not in message
++    assert "https://example.invalid/hook" not in message
++    assert "***REDACTED***" in message
++
++
++def test_utc_and_prc_now_return_aware_datetimes() -> None:
++    assert now_utc().tzinfo is not None
++    assert now_prc().tzinfo is not None
++
++
++def test_utc_naive_to_prc_naive_converts_correctly() -> None:
++    source = datetime(2026, 1, 1, 0, 0, 0)
++    expected = source.replace(tzinfo=timezone.utc).astimezone(PRC_TIME_ZONE).replace(tzinfo=None)
++
++    assert utc_naive_to_prc_naive(source) == expected
++
++
++def test_utc_aware_to_prc_aware_converts_correctly() -> None:
++    source = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
++    converted = utc_aware_to_prc_aware(source)
++
++    assert converted.tzinfo is not None
++    assert converted.utcoffset() == PRC_TIME_ZONE.utcoffset(converted)
++
++
++def test_millisecond_timestamp_and_utc_datetime_round_trip() -> None:
++    source = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
++    timestamp_ms = utc_datetime_to_timestamp_ms(source)
++
++    assert timestamp_ms_to_utc_datetime(timestamp_ms) == source
++
++
++def test_core_exceptions_can_be_instantiated() -> None:
++    for error_class in (AppError, ConfigError, ValidationError, ExternalServiceError):
++        assert str(error_class("message")) == "message"
++
++
++def test_core_config_logging_check_passes_without_external_services() -> None:
++    assert collect_core_config_logging_errors() == []
++
+-- 
+2.15.0.windows.1
+
+
+From 34a377706db6fe0c96be4ab8052cb3d0fed75092 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=E7=8E=8B=E4=BB=8E=E9=91=AB?= <913994412@qq.com>
+Date: Mon, 11 May 2026 00:46:05 +0800
+Subject: [PATCH 2/2] debug
+
+---
+ app/core/logger.py                |  20 +++---
+ tests/test_core_config_logging.py | 137 ++++++++++++++++++++++++++++++++++----
+ 2 files changed, 137 insertions(+), 20 deletions(-)
+
+diff --git a/app/core/logger.py b/app/core/logger.py
+index 98a8dce..d2de58e 100644
+--- a/app/core/logger.py
++++ b/app/core/logger.py
+@@ -115,15 +115,15 @@ def _build_formatter() -> UtcFormatter:
+ 
+ 
+ def _replace_sensitive_filters(
+-    logger: logging.Logger,
++    filter_owner: logging.Logger | logging.Handler,
+     sensitive_values: Iterable[str],
+ ) -> None:
+-    logger.filters = [
++    filter_owner.filters = [
+         log_filter
+-        for log_filter in logger.filters
++        for log_filter in filter_owner.filters
+         if not isinstance(log_filter, SensitiveDataFilter)
+     ]
+-    logger.addFilter(SensitiveDataFilter(sensitive_values))
++    filter_owner.addFilter(SensitiveDataFilter(sensitive_values))
+ 
+ 
+ def _has_handler(logger: logging.Logger, handler_key: str) -> bool:
+@@ -178,6 +178,7 @@ def configure_logging(
+     for handler in logger.handlers:
+         handler.setLevel(logger.level)
+         handler.setFormatter(formatter)
++        _replace_sensitive_filters(handler, sensitive_values)
+ 
+     return logger
+ 
+@@ -193,8 +194,11 @@ def get_logger(name: str | None = None) -> logging.Logger:
+     本函数不负责连接基础设施、写业务表或自动交易。
+     """
+ 
+-    configure_logging()
++    logger = logging.getLogger(LOGGER_NAME)
++    if not logger.handlers:
++        configure_logging()
+     if name:
+-        return logging.getLogger(f"{LOGGER_NAME}.{name}")
+-    return logging.getLogger(LOGGER_NAME)
+-
++        child_logger = logging.getLogger(f"{LOGGER_NAME}.{name}")
++        child_logger.propagate = True
++        return child_logger
++    return logger
+diff --git a/tests/test_core_config_logging.py b/tests/test_core_config_logging.py
+index c7594fe..c42cb97 100644
+--- a/tests/test_core_config_logging.py
++++ b/tests/test_core_config_logging.py
+@@ -1,10 +1,17 @@
+ from __future__ import annotations
+ 
++import logging
+ from datetime import datetime, timezone
+ 
+ from app.core.config import AppSettings, load_settings
+ from app.core.exceptions import AppError, ConfigError, ExternalServiceError, ValidationError
+-from app.core.logger import configure_logging, redact_sensitive_text
++from app.core.logger import (
++    LOGGER_NAME,
++    SensitiveDataFilter,
++    configure_logging,
++    get_logger,
++    redact_sensitive_text,
++)
+ from app.core.time_utils import (
+     PRC_TIME_ZONE,
+     now_prc,
+@@ -17,6 +24,21 @@ from app.core.time_utils import (
+ from scripts.check_core_config_logging import collect_core_config_logging_errors
+ 
+ 
++def _remove_handlers_by_key(logger, handler_key: str) -> None:
++    for handler in list(logger.handlers):
++        if getattr(handler, "_hermes_handler_key", "") == handler_key:
++            logger.removeHandler(handler)
++            handler.close()
++
++
++def _count_sensitive_filters(filter_owner) -> int:
++    return sum(
++        1
++        for log_filter in filter_owner.filters
++        if isinstance(log_filter, SensitiveDataFilter)
++    )
++
++
+ def test_settings_can_load_with_defaults_without_external_services() -> None:
+     settings = load_settings(env_file=None, environ={})
+ 
+@@ -50,19 +72,111 @@ def test_settings_repr_redacts_sensitive_values() -> None:
+ 
+ 
+ def test_logger_repeated_initialization_does_not_duplicate_same_file_handler(tmp_path) -> None:
+-    settings = AppSettings(log_level="INFO")
++    settings = AppSettings(log_level="INFO", mysql_password="old-mysql-secret")
++    updated_settings = AppSettings(log_level="INFO", mysql_password="new-mysql-secret")
+     log_file = tmp_path / "app.log"
++    handler_key = f"file:{log_file.resolve()}"
+ 
+     logger = configure_logging(settings, enable_console=False, enable_file=True, log_file=log_file)
+-    configure_logging(settings, enable_console=False, enable_file=True, log_file=log_file)
+-
+-    matching_handlers = [
+-        handler
+-        for handler in logger.handlers
+-        if getattr(handler, "_hermes_handler_key", "") == f"file:{log_file.resolve()}"
+-    ]
+-
+-    assert len(matching_handlers) == 1
++    try:
++        configure_logging(
++            updated_settings,
++            enable_console=False,
++            enable_file=True,
++            log_file=log_file,
++        )
++
++        matching_handlers = [
++            handler
++            for handler in logger.handlers
++            if getattr(handler, "_hermes_handler_key", "") == handler_key
++        ]
++
++        assert len(matching_handlers) == 1
++        assert _count_sensitive_filters(matching_handlers[0]) == 1
++
++        sub_logger = get_logger("child")
++        sub_logger.info("mysql_value=%s", updated_settings.mysql_password)
++        matching_handlers[0].flush()
++
++        content = log_file.read_text(encoding="utf-8")
++        assert "new-mysql-secret" not in content
++        assert "***REDACTED***" in content
++    finally:
++        _remove_handlers_by_key(logger, handler_key)
++
++
++def test_sub_logger_file_and_console_output_redacts_sensitive_values(
++    tmp_path,
++    capsys,
++) -> None:
++    settings = AppSettings(
++        log_level="INFO",
++        mysql_password="mysql-secret",
++        hermes_secret="hermes-secret",
++        hermes_webhook_url="https://example.invalid/hook",
++    )
++    log_file = tmp_path / "submodule.log"
++    handler_key = f"file:{log_file.resolve()}"
++    project_logger = logging.getLogger(LOGGER_NAME)
++    _remove_handlers_by_key(project_logger, "console")
++
++    root_logger = configure_logging(
++        settings,
++        enable_console=True,
++        enable_file=True,
++        log_file=log_file,
++    )
++    try:
++        file_handlers = [
++            handler
++            for handler in root_logger.handlers
++            if getattr(handler, "_hermes_handler_key", "") == handler_key
++        ]
++        console_handlers = [
++            handler
++            for handler in root_logger.handlers
++            if getattr(handler, "_hermes_handler_key", "") == "console"
++        ]
++        assert len(file_handlers) == 1
++        assert len(console_handlers) == 1
++        assert _count_sensitive_filters(file_handlers[0]) == 1
++        assert _count_sensitive_filters(console_handlers[0]) == 1
++
++        sub_logger = get_logger("child")
++
++        sub_logger.info(
++            (
++                "mysql_password=%s hermes_secret=%s hermes_webhook_url=%s "
++                "password=abc webhook=https://example.invalid/hook"
++            ),
++            settings.mysql_password,
++            settings.hermes_secret,
++            settings.hermes_webhook_url,
++        )
++        for handler in root_logger.handlers:
++            handler.flush()
++
++        content = log_file.read_text(encoding="utf-8")
++        captured = capsys.readouterr()
++        console_content = captured.out + captured.err
++
++        assert "mysql_password=" in content
++        assert "hermes_secret=" in content
++        assert "mysql-secret" not in content
++        assert "hermes-secret" not in content
++        assert "abc" not in content
++        assert "https://example.invalid/hook" not in content
++        assert "***REDACTED***" in content
++
++        assert "mysql-secret" not in console_content
++        assert "hermes-secret" not in console_content
++        assert "abc" not in console_content
++        assert "https://example.invalid/hook" not in console_content
++        assert "***REDACTED***" in console_content
++    finally:
++        _remove_handlers_by_key(root_logger, handler_key)
++        _remove_handlers_by_key(root_logger, "console")
+ 
+ 
+ def test_logger_redacts_sensitive_text() -> None:
+@@ -111,4 +225,3 @@ def test_core_exceptions_can_be_instantiated() -> None:
+ 
+ def test_core_config_logging_check_passes_without_external_services() -> None:
+     assert collect_core_config_logging_errors() == []
+-
+-- 
+2.15.0.windows.1
+

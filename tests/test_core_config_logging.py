@@ -179,6 +179,48 @@ def test_sub_logger_file_and_console_output_redacts_sensitive_values(
         _remove_handlers_by_key(root_logger, "console")
 
 
+def test_sub_logger_file_output_redacts_sensitive_values_through_real_chain(tmp_path) -> None:
+    settings = AppSettings(
+        log_level="INFO",
+        mysql_password="mysql-secret",
+        hermes_secret="hermes-secret",
+        hermes_webhook_url="https://example.invalid/hook",
+    )
+    log_file = tmp_path / "app.log"
+    handler_key = f"file:{log_file.resolve()}"
+
+    root_logger = configure_logging(
+        settings,
+        enable_console=False,
+        enable_file=True,
+        log_file=log_file,
+    )
+    try:
+        sub_logger = get_logger("child")
+        sub_logger.info(
+            (
+                "mysql=%s hermes=%s webhook_url=%s "
+                "password=abc webhook=https://example.invalid/hook"
+            ),
+            settings.mysql_password,
+            settings.hermes_secret,
+            settings.hermes_webhook_url,
+        )
+        for handler in root_logger.handlers:
+            handler.flush()
+
+        content = log_file.read_text(encoding="utf-8")
+
+        assert "mysql-secret" not in content
+        assert "hermes-secret" not in content
+        assert "https://example.invalid/hook" not in content
+        assert "password=abc" not in content
+        assert "webhook=https://example.invalid/hook" not in content
+        assert "***REDACTED***" in content
+    finally:
+        _remove_handlers_by_key(root_logger, handler_key)
+
+
 def test_logger_redacts_sensitive_text() -> None:
     message = redact_sensitive_text(
         "password=abc secret:xyz webhook=https://example.invalid/hook",
