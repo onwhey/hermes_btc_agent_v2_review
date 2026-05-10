@@ -25,6 +25,13 @@ Codex 或其他 AI 编程助手开发前必须按顺序阅读：
 6. 相关 `docs/architecture/*.md`
 7. 前序阶段的 `docs/implementation/*.md`
 
+## Runtime
+
+- Python: 3.11.x
+- Package management: `pyproject.toml`
+- Virtual environment: project-local `.venv`
+- Do not reuse Hermes internal virtual environment.
+
 ## 文档目录
 
 ```text
@@ -51,6 +58,20 @@ docs/implementation/ 每个模块完成后的实现说明
 10_price_monitor_10s.md
 11_daily_kline_integrity_check.md
 ```
+
+## 01 项目骨架本地检查
+
+第一阶段只建立项目骨架，不实现业务能力。
+
+本地检查命令：
+
+```bash
+python -m scripts.check_project_skeleton
+python -m scripts.check_project_invariants
+pytest
+```
+
+上述命令只做本地文件、包导入和规则文本检查，不连接真实 MySQL，不连接真实 Redis，不请求 Binance，不发送 Hermes。
 
 ## Git 工作方式
 

@@ -658,7 +658,20 @@ Codex 禁止：
 
 ---
 
-## 32. 文档冲突处理规则
+## 32. Python 运行环境铁律
+
+1. 本项目统一使用 Python 3.11.x。
+2. 开发环境、测试环境、生产环境应使用同一 Python 主版本和次版本系列。
+3. `pyproject.toml` 必须声明 `requires-python = ">=3.11,<3.12"`。
+4. 不得使用 Python 3.12 或更高版本专属语法。
+5. 不得使用 Python 3.10 或更低版本作为生产运行环境。
+6. 本项目必须使用独立虚拟环境，不得复用 Hermes 自身 venv。
+7. 不得依赖系统全局 Python 包。
+8. 新增依赖必须写入 `pyproject.toml`。
+
+---
+
+## 33. 文档冲突处理规则
 
 如果 requirements、architecture、decisions、plans、implementation 之间发生冲突：
 
