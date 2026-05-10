@@ -1,6 +1,12 @@
-"""U 本位公开行情接入子包边界。
+"""Binance USD-M Futures public market-data package boundary.
 
-本包后续只允许放公开行情相关客户端。01 阶段只保留包结构，
-不实现 REST 或 WebSocket 请求，不包含任何交易执行接口。
+Phase 05 exposes only public REST market-data helpers. This package does not
+provide API-key signing, private endpoints, WebSocket, database writes, Redis
+writes, Hermes sending, DeepSeek calls, or trading execution.
 """
+
+from app.exchange.binance.rest_client import BinanceRestClient
+from app.exchange.binance.types import BinanceServerTime
+
+__all__ = ["BinanceRestClient", "BinanceServerTime"]
 

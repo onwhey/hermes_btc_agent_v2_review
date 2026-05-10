@@ -19,6 +19,12 @@ from app.core.constants import (
     APP_ENV_TEST,
     DEFAULT_APP_NAME,
     DEFAULT_BINANCE_BASE_URL,
+    DEFAULT_BINANCE_KLINE_DEFAULT_LIMIT,
+    DEFAULT_BINANCE_KLINE_MAX_LIMIT,
+    DEFAULT_BINANCE_MAX_RETRIES,
+    DEFAULT_BINANCE_RETRY_BACKOFF_SECONDS,
+    DEFAULT_BINANCE_TIMEOUT_SECONDS,
+    DEFAULT_INTERVAL,
     DEFAULT_HERMES_DRY_RUN,
     DEFAULT_HERMES_ENABLED,
     DEFAULT_HERMES_MAX_RETRIES,
@@ -34,6 +40,7 @@ from app.core.constants import (
     DEFAULT_REDIS_DECODE_RESPONSES,
     DEFAULT_REDIS_PORT,
     DEFAULT_REDIS_SOCKET_TIMEOUT,
+    DEFAULT_SYMBOL,
     DEFAULT_TIMEZONE,
     SENSITIVE_FIELD_NAMES,
 )
@@ -82,6 +89,13 @@ class AppSettings:
     redis_socket_timeout: float = DEFAULT_REDIS_SOCKET_TIMEOUT
     redis_decode_responses: bool = DEFAULT_REDIS_DECODE_RESPONSES
     binance_base_url: str = DEFAULT_BINANCE_BASE_URL
+    binance_timeout_seconds: float = DEFAULT_BINANCE_TIMEOUT_SECONDS
+    binance_max_retries: int = DEFAULT_BINANCE_MAX_RETRIES
+    binance_retry_backoff_seconds: float = DEFAULT_BINANCE_RETRY_BACKOFF_SECONDS
+    binance_default_symbol: str = DEFAULT_SYMBOL
+    binance_default_interval: str = DEFAULT_INTERVAL
+    binance_kline_default_limit: int = DEFAULT_BINANCE_KLINE_DEFAULT_LIMIT
+    binance_kline_max_limit: int = DEFAULT_BINANCE_KLINE_MAX_LIMIT
     hermes_webhook_url: str = ""
     hermes_secret: str = ""
     hermes_timeout_seconds: float = DEFAULT_HERMES_TIMEOUT_SECONDS
@@ -335,6 +349,61 @@ def load_settings(
             merged_values,
             "BINANCE_BASE_URL",
             DEFAULT_BINANCE_BASE_URL,
+        ),
+        binance_timeout_seconds=_parse_float_config(
+            _get_config_value(
+                merged_values,
+                "BINANCE_TIMEOUT_SECONDS",
+                str(DEFAULT_BINANCE_TIMEOUT_SECONDS),
+            ),
+            "BINANCE_TIMEOUT_SECONDS",
+            DEFAULT_BINANCE_TIMEOUT_SECONDS,
+        ),
+        binance_max_retries=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "BINANCE_MAX_RETRIES",
+                str(DEFAULT_BINANCE_MAX_RETRIES),
+            ),
+            "BINANCE_MAX_RETRIES",
+            DEFAULT_BINANCE_MAX_RETRIES,
+        ),
+        binance_retry_backoff_seconds=_parse_float_config(
+            _get_config_value(
+                merged_values,
+                "BINANCE_RETRY_BACKOFF_SECONDS",
+                str(DEFAULT_BINANCE_RETRY_BACKOFF_SECONDS),
+            ),
+            "BINANCE_RETRY_BACKOFF_SECONDS",
+            DEFAULT_BINANCE_RETRY_BACKOFF_SECONDS,
+        ),
+        binance_default_symbol=_get_config_value(
+            merged_values,
+            "BINANCE_DEFAULT_SYMBOL",
+            DEFAULT_SYMBOL,
+        ),
+        binance_default_interval=_get_config_value(
+            merged_values,
+            "BINANCE_DEFAULT_INTERVAL",
+            DEFAULT_INTERVAL,
+        ),
+        binance_kline_default_limit=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "BINANCE_KLINE_DEFAULT_LIMIT",
+                str(DEFAULT_BINANCE_KLINE_DEFAULT_LIMIT),
+            ),
+            "BINANCE_KLINE_DEFAULT_LIMIT",
+            DEFAULT_BINANCE_KLINE_DEFAULT_LIMIT,
+        ),
+        binance_kline_max_limit=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "BINANCE_KLINE_MAX_LIMIT",
+                str(DEFAULT_BINANCE_KLINE_MAX_LIMIT),
+            ),
+            "BINANCE_KLINE_MAX_LIMIT",
+            DEFAULT_BINANCE_KLINE_MAX_LIMIT,
         ),
         hermes_webhook_url=_get_config_value(merged_values, "HERMES_WEBHOOK_URL"),
         hermes_secret=_get_config_value(merged_values, "HERMES_SECRET"),
