@@ -19,3 +19,6 @@ logs/*.txt
 !.env.example
 
 *.egg-info/
+review_*.patch
+review_*_status.txt
+review_*_stat.txt

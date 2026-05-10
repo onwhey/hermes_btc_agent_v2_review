@@ -20,8 +20,16 @@ from app.core.constants import (
     DEFAULT_APP_NAME,
     DEFAULT_BINANCE_BASE_URL,
     DEFAULT_LOG_LEVEL,
+    DEFAULT_MYSQL_CHARSET,
+    DEFAULT_MYSQL_MAX_OVERFLOW,
+    DEFAULT_MYSQL_POOL_PRE_PING,
+    DEFAULT_MYSQL_POOL_RECYCLE,
+    DEFAULT_MYSQL_POOL_SIZE,
     DEFAULT_MYSQL_PORT,
+    DEFAULT_REDIS_DB,
+    DEFAULT_REDIS_DECODE_RESPONSES,
     DEFAULT_REDIS_PORT,
+    DEFAULT_REDIS_SOCKET_TIMEOUT,
     DEFAULT_TIMEZONE,
     SENSITIVE_FIELD_NAMES,
 )
@@ -58,9 +66,17 @@ class AppSettings:
     mysql_database: str = ""
     mysql_user: str = ""
     mysql_password: str = ""
+    mysql_charset: str = DEFAULT_MYSQL_CHARSET
+    mysql_pool_size: int = DEFAULT_MYSQL_POOL_SIZE
+    mysql_max_overflow: int = DEFAULT_MYSQL_MAX_OVERFLOW
+    mysql_pool_recycle: int = DEFAULT_MYSQL_POOL_RECYCLE
+    mysql_pool_pre_ping: bool = DEFAULT_MYSQL_POOL_PRE_PING
     redis_host: str = ""
     redis_port: int = DEFAULT_REDIS_PORT
     redis_password: str = ""
+    redis_db: int = DEFAULT_REDIS_DB
+    redis_socket_timeout: float = DEFAULT_REDIS_SOCKET_TIMEOUT
+    redis_decode_responses: bool = DEFAULT_REDIS_DECODE_RESPONSES
     binance_base_url: str = DEFAULT_BINANCE_BASE_URL
     hermes_webhook_url: str = ""
     hermes_secret: str = ""
@@ -177,6 +193,21 @@ def _parse_int_config(raw_value: str, key: str, default: int) -> int:
         raise ConfigError(f"{key} 必须是整数") from exc
 
 
+def _parse_float_config(raw_value: str, key: str, default: float) -> float:
+    if raw_value.strip() == "":
+        return default
+    try:
+        return float(raw_value)
+    except ValueError as exc:
+        raise ConfigError(f"{key} 必须是数字") from exc
+
+
+def _parse_optional_bool_config(raw_value: str, key: str, default: bool) -> bool:
+    if raw_value.strip() == "":
+        return default
+    return _parse_bool_config(raw_value, key)
+
+
 def load_settings(
     *,
     env_file: Path | None = DEFAULT_ENV_FILE,
@@ -221,6 +252,47 @@ def load_settings(
         mysql_database=_get_config_value(merged_values, "MYSQL_DATABASE"),
         mysql_user=_get_config_value(merged_values, "MYSQL_USER"),
         mysql_password=_get_config_value(merged_values, "MYSQL_PASSWORD"),
+        mysql_charset=_get_config_value(
+            merged_values,
+            "MYSQL_CHARSET",
+            DEFAULT_MYSQL_CHARSET,
+        ),
+        mysql_pool_size=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MYSQL_POOL_SIZE",
+                str(DEFAULT_MYSQL_POOL_SIZE),
+            ),
+            "MYSQL_POOL_SIZE",
+            DEFAULT_MYSQL_POOL_SIZE,
+        ),
+        mysql_max_overflow=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MYSQL_MAX_OVERFLOW",
+                str(DEFAULT_MYSQL_MAX_OVERFLOW),
+            ),
+            "MYSQL_MAX_OVERFLOW",
+            DEFAULT_MYSQL_MAX_OVERFLOW,
+        ),
+        mysql_pool_recycle=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MYSQL_POOL_RECYCLE",
+                str(DEFAULT_MYSQL_POOL_RECYCLE),
+            ),
+            "MYSQL_POOL_RECYCLE",
+            DEFAULT_MYSQL_POOL_RECYCLE,
+        ),
+        mysql_pool_pre_ping=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "MYSQL_POOL_PRE_PING",
+                str(DEFAULT_MYSQL_POOL_PRE_PING).lower(),
+            ),
+            "MYSQL_POOL_PRE_PING",
+            DEFAULT_MYSQL_POOL_PRE_PING,
+        ),
         redis_host=_get_config_value(merged_values, "REDIS_HOST"),
         redis_port=_parse_int_config(
             _get_config_value(merged_values, "REDIS_PORT", str(DEFAULT_REDIS_PORT)),
@@ -228,6 +300,29 @@ def load_settings(
             DEFAULT_REDIS_PORT,
         ),
         redis_password=_get_config_value(merged_values, "REDIS_PASSWORD"),
+        redis_db=_parse_int_config(
+            _get_config_value(merged_values, "REDIS_DB", str(DEFAULT_REDIS_DB)),
+            "REDIS_DB",
+            DEFAULT_REDIS_DB,
+        ),
+        redis_socket_timeout=_parse_float_config(
+            _get_config_value(
+                merged_values,
+                "REDIS_SOCKET_TIMEOUT",
+                str(DEFAULT_REDIS_SOCKET_TIMEOUT),
+            ),
+            "REDIS_SOCKET_TIMEOUT",
+            DEFAULT_REDIS_SOCKET_TIMEOUT,
+        ),
+        redis_decode_responses=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "REDIS_DECODE_RESPONSES",
+                str(DEFAULT_REDIS_DECODE_RESPONSES).lower(),
+            ),
+            "REDIS_DECODE_RESPONSES",
+            DEFAULT_REDIS_DECODE_RESPONSES,
+        ),
         binance_base_url=_get_config_value(
             merged_values,
             "BINANCE_BASE_URL",

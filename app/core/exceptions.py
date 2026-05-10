@@ -55,3 +55,39 @@ class ExternalServiceError(AppError):
     本类不负责重试、报警、数据库写入或自动交易。
     """
 
+
+class InfrastructureError(AppError):
+    """基础设施错误基类。
+
+    参数：`message` 描述 MySQL、Redis 或迁移基础环境的脱敏失败摘要。
+    返回值：异常对象本身。
+    失败场景：基础设施依赖缺失、连接初始化失败或健康检查失败。
+    外部服务：本类本身不访问外部服务。
+    数据影响：本类不读写 MySQL，不读写 Redis，不发送 Hermes。
+    本类不负责业务重试、报警决策、数据修复或自动交易。
+    """
+
+
+class DatabaseError(InfrastructureError):
+    """MySQL 基础设施错误。
+
+    参数：`message` 描述 MySQL 配置、engine、session 或健康检查失败原因。
+    返回值：异常对象本身。
+    失败场景：连接配置不完整、依赖缺失、engine 创建失败或 `SELECT 1` 失败。
+    外部服务：本类本身不访问外部服务。
+    数据影响：本类不读写 MySQL，不读写 Redis，不发送 Hermes。
+    本类不负责创建业务表、迁移执行、Repository 逻辑或自动交易。
+    """
+
+
+class RedisError(InfrastructureError):
+    """Redis 基础设施错误。
+
+    参数：`message` 描述 Redis 配置、client 或健康检查失败原因。
+    返回值：异常对象本身。
+    失败场景：连接配置不完整、依赖缺失、client 创建失败或 ping 失败。
+    外部服务：本类本身不访问外部服务。
+    数据影响：本类不读写 MySQL，不读写 Redis，不发送 Hermes。
+    本类不负责 Redis 业务 key、价格监控、冷却逻辑或自动交易。
+    """
+

@@ -8,7 +8,12 @@ version = "0.1.0"
 description = "BTCUSDT low-frequency strategy assistance project skeleton."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
-dependencies = []
+dependencies = [
+    "SQLAlchemy>=2.0",
+    "PyMySQL>=1.1",
+    "alembic>=1.13",
+    "redis>=5.0",
+]
 
 [project.optional-dependencies]
 dev = [
