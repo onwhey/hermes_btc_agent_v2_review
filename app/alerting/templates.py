@@ -29,6 +29,7 @@ TEMPLATE_TITLES: Mapping[AlertType, str] = {
     AlertType.REDIS_ERROR: "Redis 基础设施异常提醒",
     AlertType.KLINE_DATA_QUALITY_ERROR: "K 线数据质量异常提醒",
     AlertType.KLINE_INTEGRITY_CHECK_FAILED: "K 线一致性复核异常提醒",
+    AlertType.KLINE_INTEGRITY_CHECK_PASSED: "K 线健康检查通过提醒",
     AlertType.MANUAL_TEST_ALERT: "人工测试提醒",
 }
 
@@ -38,6 +39,7 @@ KLINE_RELATED_ALERT_TYPES = frozenset(
         AlertType.COLLECTOR_ERROR,
         AlertType.KLINE_DATA_QUALITY_ERROR,
         AlertType.KLINE_INTEGRITY_CHECK_FAILED,
+        AlertType.KLINE_INTEGRITY_CHECK_PASSED,
     }
 )
 

@@ -23,7 +23,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable
 
-from app.alerting.types import AlertEvent, AlertSeverity, AlertType
+from app.alerting.types import AlertEvent, AlertSendResult, AlertSendStatus, AlertSeverity, AlertType
+from app.core.logger import get_logger
 from app.market_data.kline_constants import DEFAULT_KLINE_SYMBOL, KLINE_4H_INTERVAL_VALUE
 from app.market_data.kline_dto import MarketKlineDTO
 from app.market_data.kline_quality.batch_checker import (
@@ -46,6 +47,7 @@ from app.market_data.kline_quality.types import (
 )
 
 AlertSender = Callable[..., Any]
+LOGGER = get_logger("market_data.kline_quality.service")
 
 
 def check_batch_before_persist(
@@ -127,7 +129,9 @@ def run_recent_kline_integrity_check(
     server_time_ms: int | None = None,
     record_result: bool = True,
     send_alert: bool = False,
+    send_success_alert: bool = False,
     alert_sender: AlertSender | None = None,
+    alert_repository: Any | None = None,
 ) -> KlineQualityReport:
     """Run a recent official-vs-database integrity check.
 
@@ -158,11 +162,23 @@ def run_recent_kline_integrity_check(
             repository=quality_repository,
         )
     if send_alert:
-        send_quality_alert_if_needed(
+        alert_result = send_quality_alert_if_needed(
             report,
             alert_sender=alert_sender,
+            send_success_alert=send_success_alert,
             send_real_alert=True,
+            db_session=db_session,
+            alert_repository=alert_repository,
         )
+        if _alert_delivery_failed(alert_result):
+            LOGGER.error(
+                "Kline quality alert delivery failed: check_type=%s symbol=%s interval=%s status=%s",
+                report.check_type,
+                report.symbol,
+                report.interval_value,
+                alert_result.status.value if alert_result else "not_sent",
+            )
+            raise RuntimeError("Kline quality alert delivery failed")
     return report
 
 
@@ -194,25 +210,30 @@ def send_quality_alert_if_needed(
     report: KlineQualityReport,
     *,
     alert_sender: AlertSender | None = None,
+    send_success_alert: bool = False,
     send_real_alert: bool = False,
     db_session: Any | None = None,
     alert_repository: Any | None = None,
 ) -> Any | None:
-    """Send a fixed-template quality alert only for failed reports.
+    """Send a fixed-template quality alert for failures, or success health reports.
 
-    Parameters: `report` is a quality report; `send_real_alert` defaults to False
-    and must be explicit to allow Hermes network access.
+    Parameters: `report` is a quality report; `send_success_alert` allows the daily
+    health success notification; `send_real_alert` must be explicit for Hermes.
     Return value: alert result or `None` when the report passed.
     Failure scenarios: alert service exceptions propagate to the caller.
     External service access: default mode does not perform real Hermes sends.
     Data impact: may write `alert_message` only when the caller supplies its repository/session.
     """
 
-    if report.passed:
+    if report.passed and not send_success_alert:
         return None
 
     if alert_sender is None:
         from app.alerting.service import send_alert as alert_sender
+    if alert_repository is None and db_session is not None:
+        from app.storage.mysql.repositories.alert_message_repository import AlertMessageRepository
+
+        alert_repository = AlertMessageRepository()
 
     event = _build_quality_alert_event(report)
     return alert_sender(
@@ -223,19 +244,78 @@ def send_quality_alert_if_needed(
     )
 
 
-def _build_quality_alert_event(report: KlineQualityReport) -> AlertEvent:
-    alert_type = (
-        AlertType.KLINE_INTEGRITY_CHECK_FAILED
-        if report.check_type == CHECK_TYPE_RECENT_KLINE_INTEGRITY
-        else AlertType.KLINE_DATA_QUALITY_ERROR
+def send_quality_task_failure_alert(
+    *,
+    symbol: str,
+    interval_value: str,
+    check_trigger_source: str,
+    error_message: str,
+    alert_sender: AlertSender | None = None,
+    send_real_alert: bool = False,
+    db_session: Any | None = None,
+    alert_repository: Any | None = None,
+) -> AlertSendResult:
+    """Send a fixed-template alert when the quality task itself fails.
+
+    Parameters: identity fields, trigger source, sanitized error message, optional
+    alert sender and optional alert repository/session.
+    Return value: `AlertSendResult` from `app/alerting`.
+    Failure scenarios: alert service exceptions propagate to the CLI.
+    External service access: only when `send_real_alert=True`.
+    Data impact: may write `alert_message`; never writes formal Kline rows or Redis.
+    """
+
+    if alert_sender is None:
+        from app.alerting.service import send_alert as alert_sender
+    if alert_repository is None and db_session is not None:
+        from app.storage.mysql.repositories.alert_message_repository import AlertMessageRepository
+
+        alert_repository = AlertMessageRepository()
+
+    event = AlertEvent(
+        alert_type=AlertType.KLINE_INTEGRITY_CHECK_FAILED,
+        severity=AlertSeverity.CRITICAL,
+        title="Kline quality check task failed",
+        summary="Kline health status could not be confirmed",
+        details={
+            "symbol": symbol,
+            "interval_value": interval_value,
+            "check_trigger_source": check_trigger_source,
+            "error_message": error_message,
+            "action": "check_only_no_repair_no_backfill_no_market_kline_write",
+        },
+        source="app.market_data.kline_quality.service",
     )
-    severity = AlertSeverity.CRITICAL if report.severity.value == "critical" else AlertSeverity.ERROR
+    return alert_sender(
+        event,
+        repository=alert_repository,
+        db_session=db_session,
+        send_real_alert=send_real_alert,
+    )
+
+
+def _build_quality_alert_event(report: KlineQualityReport) -> AlertEvent:
+    if report.passed:
+        alert_type = AlertType.KLINE_INTEGRITY_CHECK_PASSED
+        severity = AlertSeverity.INFO
+        summary = (
+            f"Recent {report.checked_count} {report.interval_value} Klines are healthy "
+            f"for {report.symbol}"
+        )
+    else:
+        alert_type = (
+            AlertType.KLINE_INTEGRITY_CHECK_FAILED
+            if report.check_type == CHECK_TYPE_RECENT_KLINE_INTEGRITY
+            else AlertType.KLINE_DATA_QUALITY_ERROR
+        )
+        severity = AlertSeverity.CRITICAL if report.severity.value == "critical" else AlertSeverity.ERROR
+        first_issue = report.first_issue
+        summary = first_issue.message if first_issue is not None else "Kline quality check failed"
     first_issue = report.first_issue
-    summary = first_issue.message if first_issue is not None else "Kline quality check failed"
     return AlertEvent(
         alert_type=alert_type,
         severity=severity,
-        title="Kline quality check failed",
+        title="Kline quality check passed" if report.passed else "Kline quality check failed",
         summary=summary,
         details={
             "check_type": report.check_type,
@@ -248,3 +328,7 @@ def _build_quality_alert_event(report: KlineQualityReport) -> AlertEvent:
         },
         source="app.market_data.kline_quality.service",
     )
+
+
+def _alert_delivery_failed(result: AlertSendResult | None) -> bool:
+    return result is not None and result.status != AlertSendStatus.SENT

@@ -57,6 +57,7 @@ class AlertType(str, Enum):
     REDIS_ERROR = "redis_error"
     KLINE_DATA_QUALITY_ERROR = "kline_data_quality_error"
     KLINE_INTEGRITY_CHECK_FAILED = "kline_integrity_check_failed"
+    KLINE_INTEGRITY_CHECK_PASSED = "kline_integrity_check_passed"
     MANUAL_TEST_ALERT = "manual_test_alert"
 
 

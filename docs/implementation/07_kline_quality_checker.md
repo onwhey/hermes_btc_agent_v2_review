@@ -433,3 +433,186 @@ python -m scripts.check_kline_quality_4h --run-real-check --trigger-source cli -
 - 不实现自动下单、自动平仓、自动调仓、自动撤单、自动调整杠杆或保证金模式。
 - 不执行 `alembic upgrade head`。
 - 不执行任何 Git 操作。
+
+## 10. 2026-05-12 补充：真实质量检查与 Hermes 健康通知策略
+
+### 10.1 功能名称
+
+真实 K 线质量检查的固定模板 Hermes 微信通知策略。
+
+本补充只修正 07 质量检查与报警策略，不引用、不合并、不依赖 08 手动回补代码。
+
+### 10.2 发起入口
+
+本地 smoke check：
+
+```text
+python -m scripts.check_kline_quality_4h
+```
+
+本地 smoke check 只解析内置样例并执行本地校验，不请求 Binance，不连接 MySQL，不写 `data_quality_check`，不写 `alert_message`，不发送 Hermes。
+
+真实最近 N 根检查：
+
+```text
+python -m scripts.check_kline_quality_4h --run-real-check --trigger-source cli --limit 100
+```
+
+每日健康报告：
+
+```text
+python -m scripts.check_kline_quality_4h --run-real-check --trigger-source cli --limit 100 --daily-health-report
+```
+
+`--run-real-check` 模式下，只要检查结果失败，默认发送 Hermes 失败通知，不再依赖 `--send-alert` 作为唯一开关。`--daily-health-report` 模式下，成功和失败都会发送 Hermes 通知。`--send-success-alert` 可用于只为成功结果开启成功通知。
+
+### 10.3 入口文件与方法
+
+入口文件：
+
+`scripts/check_kline_quality_4h.py`
+
+入口方法：
+
+`main()`
+
+核心 service：
+
+`app/market_data/kline_quality/service.py`
+
+核心方法：
+
+- `run_recent_kline_integrity_check()`
+- `send_quality_alert_if_needed()`
+- `send_quality_task_failure_alert()`
+
+### 10.4 核心调用链
+
+```text
+scripts/check_kline_quality_4h.py::main
+    ↓
+app/market_data/kline_quality/service.py::run_recent_kline_integrity_check
+    ↓
+app/market_data/kline_quality/integrity_checker.py::run_recent_kline_integrity_check
+    ↓
+app/exchange/binance/rest_client.py::BinanceRestClient.get_server_time
+    ↓
+app/exchange/binance/rest_client.py::BinanceRestClient.get_klines
+    ↓
+app/market_data/kline_parser.py::parse_binance_klines
+    ↓
+app/market_data/kline_quality/batch_checker.py::check_kline_batch_before_persist
+    ↓
+app/storage/mysql/repositories/market_kline_4h_repository.py::list_by_time_range
+    ↓
+app/storage/mysql/repositories/data_quality_check_repository.py::create_quality_check_record
+    ↓
+app/market_data/kline_quality/service.py::send_quality_alert_if_needed
+    ↓
+app/alerting/service.py::send_alert
+    ↓
+app/storage/mysql/repositories/alert_message_repository.py
+```
+
+检查任务自身异常时，不会生成正常 `KlineQualityReport`，脚本会进入异常路径：
+
+```text
+scripts/check_kline_quality_4h.py::main
+    ↓
+app/market_data/kline_quality/service.py::send_quality_task_failure_alert
+    ↓
+app/alerting/service.py::send_alert
+    ↓
+app/storage/mysql/repositories/alert_message_repository.py
+```
+
+### 10.5 输入与输出
+
+输入：
+
+- `symbol`，默认 `BTCUSDT`。
+- `interval`，当前只允许 `4h`。
+- `limit`，最近 N 根官方已收盘 K 线。
+- `trigger_source`，07 脚本只允许 `cli`。
+- `--run-real-check`，显式开启真实检查。
+- `--daily-health-report`，每日健康报告模式，成功和失败都通知。
+- `--send-success-alert`，检查成功时也通知。
+
+输出：
+
+- smoke check 返回本地检查结果。
+- 真实检查返回 `KlineQualityReport` 的文本摘要。
+- 检查成功返回退出码 `0`。
+- 检查失败且报警发送成功返回退出码 `2`。
+- 检查报告已生成但 Hermes 发送失败返回退出码 `3`。
+- 检查任务自身异常返回退出码 `4`，并尝试发送任务失败通知。
+
+### 10.6 报警规则
+
+真实质量检查只要发现任何 K 线问题，必须发送 Hermes 失败通知，包括：
+
+- Binance REST 返回批次不连续。
+- 新数据与数据库最新 K 线接不上。
+- 最近 N 根官方 K 线中数据库缺失。
+- 数据库已有 K 线与 Binance 官方 K 线字段冲突。
+- 数据库 K 线重复、乱序、时间间隔异常、未收盘误写。
+- parser 或 06 validator 发现字段非法。
+- 检查任务自身异常，导致无法确认健康状态。
+
+最近 N 根检查通过时，只有 `--daily-health-report` 或 `--send-success-alert` 会发送成功通知。成功通知使用 `AlertType.KLINE_INTEGRITY_CHECK_PASSED`，失败通知使用 `AlertType.KLINE_INTEGRITY_CHECK_FAILED` 或 `AlertType.KLINE_DATA_QUALITY_ERROR`。
+
+报警内容由 `app/alerting/templates.py` 和 `app/market_data/kline_quality/service.py` 固定生成，不调用 DeepSeek，不调用任何大模型，不生成交易建议，不包含做多、做空、开仓、平仓、止损、止盈等交易建议内容。
+
+### 10.7 Hermes 失败处理
+
+Hermes 发送失败不得静默吞掉：
+
+- `app/alerting/service.py::send_alert` 会在传入 MySQL session 和 repository 时写入并更新 `alert_message` 状态。
+- `scripts/check_kline_quality_4h.py::main` 会记录日志。
+- 检查报告已生成但报警失败时，CLI 返回 `3`。
+- 检查任务自身异常时，即使任务失败通知也发送失败，CLI 仍返回 `4`，避免任务系统误判为完全成功。
+
+### 10.8 数据影响与边界
+
+本功能请求外部接口：仅在 `--run-real-check` 时通过统一 Binance REST client 请求 `/fapi/v1/time` 和 `/fapi/v1/klines`。
+
+本功能读取数据库：仅在 `--run-real-check` 时读取 `market_kline_4h` 做对比。
+
+本功能写入数据库：仅在 `--run-real-check` 时写入 `data_quality_check`，并在真实报警路径写入或更新 `alert_message`。
+
+本功能不写入正式 K 线表 `market_kline_4h`。
+
+本功能不读取 Redis。
+
+本功能不写入 Redis。
+
+本功能不实现 scheduler。
+
+本功能不实现采集、回补、复核、自动修复、自动覆盖、自动删除。
+
+本功能不发送 smoke check 报警。
+
+本功能不调用 DeepSeek 或任何大模型。
+
+本功能不涉及账户、订单、持仓、杠杆、保证金或任何自动交易能力。
+
+### 10.9 对应测试
+
+测试文件：
+
+`tests/test_kline_quality_checker.py`
+
+新增覆盖：
+
+- 最近 N 根健康时，`--daily-health-report` 发送成功通知。
+- 最近 N 根缺失时，`--run-real-check` 默认发送失败通知。
+- 批次不连续时，发送失败通知。
+- 数据库接不上时，发送失败通知。
+- Hermes 发送失败时，命令返回非 `0`，不会被误判为完全成功。
+- smoke check 不发送 Hermes。
+
+测试命令：
+
+```text
+.\.venv\Scripts\python.exe -m pytest tests/test_kline_quality_checker.py tests/test_alerting.py
+```

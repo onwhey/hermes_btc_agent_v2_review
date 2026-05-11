@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import app.storage.mysql.session as mysql_session
+from app.alerting.types import AlertSendResult, AlertSendStatus
 from app.market_data.kline_constants import KLINE_4H_INTERVAL_MS, KLINE_4H_INTERVAL_VALUE, TRIGGER_SOURCE_CLI
 from app.market_data.kline_dto import MarketKlineDTO
 from app.market_data.kline_parser import parse_binance_kline
@@ -15,8 +16,13 @@ from app.market_data.kline_quality import batch_checker, db_checker, integrity_c
 from app.market_data.kline_quality.batch_checker import check_kline_batch_before_persist
 from app.market_data.kline_quality.service import check_against_database
 from app.market_data.kline_quality.types import (
+    CHECK_TRIGGER_SOURCE_CLI,
     CHECK_TRIGGER_SOURCE_SERVICE,
+    CHECK_TYPE_RECENT_KLINE_INTEGRITY,
+    KlineQualityIssue,
     KlineQualityIssueType,
+    KlineQualitySeverity,
+    build_quality_report,
 )
 from app.storage.mysql.models.market_kline_4h import MarketKline4h
 from app.storage.mysql.repositories.data_quality_check_repository import DataQualityCheckRepository
@@ -512,3 +518,145 @@ def test_check_kline_quality_script_real_path_requires_explicit_flag(monkeypatch
     assert called["db_session"] is fake_db_session
     assert called["kwargs"]["limit"] == 1
     assert called["kwargs"]["send_alert"] is False
+
+
+def build_failed_recent_report(issue_type: KlineQualityIssueType) -> Any:
+    dto = build_dto(0)
+    issue = KlineQualityIssue(
+        issue_type=issue_type,
+        severity=KlineQualitySeverity.ERROR,
+        message=f"test quality issue: {issue_type.value}",
+        open_time_ms=dto.open_time_ms,
+    )
+    return build_quality_report(
+        check_type=CHECK_TYPE_RECENT_KLINE_INTEGRITY,
+        klines=[dto],
+        issues=(issue,),
+        check_trigger_source=CHECK_TRIGGER_SOURCE_CLI,
+        writable_klines=(),
+    )
+
+
+def test_daily_health_report_sends_success_alert_for_healthy_recent_klines(monkeypatch: Any) -> None:
+    report = build_quality_report(
+        check_type=CHECK_TYPE_RECENT_KLINE_INTEGRITY,
+        klines=[build_dto(0)],
+        issues=(),
+        check_trigger_source=CHECK_TRIGGER_SOURCE_CLI,
+        writable_klines=(),
+    )
+    called: dict[str, Any] = {}
+    fake_db_session = object()
+
+    @contextmanager
+    def fake_session_scope(*, commit_on_success: bool = False):
+        called["commit_on_success"] = commit_on_success
+        yield fake_db_session
+
+    def fake_real_check(db_session: Any, **kwargs: Any) -> Any:
+        called["db_session"] = db_session
+        called["kwargs"] = kwargs
+        return report
+
+    def fake_send_alert(report_arg: Any, **kwargs: Any) -> AlertSendResult:
+        called["alert_report"] = report_arg
+        called["alert_kwargs"] = kwargs
+        return AlertSendResult(status=AlertSendStatus.SENT, attempted_real_send=True)
+
+    monkeypatch.setattr(mysql_session, "session_scope", fake_session_scope)
+    monkeypatch.setattr(quality_script, "run_recent_kline_integrity_check", fake_real_check)
+    monkeypatch.setattr(quality_script, "send_quality_alert_if_needed", fake_send_alert)
+
+    exit_code = quality_script.main(["--run-real-check", "--limit", "1", "--daily-health-report"])
+
+    assert exit_code == 0
+    assert called["commit_on_success"] is True
+    assert called["alert_report"] is report
+    assert called["alert_kwargs"]["send_success_alert"] is True
+    assert called["alert_kwargs"]["send_real_alert"] is True
+
+
+def test_recent_missing_kline_default_real_check_sends_failure_alert(monkeypatch: Any) -> None:
+    _assert_real_check_failure_sends_alert(monkeypatch, KlineQualityIssueType.MISSING_IN_DATABASE)
+
+
+def test_batch_discontinuity_default_real_check_sends_failure_alert(monkeypatch: Any) -> None:
+    _assert_real_check_failure_sends_alert(monkeypatch, KlineQualityIssueType.BATCH_NOT_CONTINUOUS)
+
+
+def test_database_not_continuous_default_real_check_sends_failure_alert(monkeypatch: Any) -> None:
+    _assert_real_check_failure_sends_alert(monkeypatch, KlineQualityIssueType.DATABASE_NOT_CONTINUOUS)
+
+
+def test_hermes_failure_makes_real_check_exit_nonzero(monkeypatch: Any) -> None:
+    report = build_failed_recent_report(KlineQualityIssueType.MISSING_IN_DATABASE)
+    fake_db_session = object()
+
+    @contextmanager
+    def fake_session_scope(*, commit_on_success: bool = False):
+        yield fake_db_session
+
+    def fake_real_check(db_session: Any, **kwargs: Any) -> Any:
+        return report
+
+    def fake_send_alert(report_arg: Any, **kwargs: Any) -> AlertSendResult:
+        return AlertSendResult(
+            status=AlertSendStatus.FAILED,
+            error_message="Hermes unavailable",
+            attempted_real_send=True,
+        )
+
+    monkeypatch.setattr(mysql_session, "session_scope", fake_session_scope)
+    monkeypatch.setattr(quality_script, "run_recent_kline_integrity_check", fake_real_check)
+    monkeypatch.setattr(quality_script, "send_quality_alert_if_needed", fake_send_alert)
+
+    exit_code = quality_script.main(["--run-real-check", "--limit", "1"])
+
+    assert exit_code == 3
+
+
+def test_smoke_check_does_not_send_wechat_alert(monkeypatch: Any) -> None:
+    def fail_alert(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("smoke check must not send alerts")
+
+    monkeypatch.setattr(quality_script, "send_quality_alert_if_needed", fail_alert)
+
+    exit_code = quality_script.main([])
+
+    assert exit_code == 0
+
+
+def _assert_real_check_failure_sends_alert(
+    monkeypatch: Any,
+    issue_type: KlineQualityIssueType,
+) -> None:
+    report = build_failed_recent_report(issue_type)
+    called: dict[str, Any] = {}
+    fake_db_session = object()
+
+    @contextmanager
+    def fake_session_scope(*, commit_on_success: bool = False):
+        called["commit_on_success"] = commit_on_success
+        yield fake_db_session
+
+    def fake_real_check(db_session: Any, **kwargs: Any) -> Any:
+        called["db_session"] = db_session
+        called["kwargs"] = kwargs
+        return report
+
+    def fake_send_alert(report_arg: Any, **kwargs: Any) -> AlertSendResult:
+        called["alert_report"] = report_arg
+        called["alert_kwargs"] = kwargs
+        return AlertSendResult(status=AlertSendStatus.SENT, attempted_real_send=True)
+
+    monkeypatch.setattr(mysql_session, "session_scope", fake_session_scope)
+    monkeypatch.setattr(quality_script, "run_recent_kline_integrity_check", fake_real_check)
+    monkeypatch.setattr(quality_script, "send_quality_alert_if_needed", fake_send_alert)
+
+    exit_code = quality_script.main(["--run-real-check", "--limit", "1"])
+
+    assert exit_code == 2
+    assert called["commit_on_success"] is True
+    assert called["alert_report"] is report
+    assert called["alert_kwargs"]["send_success_alert"] is False
+    assert called["alert_kwargs"]["send_real_alert"] is True
