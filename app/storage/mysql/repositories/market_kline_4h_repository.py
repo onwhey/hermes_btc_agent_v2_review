@@ -119,6 +119,66 @@ class MarketKline4hRepository:
         )
         return db_session.execute(stmt).scalar_one_or_none()
 
+    def get_previous_before(
+        self,
+        db_session: Any,
+        *,
+        symbol: str,
+        interval_value: str,
+        open_time_ms: int,
+    ) -> MarketKline4h | None:
+        """Return the nearest Kline before an open-time boundary.
+
+        Parameters: caller-provided session, identity fields, and exclusive
+        `open_time_ms` boundary.
+        Return value: the previous row or `None`.
+        Failure scenarios: database execution errors propagate.
+        External service access: none.
+        Data impact: reads only `market_kline_4h`; used by phase-08 historical
+        backfill to check the left neighbor without relying on latest-row logic.
+        """
+
+        _require_sqlalchemy()
+        stmt = (
+            select(MarketKline4h)
+            .where(MarketKline4h.symbol == symbol)
+            .where(MarketKline4h.interval_value == interval_value)
+            .where(MarketKline4h.open_time_ms < open_time_ms)
+            .order_by(MarketKline4h.open_time_ms.desc())
+            .limit(1)
+        )
+        return db_session.execute(stmt).scalar_one_or_none()
+
+    def get_next_after(
+        self,
+        db_session: Any,
+        *,
+        symbol: str,
+        interval_value: str,
+        open_time_ms: int,
+    ) -> MarketKline4h | None:
+        """Return the nearest Kline after an open-time boundary.
+
+        Parameters: caller-provided session, identity fields, and exclusive
+        `open_time_ms` boundary.
+        Return value: the next row or `None`.
+        Failure scenarios: database execution errors propagate.
+        External service access: none.
+        Data impact: reads only `market_kline_4h`; used by phase-08 historical
+        backfill to check the right neighbor before any formal write.
+        """
+
+        _require_sqlalchemy()
+        stmt = (
+            select(MarketKline4h)
+            .where(MarketKline4h.symbol == symbol)
+            .where(MarketKline4h.interval_value == interval_value)
+            .where(MarketKline4h.open_time_ms > open_time_ms)
+            .order_by(MarketKline4h.open_time_ms.asc())
+            .limit(1)
+        )
+        return db_session.execute(stmt).scalar_one_or_none()
+
     def list_by_time_range(
         self,
         db_session: Any,
