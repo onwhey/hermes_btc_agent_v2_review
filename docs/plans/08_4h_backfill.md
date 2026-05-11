@@ -267,7 +267,6 @@ python -m scripts.backfill_4h_klines --symbol BTCUSDT --interval 4h --start-utc 
 --limit-per-request
 --trigger-source cli
 --dry-run
---send-alert
 ```
 
 参数规则：
@@ -283,7 +282,8 @@ python -m scripts.backfill_4h_klines --symbol BTCUSDT --interval 4h --start-utc 
 9. 时间范围必须按 4h 周期对齐。
 10. `limit-per-request` 不得超过 Binance K线接口最大 limit。
 11. `--dry-run` 只检查流程，不写入 `market_kline_4h`。
-12. `--send-alert` 表示发生异常时允许调用 Hermes，仍受 Hermes 配置控制。
+12. 本阶段不允许恢复或新增用于控制失败报警的 CLI 开关。
+13. 手动回补成功通知后续可设计为可选参数，例如 `--notify-success`；质量失败、blocked、failed、写入失败和任务异常报警不得设为可选。
 
 禁止：
 
@@ -802,20 +802,25 @@ skipped 表示系统按并发控制规则拒绝执行，不是数据质量失败
 
 ## 23. Hermes 报警要求
 
-本阶段允许异常时调用 `app/alerting`。
+本阶段必须继承 07 K线质量报警新规则：质量问题、blocked、failed、无法确认健康状态时必须通过 `app/alerting` 发送 Hermes 固定模板报警。
 
-允许报警场景：
+必须报警场景：
 
 1. Binance REST 请求失败。
 2. Binance server time 获取失败。
 3. 回补结果为空。
 4. 质量检查失败。
-5. 数据库字段冲突。
-6. K线不连续。
-7. 未收盘 K线被误写风险。
-8. 正式 K线写入失败。
-9. collector_event_log 写入失败。
-10. 未预期异常。
+5. 质量检查返回 blocked。
+6. 数据库字段冲突。
+7. K线不连续。
+8. 未收盘 K线被误写风险。
+9. 正式 K线写入失败。
+10. collector_event_log 写入失败。
+11. 任务状态 failed。
+12. 任务异常导致无法确认回补健康状态。
+13. 未预期异常。
+
+失败报警不得由 CLI 参数控制，不允许恢复 `07` 已废弃的失败报警开关语义。
 
 报警模板必须使用固定模板。
 
@@ -869,7 +874,7 @@ dry-run 行为：
 7. 不得写入 `market_kline_4h`。
 8. 不得修改 `market_kline_4h`。
 9. 不得删除 `market_kline_4h`。
-10. 默认不发送 Hermes，除非用户显式 `--send-alert` 且配置允许。
+10. dry-run 默认不发送 Hermes；如果 dry-run 发现质量问题、blocked、failed 或任务异常，应按 07 新规则记录并触发固定模板报警，且不得写入 `market_kline_4h`。
 
 建议：
 

@@ -379,7 +379,7 @@ systemd / supervisor / 用户 CLI
 --price-change-threshold 0.01
 --redis-key bitcoin_price
 --redis-ttl-seconds 120
---send-alert
+--enable-price-alerts
 ```
 
 参数规则：
@@ -391,7 +391,8 @@ systemd / supervisor / 用户 CLI
 5. `--price-change-threshold` 默认 0.01，表示 1%。
 6. `--redis-key` 默认 `bitcoin_price`。
 7. `--redis-ttl-seconds` 默认 120。
-8. `--send-alert` 表示允许发送 Hermes，仍受配置控制。
+8. `--enable-price-alerts` 表示允许发送价格提醒，仍受 Hermes 配置、冷却和去重规则控制。
+9. 价格提醒参数不得与 K线质量报警语义混用；K线质量失败报警不由价格监控参数控制。
 
 禁止：
 

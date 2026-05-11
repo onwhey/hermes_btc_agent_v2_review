@@ -928,21 +928,28 @@ implementation 必须写清楚：
 
 ## 26. Hermes 报警要求
 
-本阶段允许异常时调用 `app/alerting`。
+本阶段必须继承 07 K线质量报警新规则：断档、批次不连续、数据库接不上、写入失败、任务异常、blocked、failed、无法确认健康状态时必须通过 `app/alerting` 发送 Hermes 固定模板报警。
 
-允许报警场景：
+必须报警场景：
 
 1. Binance REST 请求失败。
 2. Binance server time 获取失败。
 3. 增量采集结果为空。
 4. 数据库为空且不能增量采集。
 5. 质量检查失败。
-6. 数据库字段冲突。
-7. K线不连续。
-8. 未收盘 K线被误写风险。
-9. 正式 K线写入失败。
-10. collector_event_log 写入失败。
-11. 未预期异常。
+6. 质量检查返回 blocked。
+7. 数据库字段冲突。
+8. 新数据与数据库最新 K线接不上。
+9. Binance REST 返回批次不连续。
+10. K线不连续或断档。
+11. 未收盘 K线被误写风险。
+12. 正式 K线写入失败。
+13. collector_event_log 写入失败。
+14. 任务状态 failed。
+15. 任务异常导致无法确认采集健康状态。
+16. 未预期异常。
+
+失败报警不得由 CLI 参数控制。
 
 报警模板必须使用固定模板。
 
@@ -1031,7 +1038,6 @@ KLINE_4H_COLLECT_SEND_ALERT=true
 --interval 4h
 --recent-limit 10
 --trigger-source cli|scheduler
---send-alert
 ```
 
 规则：
@@ -1041,7 +1047,7 @@ KLINE_4H_COLLECT_SEND_ALERT=true
 3. `--recent-limit` 默认读取配置。
 4. `--trigger-source` 必填。
 5. `--trigger-source` 只允许 `cli` 或 `scheduler`。
-6. `--send-alert` 表示异常时允许调用 Hermes，仍受配置控制。
+6. 不允许使用 CLI 参数控制失败报警；增量采集失败报警必须按 07 新规则强制执行。
 
 禁止：
 
