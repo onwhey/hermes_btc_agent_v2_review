@@ -25,7 +25,7 @@
 8. 调用 07 阶段质量检查模块进行写库前检查。
 9. 记录 `collector_event_log`。
 10. 将通过质量检查的新 K线幂等写入 `market_kline_4h`。
-11. 异常时调用 `app/alerting` 发送 Hermes 固定模板报警。
+11. 发现断档、批次不连续、数据库接不上、质量失败、blocked、failed、写入失败、任务异常或无法确认采集健康状态时，必须通过 `app/alerting` 发送 Hermes 固定模板报警。
 12. 创建测试文件。
 13. 创建对应实现说明文件。
 
@@ -200,7 +200,7 @@ docs/implementation/09_4h_kline_incremental_collector.md
 7. 执行质量检查。
 8. 记录 `collector_event_log`。
 9. 幂等写入新的合格 K线。
-10. 异常时调用 `app/alerting` 发送 Hermes 固定模板报警。
+10. 发现断档、批次不连续、数据库接不上、质量失败、blocked、failed、写入失败、任务异常或无法确认采集健康状态时，必须通过 `app/alerting` 发送 Hermes 固定模板报警。
 
 该模块不负责：
 
@@ -392,7 +392,7 @@ app/market_data/collector/kline_4h_collector_service.py::run_incremental_4h_coll
 6. 调用质量检查。
 7. 写入新 K线。
 8. 处理异常。
-9. 必要时发送 Hermes 固定模板报警。
+9. 断档、批次不连续、数据库接不上、质量失败、blocked、failed、写入失败、任务异常或无法确认采集健康状态时，必须发送 Hermes 固定模板报警。
 
 禁止：
 
@@ -508,7 +508,7 @@ app/market_data/collector/kline_4h_collector_service.py::run_incremental_4h_coll
     ↓
 collector_event_log_repository.mark_failed 或 mark_blocked
     ↓
-必要时 app/alerting 发送 Hermes 固定模板报警
+必须通过 app/alerting 发送 Hermes 固定模板报警
     ↓
 CLI 返回非 0 状态码，scheduler job 记录失败
 ```
@@ -698,7 +698,7 @@ KLINE_4H_COLLECT_MAX_LIMIT=100
 1. 不写入 `market_kline_4h`。
 2. 写入 `data_quality_check`。
 3. 更新 `collector_event_log` 为 `blocked` 或 `failed`。
-4. 必要时发送 Hermes 固定模板报警。
+4. 必须发送 Hermes 固定模板报警。
 5. CLI 返回非 0 状态码。
 6. scheduler job 记录失败。
 
@@ -910,7 +910,7 @@ implementation 必须写清楚：
 1. 记录 `collector_event_log = blocked`。
 2. 返回明确错误。
 3. 提示用户先执行手动回补。
-4. 必要时发送 Hermes 固定模板报警。
+4. 必须发送 Hermes 固定模板报警。
 5. 不自动猜测历史起点。
 
 ### 可选策略
@@ -997,8 +997,10 @@ KLINE_4H_COLLECT_INTERVAL=4h
 KLINE_4H_COLLECT_RECENT_LIMIT=10
 KLINE_4H_COLLECT_MIN_OVERLAP=2
 KLINE_4H_COLLECT_MAX_LIMIT=100
-KLINE_4H_COLLECT_SEND_ALERT=true
+KLINE_4H_COLLECT_NOTIFY_SUCCESS=false
 ```
+
+`KLINE_4H_COLLECT_NOTIFY_SUCCESS` 只控制采集成功通知，不得用于控制失败报警；断档、批次不连续、数据库接不上、质量失败、blocked、failed、写入失败、任务异常或无法确认采集健康状态时，必须发送 Hermes 固定模板报警。
 
 如果 `.env.example` 已存在，只补齐缺失项，不得清空重写。
 
@@ -1162,7 +1164,7 @@ bitcoin_price
 
 ## 34. Hermes 影响
 
-本阶段允许异常时调用 Hermes。
+本阶段遇到断档、批次不连续、数据库接不上、质量失败、blocked、failed、写入失败、任务异常或无法确认采集健康状态时，必须调用 Hermes 固定模板报警；失败报警不得由 CLI 参数或配置项控制。
 
 要求：
 
@@ -1261,7 +1263,7 @@ bitcoin_price
 17. 已存在一致数据会计入 skipped。
 18. 字段冲突时不会覆盖。
 19. 数据库为空时不会自动大范围回补。
-20. 异常时可以调用 alerting mock。
+20. 失败报警路径必须使用 alerting mock 验证，不发送真实 Hermes。
 21. 不调用 DeepSeek。
 22. 不写 Redis 行情缓存；任务锁通过 Redis mock 或测试替身覆盖。
 23. 不实现 WebSocket。
@@ -1419,7 +1421,7 @@ RUN_4H_COLLECTOR_INTEGRATION_TESTS=true
 19. 成功时记录 `collector_event_log = success`。
 20. 质量阻断时记录 `collector_event_log = blocked`。
 21. 异常失败时记录 `collector_event_log = failed`。
-22. 异常时可调用 `app/alerting` mock。
+22. 失败报警路径必须使用 `app/alerting` mock 验证，不发送真实 Hermes。
 23. 不调用 DeepSeek。
 24. 不实现 WebSocket。
 25. 不写入 Redis `bitcoin_price`。
