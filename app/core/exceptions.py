@@ -160,3 +160,55 @@ class KlineConflictError(KlineError):
     Data impact: the repository refuses to overwrite existing formal Kline data.
     """
 
+
+class KlineQualityError(KlineError):
+    """Raised for phase-07 Kline quality-check failures outside normal reports.
+
+    Parameters: `message` is a sanitized quality-check failure summary.
+    Return value: exception instance.
+    Failure scenarios: invalid quality-check trigger source or invalid checker inputs.
+    External service access: none.
+    Data impact: no MySQL formal Kline writes, Redis writes, alert sends, or trading execution.
+    """
+
+
+class KlineIntegrityCheckError(KlineQualityError):
+    """Raised when a recent Kline integrity check cannot complete.
+
+    Parameters: `message` describes the failed integrity-check step without secrets.
+    Return value: exception instance.
+    Failure scenarios: caller-provided client or repository fails before a report is produced.
+    External service access: none in the exception itself.
+    Data impact: no formal Kline writes, Redis writes, or trading execution.
+    """
+
+
+class KlineContinuityError(KlineQualityError):
+    """Raised when code needs an exception for a Kline continuity defect.
+
+    Parameters: `message` identifies the continuity defect.
+    Return value: exception instance.
+    Failure scenarios: callers that prefer exceptions over `KlineQualityReport` may use it.
+    External service access and data impact: none.
+    """
+
+
+class KlineDataMismatchError(KlineQualityError):
+    """Raised when an existing formal Kline differs from official parsed data.
+
+    Parameters: `message` names the conflicting fields and Kline identity.
+    Return value: exception instance.
+    Failure scenarios: integrity checks or database comparisons detect mismatched fields.
+    External service access and data impact: none.
+    """
+
+
+class KlineUnclosedError(KlineQualityError):
+    """Raised when code needs an exception for an unclosed Kline.
+
+    Parameters: `message` identifies the unclosed Kline and server-time basis.
+    Return value: exception instance.
+    Failure scenarios: callers that prefer exceptions over `KlineQualityReport` may use it.
+    External service access and data impact: none.
+    """
+
