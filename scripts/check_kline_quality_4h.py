@@ -11,6 +11,8 @@ Business logic: lives in `app/market_data/kline_quality`, not in this script.
 Database impact: none by default; writes only `data_quality_check` when `--run-real-check` is used.
 Redis impact: none.
 Hermes impact: none for smoke checks. Real checks send failure alerts by default.
+Successful real checks do not alert unless `--send-success-alert` or
+`--daily-health-report` is explicitly supplied.
 Daily health mode also sends success alerts when the recent Klines are healthy.
 Formal Kline impact: never writes, overwrites, deletes, or fixes `market_kline_4h`.
 Trading impact: none.
@@ -112,7 +114,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interval", default=KLINE_4H_INTERVAL_VALUE, choices=[KLINE_4H_INTERVAL_VALUE])
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--trigger-source", default=CHECK_TRIGGER_SOURCE_CLI, choices=[CHECK_TRIGGER_SOURCE_CLI])
-    parser.add_argument("--send-alert", action="store_true")
     parser.add_argument("--send-success-alert", action="store_true")
     parser.add_argument("--daily-health-report", action="store_true")
     return parser
@@ -151,11 +152,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 interval_value=args.interval,
                 limit=args.limit,
                 check_trigger_source=args.trigger_source,
-                send_alert=False,
             )
             should_send_alert = (
                 not report.passed
-                or args.send_alert
                 or args.send_success_alert
                 or args.daily_health_report
             )

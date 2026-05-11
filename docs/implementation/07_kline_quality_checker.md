@@ -233,8 +233,9 @@ server time 来自：
 本功能不写入正式 K线表。
 本功能不读取 Redis。
 本功能不写入 Redis。
-本功能默认不发送 Hermes。
-只有用户显式传入 `--send-alert`，且 Hermes 配置允许真实发送时，才会通过 `app/alerting/service.py::send_alert` 使用固定模板发送。
+本功能默认 smoke check 不发送 Hermes。
+真实检查 `--run-real-check` 发现质量问题时默认通过 `app/alerting/service.py::send_alert` 使用固定模板发送 Hermes 失败通知。
+真实检查成功时默认不发送成功通知；只有 `--send-success-alert` 或 `--daily-health-report` 会发送成功通知。
 本功能不调用 DeepSeek 或其他大模型。
 本功能不涉及 scheduler。
 
@@ -311,15 +312,9 @@ alembic upgrade head
 
 `app/alerting/service.py::send_alert`
 
-默认 `send_real_alert=False`，不会真实发送 Hermes。
+默认 smoke check 不发送 Hermes。
 
-近期一致性检查脚本只有在用户显式传入：
-
-```text
---send-alert
-```
-
-时才请求真实发送，而且仍受 04 阶段 Hermes 配置约束。
+近期一致性检查脚本只有在 `--run-real-check` 时进入真实检查路径。真实检查失败默认请求真实 Hermes 失败通知；真实检查成功默认不通知，只有 `--send-success-alert` 或 `--daily-health-report` 会请求真实 Hermes 成功通知。所有真实发送仍受 04 阶段 Hermes 配置约束。
 
 本阶段不调用 DeepSeek，不生成交易建议。
 
@@ -427,7 +422,7 @@ python -m scripts.check_kline_quality_4h --run-real-check --trigger-source cli -
 - 不实现 10s WebSocket 价格监控。
 - 不写 Redis。
 - 不写正式 K线表。
-- 不发送真实 Hermes，除非用户后续人工执行脚本并显式传入 `--send-alert`。
+- smoke check 不发送真实 Hermes；`--run-real-check` 失败默认发送 Hermes 失败通知，成功默认不发送成功通知。
 - 不调用 DeepSeek 或其他大模型。
 - 不实现策略、交易建议、建议生命周期。
 - 不实现自动下单、自动平仓、自动调仓、自动撤单、自动调整杠杆或保证金模式。
@@ -464,7 +459,7 @@ python -m scripts.check_kline_quality_4h --run-real-check --trigger-source cli -
 python -m scripts.check_kline_quality_4h --run-real-check --trigger-source cli --limit 100 --daily-health-report
 ```
 
-`--run-real-check` 模式下，只要检查结果失败，默认发送 Hermes 失败通知，不再依赖 `--send-alert` 作为唯一开关。`--daily-health-report` 模式下，成功和失败都会发送 Hermes 通知。`--send-success-alert` 可用于只为成功结果开启成功通知。
+`--run-real-check` 模式下，只要检查结果失败，默认发送 Hermes 失败通知。检查成功默认不发送成功通知。`--daily-health-report` 模式下，成功和失败都会发送 Hermes 通知。`--send-success-alert` 可用于只为成功结果开启成功通知。
 
 ### 10.3 入口文件与方法
 

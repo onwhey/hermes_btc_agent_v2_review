@@ -804,11 +804,13 @@ Codex 可以生成 migration 文件，但不得自动连接数据库执行迁移
 建议支持参数：
 
 ```
+--run-real-check
 --symbol BTCUSDT
 --interval 4h
 --limit 100
 --trigger-source cli
---send-alert
+--send-success-alert
+--daily-health-report
 ```
 
 默认规则：
@@ -817,10 +819,13 @@ Codex 可以生成 migration 文件，但不得自动连接数据库执行迁移
 2. `--interval` 默认 `4h`。
 3. `--limit` 默认 `100`。
 4. `--trigger-source` 本阶段只允许 `cli`。
-5. 默认发现异常时可以记录 `data_quality_check`。
-6. 是否真实发送 Hermes 取决于 `--send-alert` 和 Hermes 配置。
-7. 即使发送 Hermes，也必须使用固定模板。
-8. 不调用 DeepSeek。
+5. 本地 smoke check 不请求 Binance、不连接 MySQL、不发送 Hermes。
+6. `--run-real-check` 发现异常时默认记录 `data_quality_check` 并发送 Hermes 失败报警。
+7. `--run-real-check` 检查成功时默认不发送成功通知。
+8. `--send-success-alert` 表示检查成功时发送 Hermes 成功通知。
+9. `--daily-health-report` 表示成功和失败都发送 Hermes 通知。
+10. 即使发送 Hermes，也必须使用固定模板。
+11. 不调用 DeepSeek。
 
 允许该脚本：
 
@@ -828,7 +833,8 @@ Codex 可以生成 migration 文件，但不得自动连接数据库执行迁移
 2. 请求 Binance REST `/fapi/v1/klines`。
 3. 读取 MySQL `market_kline_4h`。
 4. 写入 `data_quality_check`。
-5. 在用户显式允许时发送 Hermes 报警。
+5. 在真实检查失败时默认发送 Hermes 失败报警。
+6. 在 `--send-success-alert` 或 `--daily-health-report` 时发送 Hermes 成功通知。
 
 禁止该脚本：
 
@@ -846,13 +852,19 @@ Codex 可以生成 migration 文件，但不得自动连接数据库执行迁移
 示例运行方式：
 
 ```
-python -m scripts.check_kline_quality_4h --symbol BTCUSDT --interval 4h --limit 100 --trigger-source cli
+python -m scripts.check_kline_quality_4h
 ```
 
-如需允许异常时发送 Hermes：
+真实检查失败默认发送 Hermes 失败报警：
 
 ```
-python -m scripts.check_kline_quality_4h --symbol BTCUSDT --interval 4h --limit 100 --trigger-source cli --send-alert
+python -m scripts.check_kline_quality_4h --run-real-check --symbol BTCUSDT --interval 4h --limit 100 --trigger-source cli
+```
+
+如需每日健康报告，成功和失败都发送 Hermes 通知：
+
+```
+python -m scripts.check_kline_quality_4h --run-real-check --symbol BTCUSDT --interval 4h --limit 100 --trigger-source cli --daily-health-report
 ```
 
 说明：
