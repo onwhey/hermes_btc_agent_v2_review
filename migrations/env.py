@@ -21,6 +21,7 @@ from app.core.config import get_settings
 from app.storage.mysql.base import Base
 from app.storage.mysql.database import build_mysql_connection_url
 from app.storage.mysql.models import alert_message as _alert_message_model  # noqa: F401
+from app.storage.mysql.models import market_kline_4h as _market_kline_4h_model  # noqa: F401
 
 target_metadata = Base.metadata
 

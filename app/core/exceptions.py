@@ -115,3 +115,48 @@ class HermesError(AlertingError):
     本类不负责重试策略之外的补偿队列、DeepSeek 内容生成或自动交易。
     """
 
+
+class KlineError(AppError):
+    """Base error for market Kline structure, parsing, validation, and conflicts.
+
+    Parameters: `message` is a sanitized diagnostic summary.
+    Return value: exception instance.
+    Failure scenarios: raised by market-data parser, validator, or repository helpers.
+    External service access: this class does not access Binance or any other service.
+    Data impact: this class does not read/write MySQL, read/write Redis, or send alerts.
+    This class does not repair Kline data or perform any trading action.
+    """
+
+
+class KlineParseError(KlineError):
+    """Raised when a Binance raw Kline row cannot be parsed safely.
+
+    Parameters: `message` identifies the invalid field or shape without sensitive data.
+    Return value: exception instance.
+    Failure scenarios: short raw rows, invalid timestamps, or invalid Decimal fields.
+    External service access: none.
+    Data impact: no MySQL writes, Redis writes, alert sends, or trading execution.
+    """
+
+
+class KlineValidationError(KlineError):
+    """Raised when a structured Kline DTO violates phase-06 field rules.
+
+    Parameters: `message` names the failed validation rule.
+    Return value: exception instance.
+    Failure scenarios: invalid OHLC relationship, source mapping, trigger source, or time order.
+    External service access: none.
+    Data impact: no MySQL writes, Redis writes, alert sends, or trading execution.
+    """
+
+
+class KlineConflictError(KlineError):
+    """Raised when an existing formal Kline conflicts with an incoming Kline.
+
+    Parameters: `message` includes the unique key and conflicting field names.
+    Return value: exception instance.
+    Failure scenarios: repository upsert detects different core fields for the same Kline key.
+    External service access: none.
+    Data impact: the repository refuses to overwrite existing formal Kline data.
+    """
+
