@@ -137,7 +137,7 @@ class PriceMonitorService:
                 exc,
             )
             if self._parser_error_count >= PARSER_ERROR_ALERT_THRESHOLD:
-                self._send_monitor_system_alert(
+                self._send_monitor_system_alert_if_allowed(
                     config,
                     alert_kind=PARSER_ERROR_ALERT_KIND,
                     summary="Binance WebSocket aggTrade parser failed repeatedly",
@@ -453,17 +453,17 @@ class PriceMonitorService:
         }
         alert_status = ""
         exit_code = EXIT_SUCCESS
-        if self._alert_throttle.should_send_alert(symbol=config.symbol, alert_type=NO_RECENT_PRICE_ALERT_KIND):
-            alert_result = self._send_monitor_system_alert(
-                config,
-                alert_kind=NO_RECENT_PRICE_ALERT_KIND,
-                summary="Price monitor has no recent valid Binance WebSocket price event",
-                error_message=reason,
-                severity=AlertSeverity.WARNING,
-            )
-            alert_status = alert_result.status.value
-            if alert_result.status != AlertSendStatus.SENT:
-                exit_code = EXIT_ALERT_FAILED
+        alert_result, suppressed = self._send_monitor_system_alert_if_allowed(
+            config,
+            alert_kind=NO_RECENT_PRICE_ALERT_KIND,
+            summary="Price monitor has no recent valid Binance WebSocket price event",
+            error_message=reason,
+            severity=AlertSeverity.WARNING,
+        )
+        alert_status = alert_result.status.value
+        details["alert_suppressed_by_cooldown"] = suppressed
+        if not suppressed and alert_result.status != AlertSendStatus.SENT:
+            exit_code = EXIT_ALERT_FAILED
         return PriceMonitorResult(
             status=PriceMonitorStatus.NO_RECENT_PRICE,
             exit_code=exit_code,
@@ -482,14 +482,18 @@ class PriceMonitorService:
         message: str,
         error_message: str,
     ) -> PriceMonitorResult:
-        alert_result = self._send_monitor_system_alert(
+        alert_result, suppressed = self._send_monitor_system_alert_if_allowed(
             config,
             alert_kind=alert_kind,
             summary=message,
             error_message=error_message,
             severity=AlertSeverity.ERROR,
         )
-        exit_code = EXIT_ALERT_FAILED if alert_result.status != AlertSendStatus.SENT else EXIT_RUNTIME_ERROR
+        exit_code = (
+            EXIT_ALERT_FAILED
+            if not suppressed and alert_result.status != AlertSendStatus.SENT
+            else EXIT_RUNTIME_ERROR
+        )
         return PriceMonitorResult(
             status=PriceMonitorStatus.FAILED,
             exit_code=exit_code,
@@ -502,7 +506,55 @@ class PriceMonitorService:
                 "alert_kind": alert_kind,
                 "error_message": error_message,
                 "source": PRICE_SOURCE_BINANCE_WS_AGG_TRADE,
+                "alert_suppressed_by_cooldown": suppressed,
             },
+        )
+
+    def _send_monitor_system_alert_if_allowed(
+        self,
+        config: PriceMonitorConfig,
+        *,
+        alert_kind: str,
+        summary: str,
+        error_message: str,
+        severity: AlertSeverity,
+    ) -> tuple[AlertSendResult, bool]:
+        """Send a system alert only once per `symbol + alert_kind` cooldown window.
+
+        Parameters: `alert_kind` is part of the cooldown key, so Redis, parser,
+        runtime, no-recent-price, and price-change alerts do not suppress each
+        other.
+        Return value: `(AlertSendResult, suppressed_by_cooldown)`.
+        Failure scenarios: alert delivery failures are represented by
+        `AlertSendResult`; cooldown suppression is explicit and not treated as a
+        Hermes failure.
+        External service access: calls Hermes only when cooldown allows it.
+        Data impact: no Redis/MySQL Kline writes; this only controls alert flow.
+        """
+
+        if not self._alert_throttle.should_send_alert(symbol=config.symbol, alert_type=alert_kind):
+            LOGGER.info(
+                "Price monitor alert suppressed by cooldown trace_id=%s symbol=%s alert_kind=%s",
+                config.trace_id,
+                config.symbol,
+                alert_kind,
+            )
+            return (
+                AlertSendResult(
+                    status=AlertSendStatus.SKIPPED,
+                    message="price monitor alert suppressed by cooldown",
+                ),
+                True,
+            )
+        return (
+            self._send_monitor_system_alert(
+                config,
+                alert_kind=alert_kind,
+                summary=summary,
+                error_message=error_message,
+                severity=severity,
+            ),
+            False,
         )
 
     def _send_monitor_system_alert(

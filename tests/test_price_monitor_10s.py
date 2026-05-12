@@ -229,6 +229,26 @@ def test_service_writes_redis_and_alerts_when_threshold_exceeded() -> None:
     asyncio.run(scenario())
 
 
+def test_service_price_change_alert_is_cooled_down_while_redis_updates() -> None:
+    async def scenario() -> None:
+        redis = FakeRedis({"bitcoin_price": serialize_price_state(build_state("100"))})
+        alert_sender = FakeAlertSender()
+        service = PriceMonitorService(redis_client=redis, alert_sender=alert_sender)
+        await service.update_latest_price_event(build_event("102"))
+
+        first = await service.check_latest_price_every_interval(monitor_config())
+        await service.update_latest_price_event(build_event("104"))
+        second = await service.check_latest_price_every_interval(monitor_config())
+
+        assert first.status == PriceMonitorStatus.ALERTED
+        assert second.status == PriceMonitorStatus.SUPPRESSED
+        assert second.details["alert_suppressed_by_cooldown"] is True
+        assert len(alert_sender.calls) == 1
+        assert len(redis.set_calls) == 2
+
+    asyncio.run(scenario())
+
+
 def test_service_does_not_alert_when_threshold_not_exceeded() -> None:
     async def scenario() -> None:
         redis = FakeRedis({"bitcoin_price": serialize_price_state(build_state("100"))})
@@ -257,6 +277,59 @@ def test_service_previous_missing_initializes_without_alert() -> None:
         assert result.status == PriceMonitorStatus.INITIALIZED
         assert result.redis_written is True
         assert alert_sender.calls == []
+
+    asyncio.run(scenario())
+
+
+def test_service_redis_get_failures_are_cooled_down() -> None:
+    async def scenario() -> None:
+        redis = FakeRedis(fail_get=True)
+        alert_sender = FakeAlertSender()
+        service = PriceMonitorService(redis_client=redis, alert_sender=alert_sender)
+        await service.update_latest_price_event(build_event("100"))
+
+        first = await service.check_latest_price_every_interval(monitor_config(enable_price_alerts=False))
+        second = await service.check_latest_price_every_interval(monitor_config(enable_price_alerts=False))
+
+        assert first.status == PriceMonitorStatus.FAILED
+        assert second.status == PriceMonitorStatus.FAILED
+        assert second.details["alert_suppressed_by_cooldown"] is True
+        assert second.alert_status == AlertSendStatus.SKIPPED.value
+        assert len(alert_sender.calls) == 1
+
+    asyncio.run(scenario())
+
+
+def test_service_redis_set_failures_are_cooled_down() -> None:
+    async def scenario() -> None:
+        redis = FakeRedis({"bitcoin_price": serialize_price_state(build_state("100"))}, fail_set=True)
+        alert_sender = FakeAlertSender()
+        service = PriceMonitorService(redis_client=redis, alert_sender=alert_sender)
+        await service.update_latest_price_event(build_event("100.5"))
+
+        first = await service.check_latest_price_every_interval(monitor_config())
+        second = await service.check_latest_price_every_interval(monitor_config())
+
+        assert first.status == PriceMonitorStatus.FAILED
+        assert second.status == PriceMonitorStatus.FAILED
+        assert second.details["alert_suppressed_by_cooldown"] is True
+        assert second.alert_status == AlertSendStatus.SKIPPED.value
+        assert len(alert_sender.calls) == 1
+
+    asyncio.run(scenario())
+
+
+def test_service_parser_repeated_failures_are_cooled_down() -> None:
+    async def scenario() -> None:
+        alert_sender = FakeAlertSender()
+        service = PriceMonitorService(redis_client=FakeRedis(), alert_sender=alert_sender)
+        bad_message = '{"e":"aggTrade","E":1,"s":"BTCUSDT","T":2}'
+
+        for _ in range(4):
+            await service.handle_raw_ws_message(bad_message, config=monitor_config())
+
+        assert len(alert_sender.calls) == 1
+        assert alert_sender.calls[0]["event"].details["alert_kind"] == "price_monitor_parser_error"
 
     asyncio.run(scenario())
 
@@ -291,6 +364,24 @@ def test_service_no_latest_price_generates_exception_status() -> None:
 
         assert result.status == PriceMonitorStatus.NO_RECENT_PRICE
         assert result.redis_written is False
+        assert len(alert_sender.calls) == 1
+
+    asyncio.run(scenario())
+
+
+def test_service_no_latest_price_alert_is_cooled_down() -> None:
+    async def scenario() -> None:
+        alert_sender = FakeAlertSender()
+        service = PriceMonitorService(redis_client=FakeRedis(), alert_sender=alert_sender)
+        service._started_at_utc = now_utc() - timedelta(seconds=31)
+
+        first = await service.check_latest_price_every_interval(monitor_config(no_event_timeout_seconds=30))
+        second = await service.check_latest_price_every_interval(monitor_config(no_event_timeout_seconds=30))
+
+        assert first.status == PriceMonitorStatus.NO_RECENT_PRICE
+        assert second.status == PriceMonitorStatus.NO_RECENT_PRICE
+        assert second.details["alert_suppressed_by_cooldown"] is True
+        assert second.alert_status == AlertSendStatus.SKIPPED.value
         assert len(alert_sender.calls) == 1
 
     asyncio.run(scenario())

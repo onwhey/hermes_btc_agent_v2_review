@@ -269,8 +269,13 @@ Hermes 发送统一通过 `app/alerting/service.py::send_alert`。
 规则：
 
 - 同一 `symbol + alert_type` 在冷却期内最多报警一次。
+- 价格监控所有 Hermes 报警都使用同一套冷却入口。
+- 冷却 key 至少包含 `symbol + alert_kind`，不同异常类型不会互相误伤。
+- 纳入冷却的 `alert_kind` 包括 `price_change_threshold_exceeded`、`price_monitor_no_recent_price`、`price_monitor_redis_error`、`price_monitor_parser_error`、`price_monitor_runtime_error`。
 - 冷却状态当前保存在进程内存。
 - 冷却命中只抑制 Hermes 发送，不影响 Redis 写入。
+- 冷却命中时 result 会通过 `alert_suppressed_by_cooldown=true` 或 `suppressed` 状态明确表达，不会假装已经发送。
+- `PRICE_MONITOR_ENABLE_PRICE_ALERTS` 只控制价格波动提醒是否发送；Redis、parser、runtime、no-recent-price 等系统异常报警不受该开关关闭，但仍受冷却控制。
 
 ### 6.2 Hermes 失败
 
@@ -388,4 +393,3 @@ python -m scripts.run_price_monitor_10s --help
 python -m pytest tests/test_price_monitor_10s.py
 python -m pytest
 ```
-
