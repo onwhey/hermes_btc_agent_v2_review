@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any, Iterable
 
 import app.storage.mysql.session as mysql_session
-from app.alerting.types import AlertSendResult, AlertSendStatus
+from app.alerting.types import AlertSendResult, AlertSendStatus, AlertType
 from app.core.config import AppSettings
 from app.core.task_lock import build_kline_integrity_check_lock_key
 from app.market_data.kline_constants import (
@@ -204,6 +204,23 @@ def run_daily_with_fakes(
     return result, fake_repository, fake_quality_repository, fake_alert_sender, fake_session, fake_client
 
 
+def assert_single_daily_notification(alert_sender: FakeAlertSender, report_status: str) -> None:
+    assert len(alert_sender.calls) == 1
+    event = alert_sender.calls[0]["event"]
+    assert event.details["report_status"] == report_status
+    assert event.details["symbol"] == "BTCUSDT"
+    assert event.details["interval"]
+    assert event.details["limit"] >= 1
+    assert event.details["trigger_source"] in {"cli", "scheduler"}
+    assert event.details["no_repair_performed"] is True
+    expected_type = (
+        AlertType.KLINE_INTEGRITY_CHECK_PASSED
+        if report_status == "healthy"
+        else AlertType.KLINE_INTEGRITY_CHECK_FAILED
+    )
+    assert event.alert_type == expected_type
+
+
 def test_daily_recent_100_pass_records_quality_and_sends_success_alert_without_formal_write() -> None:
     result, repository, quality_repository, alert_sender, _session, client = run_daily_with_fakes(
         raw_klines=make_raw_klines(101),
@@ -217,7 +234,7 @@ def test_daily_recent_100_pass_records_quality_and_sends_success_alert_without_f
     assert client.get_klines_calls[0]["limit"] == 101
     assert quality_repository.records[0].report.check_type == CHECK_TYPE_DAILY_KLINE_INTEGRITY
     assert quality_repository.records[0].report.status.value == "passed"
-    assert len(alert_sender.calls) == 1
+    assert_single_daily_notification(alert_sender, "healthy")
     assert alert_sender.calls[0]["event"].details["source"] == "Binance REST official klines"
     assert repository.bulk_write_called is False
     assert repository.delete_called is False
@@ -248,7 +265,7 @@ def test_daily_integrity_lock_acquire_success_uses_symbol_interval_key_and_relea
     assert task_lock.release_calls == [{"key": expected_key, "owner": request.trace_id}]
 
 
-def test_daily_integrity_lock_occupied_skips_without_external_or_database_work() -> None:
+def test_scheduler_daily_integrity_lock_occupied_sends_one_skipped_notification_without_data_work() -> None:
     task_lock = FakeIntegrityTaskLock(acquired=False)
     repository = FakeDailyKlineRepository([official_model(offset) for offset in range(100)])
     quality_repository = FakeQualityRepository()
@@ -269,8 +286,38 @@ def test_daily_integrity_lock_occupied_skips_without_external_or_database_work()
     assert client.get_klines_calls == []
     assert repository.read_calls == 0
     assert quality_repository.records == []
-    assert alert_sender.calls == []
+    assert_single_daily_notification(alert_sender, "skipped")
+    assert alert_sender.calls[0]["event"].details["skip_reason"] == "integrity_check_lock_occupied"
     assert task_lock.release_calls == []
+
+
+def test_manual_daily_integrity_lock_occupied_skips_without_forced_hermes() -> None:
+    task_lock = FakeIntegrityTaskLock(acquired=False)
+    repository = FakeDailyKlineRepository([official_model(offset) for offset in range(100)])
+    quality_repository = FakeQualityRepository()
+    alert_sender = FakeAlertSender()
+    request = DailyKlineIntegrityCheckRequest(
+        check_trigger=CHECK_TRIGGER_SOURCE_CLI,
+        check_mode=CHECK_MODE_MANUAL_INTEGRITY_CHECK,
+    )
+
+    result, repository, quality_repository, alert_sender, _session, client = run_daily_with_fakes(
+        request=request,
+        raw_klines=make_raw_klines(101),
+        existing=[],
+        kline_repository=repository,
+        quality_repository=quality_repository,
+        alert_sender=alert_sender,
+        task_lock=task_lock,
+    )
+
+    assert result.status == DailyKlineIntegrityStatus.SKIPPED
+    assert client.get_server_time_calls == 0
+    assert client.get_klines_calls == []
+    assert repository.read_calls == 0
+    assert quality_repository.records == []
+    assert alert_sender.calls == []
+    assert repository.bulk_write_called is False
 
 
 def test_daily_integrity_lock_acquire_exception_returns_error_and_alerts() -> None:
@@ -294,7 +341,7 @@ def test_daily_integrity_lock_acquire_exception_returns_error_and_alerts() -> No
     assert client.get_klines_calls == []
     assert repository.read_calls == 0
     assert quality_repository.records[0].report.status.value == "error"
-    assert len(alert_sender.calls) == 1
+    assert_single_daily_notification(alert_sender, "unknown")
     assert task_lock.release_calls == []
 
 
@@ -310,7 +357,7 @@ def test_daily_missing_database_kline_fails_alerts_and_does_not_backfill() -> No
     assert result.exit_code == EXIT_QUALITY_FAILED
     assert result.first_issue_type == KlineQualityIssueType.MISSING_IN_DATABASE.value
     assert quality_repository.records[0].report.status.value == "failed"
-    assert len(alert_sender.calls) == 1
+    assert_single_daily_notification(alert_sender, "unhealthy")
     assert repository.bulk_write_called is False
 
 
@@ -325,7 +372,7 @@ def test_daily_database_field_mismatch_fails_alerts_and_does_not_overwrite() -> 
 
     assert result.status == DailyKlineIntegrityStatus.FAILED
     assert result.first_issue_type == KlineQualityIssueType.DATABASE_FIELD_MISMATCH.value
-    assert len(alert_sender.calls) == 1
+    assert_single_daily_notification(alert_sender, "unhealthy")
     assert repository.bulk_write_called is False
 
 
@@ -340,7 +387,7 @@ def test_daily_database_extra_kline_fails_alerts_and_does_not_delete() -> None:
 
     assert result.status == DailyKlineIntegrityStatus.FAILED
     assert result.first_issue_type == KlineQualityIssueType.EXTRA_IN_DATABASE.value
-    assert len(alert_sender.calls) == 1
+    assert_single_daily_notification(alert_sender, "unhealthy")
     assert repository.delete_called is False
 
 
@@ -355,7 +402,7 @@ def test_daily_binance_rest_failure_alerts_task_error_without_formal_write() -> 
     assert result.exit_code == EXIT_TASK_FAILED
     assert result.first_issue_type == KlineQualityIssueType.TASK_ERROR.value
     assert quality_repository.records[0].report.status.value == "error"
-    assert len(alert_sender.calls) == 1
+    assert_single_daily_notification(alert_sender, "unknown")
     assert repository.bulk_write_called is False
 
 
@@ -408,7 +455,7 @@ def test_daily_database_read_failure_records_error_when_possible_and_alerts() ->
     assert result.status == DailyKlineIntegrityStatus.ERROR
     assert result.exit_code == EXIT_TASK_FAILED
     assert quality_repository.records[0].report.status.value == "error"
-    assert len(alert_sender.calls) == 1
+    assert_single_daily_notification(alert_sender, "unknown")
 
 
 def test_daily_data_quality_check_write_failure_is_not_silent_and_alerts() -> None:
@@ -422,7 +469,7 @@ def test_daily_data_quality_check_write_failure_is_not_silent_and_alerts() -> No
     assert result.exit_code == EXIT_TASK_FAILED
     assert result.details["data_quality_check_record_failed"] is True
     assert quality_repository.records == []
-    assert len(alert_sender.calls) == 1
+    assert_single_daily_notification(alert_sender, "unknown")
     assert repository.bulk_write_called is False
 
 
@@ -441,10 +488,10 @@ def test_daily_success_hermes_failure_keeps_check_fact_but_returns_alert_failed(
     assert result.exit_code == EXIT_ALERT_FAILED
     assert result.alert_status == AlertSendStatus.FAILED.value
     assert quality_repository.records[0].report.status.value == "passed"
-    assert len(alert_sender.calls) == 1
+    assert_single_daily_notification(alert_sender, "healthy")
 
 
-def test_daily_notify_success_false_skips_success_alert_but_failure_still_alerts() -> None:
+def test_scheduler_notify_success_false_still_sends_single_daily_result_notification() -> None:
     success_request = DailyKlineIntegrityCheckRequest(notify_success=False)
     result, _repo, _quality, alert_sender, _session, _client = run_daily_with_fakes(
         request=success_request,
@@ -453,7 +500,7 @@ def test_daily_notify_success_false_skips_success_alert_but_failure_still_alerts
     )
 
     assert result.status == DailyKlineIntegrityStatus.HEALTHY
-    assert alert_sender.calls == []
+    assert_single_daily_notification(alert_sender, "healthy")
 
     failed_request = DailyKlineIntegrityCheckRequest(notify_success=False)
     result, _repo, _quality, alert_sender, _session, _client = run_daily_with_fakes(
@@ -463,7 +510,56 @@ def test_daily_notify_success_false_skips_success_alert_but_failure_still_alerts
     )
 
     assert result.status == DailyKlineIntegrityStatus.FAILED
-    assert len(alert_sender.calls) == 1
+    assert_single_daily_notification(alert_sender, "unhealthy")
+
+
+def test_scheduler_parameter_error_sends_one_unknown_notification_without_data_work() -> None:
+    request = DailyKlineIntegrityCheckRequest(interval_value="1h")
+    repository = FakeDailyKlineRepository([official_model(offset) for offset in range(100)])
+    quality_repository = FakeQualityRepository()
+    alert_sender = FakeAlertSender()
+
+    result, repository, quality_repository, alert_sender, _session, client = run_daily_with_fakes(
+        request=request,
+        raw_klines=make_raw_klines(101),
+        existing=[],
+        kline_repository=repository,
+        quality_repository=quality_repository,
+        alert_sender=alert_sender,
+    )
+
+    assert result.status == DailyKlineIntegrityStatus.ERROR
+    assert result.exit_code == EXIT_TASK_FAILED
+    assert client.get_server_time_calls == 0
+    assert client.get_klines_calls == []
+    assert repository.read_calls == 0
+    assert repository.bulk_write_called is False
+    assert quality_repository.records == []
+    assert_single_daily_notification(alert_sender, "unknown")
+
+
+def test_manual_parameter_error_does_not_force_hermes() -> None:
+    request = DailyKlineIntegrityCheckRequest(
+        interval_value="1h",
+        check_trigger=CHECK_TRIGGER_SOURCE_CLI,
+        check_mode=CHECK_MODE_MANUAL_INTEGRITY_CHECK,
+    )
+    alert_sender = FakeAlertSender()
+
+    result, repository, quality_repository, alert_sender, _session, client = run_daily_with_fakes(
+        request=request,
+        raw_klines=make_raw_klines(101),
+        existing=[],
+        alert_sender=alert_sender,
+    )
+
+    assert result.status == DailyKlineIntegrityStatus.ERROR
+    assert result.exit_code == EXIT_PARAMETER_ERROR
+    assert client.get_server_time_calls == 0
+    assert repository.read_calls == 0
+    assert repository.bulk_write_called is False
+    assert quality_repository.records == []
+    assert alert_sender.calls == []
 
 
 def test_daily_scheduler_job_calls_service_directly_with_scheduler_trigger_source() -> None:

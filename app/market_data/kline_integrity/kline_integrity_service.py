@@ -32,13 +32,14 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from app.alerting.types import AlertSendResult, AlertSendStatus
+from app.alerting.types import AlertEvent, AlertSendResult, AlertSendStatus, AlertSeverity, AlertType
 from app.core.logger import get_logger
 from app.core.task_lock import RedisTaskLock, build_kline_integrity_check_lock_key
 from app.core.time_utils import now_utc
 from app.market_data.kline_constants import DEFAULT_KLINE_SYMBOL, KLINE_4H_INTERVAL_VALUE
 from app.market_data.kline_integrity.types import (
     ALLOWED_CHECK_MODES,
+    CHECK_MODE_DAILY_INTEGRITY_CHECK,
     EXIT_ALERT_FAILED,
     EXIT_PARAMETER_ERROR,
     EXIT_SUCCESS,
@@ -109,13 +110,32 @@ def run_daily_kline_integrity_check(
     try:
         validate_daily_kline_integrity_request(request)
     except DailyKlineIntegrityParameterError as exc:
-        return DailyKlineIntegrityCheckResult(
+        result = DailyKlineIntegrityCheckResult(
             status=DailyKlineIntegrityStatus.ERROR,
-            exit_code=EXIT_PARAMETER_ERROR,
+            exit_code=EXIT_TASK_FAILED
+            if _should_send_daily_result_notification(request)
+            else EXIT_PARAMETER_ERROR,
             trace_id=request.trace_id,
             message=str(exc),
             requested_count=request.requested_count,
-            details={"error_code": "parameter_error"},
+            details=_build_daily_result_details(
+                request,
+                report_status="unknown",
+                error_code="parameter_error",
+                error_message=str(exc),
+            ),
+        )
+        if not _should_send_daily_result_notification(request):
+            return result
+        return _send_daily_result_notification_and_adjust_result(
+            result,
+            request=request,
+            report_status="unknown",
+            db_session=db_session,
+            alert_sender=alert_sender,
+            alert_repository=alert_repository,
+            quality_record=None,
+            data_quality_repository=None,
         )
 
     started_at = now_utc()
@@ -143,19 +163,34 @@ def run_daily_kline_integrity_check(
                 lock_key,
                 request.trace_id,
             )
-            return DailyKlineIntegrityCheckResult(
+            result = DailyKlineIntegrityCheckResult(
                 status=DailyKlineIntegrityStatus.SKIPPED,
                 exit_code=EXIT_SUCCESS,
                 trace_id=request.trace_id,
                 message="Daily Kline integrity check skipped because another task holds the lock",
                 requested_count=request.requested_count,
                 lock_key=lock_key,
-                details={
-                    "lock_key": lock_key,
-                    "check_mode": request.check_mode,
-                    "check_trigger": request.check_trigger,
-                    "lock_acquired": False,
-                },
+                details=_build_daily_result_details(
+                    request,
+                    report_status="skipped",
+                    lock_key=lock_key,
+                    check_mode=request.check_mode,
+                    check_trigger=request.check_trigger,
+                    lock_acquired=False,
+                    skip_reason="integrity_check_lock_occupied",
+                ),
+            )
+            if not _should_send_daily_result_notification(request):
+                return result
+            return _send_daily_result_notification_and_adjust_result(
+                result,
+                request=request,
+                report_status="skipped",
+                db_session=db_session,
+                alert_sender=alert_sender,
+                alert_repository=alert_repository,
+                quality_record=None,
+                data_quality_repository=active_quality_repository,
             )
 
         report = run_recent_kline_integrity_check(
@@ -201,18 +236,31 @@ def run_daily_kline_integrity_check(
             result,
             lock_key=lock_key,
             details={
+                **_build_daily_result_details(
+                    request,
+                    report_status=_report_status_from_result(result),
+                    checked_count=result.checked_count,
+                    issue_count=result.issue_count,
+                    first_issue_type=result.first_issue_type,
+                    first_issue_message=result.first_issue_message,
+                    checked_start_time=result.checked_start_time,
+                    checked_end_time=result.checked_end_time,
+                    data_quality_check_id=result.quality_check_id,
+                ),
                 **dict(result.details),
+                "report_status": _report_status_from_result(result),
                 "lock_key": lock_key,
                 "check_mode": request.check_mode,
                 "check_trigger": request.check_trigger,
                 "lookback_count": request.lookback_count,
             },
         )
-        if final_report.passed and not request.notify_success:
+        if final_report.passed and not request.notify_success and not _should_send_daily_result_notification(request):
             return result
         return _send_report_alert_and_adjust_result(
             result,
             final_report,
+            request=request,
             db_session=db_session,
             alert_sender=alert_sender,
             alert_repository=alert_repository,
@@ -251,14 +299,7 @@ def run_daily_kline_integrity_check(
             )
             _rollback_if_possible(db_session)
 
-        alert_result = _send_task_failure_alert_safely(
-            request,
-            db_session=db_session,
-            alert_sender=alert_sender,
-            alert_repository=alert_repository,
-            error_message=str(exc),
-        )
-        return DailyKlineIntegrityCheckResult(
+        result = DailyKlineIntegrityCheckResult(
             status=DailyKlineIntegrityStatus.ERROR,
             exit_code=EXIT_TASK_FAILED,
             trace_id=request.trace_id,
@@ -275,19 +316,55 @@ def run_daily_kline_integrity_check(
             checked_start_time=datetime_to_text(final_report.start_open_time_utc if final_report else None),
             checked_end_time=datetime_to_text(final_report.end_open_time_utc if final_report else None),
             quality_check_id=record_id(quality_record),
-            alert_status=_alert_status_text(alert_result),
             lock_key=lock_key,
+            details=_build_daily_result_details(
+                request,
+                report_status="unknown",
+                checked_count=final_report.checked_count if final_report else 0,
+                issue_count=final_report.issue_count if final_report else 0,
+                first_issue_type=final_report.first_issue.issue_type.value
+                if final_report and final_report.first_issue
+                else KlineQualityIssueType.TASK_ERROR.value,
+                first_issue_message=final_report.first_issue.message
+                if final_report and final_report.first_issue
+                else str(exc),
+                checked_start_time=datetime_to_text(final_report.start_open_time_utc if final_report else None),
+                checked_end_time=datetime_to_text(final_report.end_open_time_utc if final_report else None),
+                data_quality_check_id=record_id(quality_record),
+                error_code=exc.__class__.__name__,
+                error_message=str(exc),
+                database_read_started=database_state["entered"],
+                data_quality_check_record_failed=quality_record_failed,
+                data_quality_check_record_error=quality_record_error,
+                lock_key=lock_key,
+                check_mode=request.check_mode,
+            ),
+        )
+        if _should_send_daily_result_notification(request):
+            return _send_daily_result_notification_and_adjust_result(
+                result,
+                request=request,
+                report_status="unknown",
+                db_session=db_session,
+                alert_sender=alert_sender,
+                alert_repository=alert_repository,
+                quality_record=quality_record,
+                data_quality_repository=active_quality_repository,
+            )
+
+        alert_result = _send_task_failure_alert_safely(
+            request,
+            db_session=db_session,
+            alert_sender=alert_sender,
+            alert_repository=alert_repository,
+            error_message=str(exc),
+        )
+        return replace(
+            result,
+            alert_status=_alert_status_text(alert_result),
             details={
-                "error_code": exc.__class__.__name__,
-                "error_message": str(exc),
-                "database_read_started": database_state["entered"],
-                "data_quality_check_record_failed": quality_record_failed,
-                "data_quality_check_record_error": quality_record_error,
+                **dict(result.details),
                 "alert_error": alert_result.error_message if alert_result else "",
-                "source": "Binance REST official klines",
-                "lock_key": lock_key,
-                "check_mode": request.check_mode,
-                "action": "check_only_no_repair_no_backfill_no_market_kline_write",
             },
         )
     finally:
@@ -332,12 +409,25 @@ def _send_report_alert_and_adjust_result(
     result: DailyKlineIntegrityCheckResult,
     report: KlineQualityReport,
     *,
+    request: DailyKlineIntegrityCheckRequest,
     db_session: Any,
     alert_sender: Any | None,
     alert_repository: Any | None,
     data_quality_repository: Any,
     quality_record: Any | None,
 ) -> DailyKlineIntegrityCheckResult:
+    if _should_send_daily_result_notification(request):
+        return _send_daily_result_notification_and_adjust_result(
+            result,
+            request=request,
+            report_status=_report_status_from_result(result),
+            db_session=db_session,
+            alert_sender=alert_sender,
+            alert_repository=alert_repository,
+            quality_record=quality_record,
+            data_quality_repository=data_quality_repository,
+        )
+
     alert_result = _send_report_alert_safely(
         report,
         db_session=db_session,
@@ -359,6 +449,134 @@ def _send_report_alert_and_adjust_result(
             **dict(result.details),
             "alert_error": alert_result.error_message if alert_result else "",
         },
+    )
+
+
+def _send_daily_result_notification_and_adjust_result(
+    result: DailyKlineIntegrityCheckResult,
+    *,
+    request: DailyKlineIntegrityCheckRequest,
+    report_status: str,
+    db_session: Any,
+    alert_sender: Any | None,
+    alert_repository: Any | None,
+    quality_record: Any | None,
+    data_quality_repository: Any | None,
+) -> DailyKlineIntegrityCheckResult:
+    """Send the single scheduler/daily Hermes result notification.
+
+    Daily phase-11 scheduling must produce one fixed-template result notice per
+    attempt. This helper is the only notification path for scheduler/daily
+    outcomes, including healthy, unhealthy, unknown, and skipped. It sends no
+    repair, backfill, trading, or strategy content and never writes formal Klines.
+    """
+
+    enriched_result = replace(
+        result,
+        details={
+            **_build_daily_result_details(
+                request,
+                report_status=report_status,
+                checked_count=result.checked_count,
+                issue_count=result.issue_count,
+                first_issue_type=result.first_issue_type,
+                first_issue_message=result.first_issue_message,
+                checked_start_time=result.checked_start_time,
+                checked_end_time=result.checked_end_time,
+                data_quality_check_id=result.quality_check_id,
+            ),
+            **dict(result.details),
+            "report_status": report_status,
+        },
+    )
+    alert_result = _send_daily_result_notification_safely(
+        enriched_result,
+        request=request,
+        report_status=report_status,
+        db_session=db_session,
+        alert_sender=alert_sender,
+        alert_repository=alert_repository,
+    )
+    alert_failed = _alert_delivery_failed(alert_result)
+    if alert_result and alert_result.status == AlertSendStatus.SENT and data_quality_repository is not None:
+        _mark_quality_alert_sent_if_supported(
+            data_quality_repository,
+            db_session=db_session,
+            quality_record=quality_record,
+        )
+    return replace(
+        enriched_result,
+        exit_code=EXIT_ALERT_FAILED if alert_failed else enriched_result.exit_code,
+        alert_status=_alert_status_text(alert_result),
+        details={
+            **dict(enriched_result.details),
+            "alert_error": alert_result.error_message if alert_result else "",
+        },
+    )
+
+
+def _send_daily_result_notification_safely(
+    result: DailyKlineIntegrityCheckResult,
+    *,
+    request: DailyKlineIntegrityCheckRequest,
+    report_status: str,
+    db_session: Any,
+    alert_sender: Any | None,
+    alert_repository: Any | None,
+) -> AlertSendResult | None:
+    try:
+        if alert_sender is None:
+            from app.alerting.service import send_alert as alert_sender
+        if alert_repository is None and db_session is not None:
+            from app.storage.mysql.repositories.alert_message_repository import AlertMessageRepository
+
+            alert_repository = AlertMessageRepository()
+
+        return alert_sender(
+            _build_daily_result_alert_event(result, request=request, report_status=report_status),
+            repository=alert_repository,
+            db_session=db_session,
+            send_real_alert=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - expose Hermes failure without changing Kline data.
+        LOGGER.exception("Daily Kline integrity result notification raised")
+        return AlertSendResult(
+            status=AlertSendStatus.FAILED,
+            error_message=str(exc),
+            attempted_real_send=True,
+        )
+
+
+def _build_daily_result_alert_event(
+    result: DailyKlineIntegrityCheckResult,
+    *,
+    request: DailyKlineIntegrityCheckRequest,
+    report_status: str,
+) -> AlertEvent:
+    severity_by_status = {
+        "healthy": AlertSeverity.INFO,
+        "unhealthy": AlertSeverity.ERROR,
+        "unknown": AlertSeverity.CRITICAL,
+        "skipped": AlertSeverity.WARNING,
+    }
+    summary_by_status = {
+        "healthy": "Daily Kline health confirmed: healthy",
+        "unhealthy": "Daily Kline health check completed with issues",
+        "unknown": "Daily Kline health could not be confirmed",
+        "skipped": "Daily Kline health could not be confirmed because this run was skipped",
+    }
+    return AlertEvent(
+        alert_type=(
+            AlertType.KLINE_INTEGRITY_CHECK_PASSED
+            if report_status == "healthy"
+            else AlertType.KLINE_INTEGRITY_CHECK_FAILED
+        ),
+        severity=severity_by_status.get(report_status, AlertSeverity.CRITICAL),
+        title=f"Daily Kline integrity result: {report_status}",
+        summary=summary_by_status.get(report_status, "Daily Kline health could not be confirmed"),
+        details=dict(result.details),
+        source="app.market_data.kline_integrity.kline_integrity_service",
+        trace_id=request.trace_id,
     )
 
 
@@ -429,7 +647,8 @@ def _with_daily_metadata(
         "started_at": started_at.isoformat(),
         "finished_at": finished_at.isoformat(),
         "source": "Binance REST official klines",
-        "status": "healthy" if report.passed else "failed",
+        "status": "healthy" if report.passed else "unhealthy",
+        "report_status": "healthy" if report.passed else "unhealthy",
         "no_repair_performed": True,
         "action": "check_only_no_repair_no_backfill_no_market_kline_write",
     }
@@ -473,7 +692,8 @@ def _build_task_error_quality_report(
             "started_at": started_at.isoformat(),
             "finished_at": finished_at.isoformat(),
             "source": "Binance REST official klines",
-            "status": "error",
+            "status": "unknown",
+            "report_status": "unknown",
             "no_repair_performed": True,
             "action": "check_only_no_repair_no_backfill_no_market_kline_write",
         },
@@ -500,6 +720,63 @@ def _alert_delivery_failed(result: AlertSendResult | None) -> bool:
 
 def _alert_status_text(result: AlertSendResult | None) -> str | None:
     return result.status.value if result is not None else None
+
+
+def _should_send_daily_result_notification(request: DailyKlineIntegrityCheckRequest) -> bool:
+    return (
+        request.check_trigger == CHECK_TRIGGER_SOURCE_SCHEDULER
+        or request.check_mode == CHECK_MODE_DAILY_INTEGRITY_CHECK
+    )
+
+
+def _report_status_from_result(result: DailyKlineIntegrityCheckResult) -> str:
+    if result.status == DailyKlineIntegrityStatus.HEALTHY:
+        return "healthy"
+    if result.status == DailyKlineIntegrityStatus.FAILED:
+        return "unhealthy"
+    if result.status == DailyKlineIntegrityStatus.SKIPPED:
+        return "skipped"
+    return "unknown"
+
+
+def _build_daily_result_details(
+    request: DailyKlineIntegrityCheckRequest,
+    *,
+    report_status: str,
+    checked_count: int | None = None,
+    issue_count: int | None = None,
+    first_issue_type: str | None = None,
+    first_issue_message: str | None = None,
+    checked_start_time: str | None = None,
+    checked_end_time: str | None = None,
+    data_quality_check_id: int | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Build the audit details required by the phase-11 daily result notice."""
+
+    details: dict[str, Any] = {
+        "report_status": report_status,
+        "symbol": request.symbol,
+        "interval": request.interval_value,
+        "interval_value": request.interval_value,
+        "limit": request.lookback_count,
+        "lookback_count": request.lookback_count,
+        "trigger_source": request.check_trigger,
+        "check_trigger": request.check_trigger,
+        "check_mode": request.check_mode,
+        "checked_count": checked_count if checked_count is not None else 0,
+        "issue_count": issue_count if issue_count is not None else 0,
+        "first_issue_type": first_issue_type or "",
+        "first_issue_message": first_issue_message or "",
+        "checked_start_time": checked_start_time or "",
+        "checked_end_time": checked_end_time or "",
+        "data_quality_check_id": data_quality_check_id or "",
+        "source": "Binance REST official klines",
+        "no_repair_performed": True,
+        "action": "check_only_no_repair_no_backfill_no_market_kline_write",
+    }
+    details.update(extra)
+    return details
 
 
 def _rollback_if_possible(db_session: Any) -> None:

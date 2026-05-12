@@ -544,3 +544,7 @@ python -m scripts.check_kline_integrity --check-trigger cli --lookback-count 100
 6. 本分支只提供 `app/scheduler/jobs/daily_kline_integrity_check.py::run_daily_kline_integrity_check_job` 作为 scheduler 可调用 job 入口；不新增常驻 scheduler runner，也不自动启动每日调度进程。
 7. 正式调度接入时必须直接调用该 job 或 app service，不得调用 `scripts/check_kline_integrity.py`。
 8. 触发来源由入口硬编码：CLI 构造 `check_trigger=cli`，scheduler job 构造 `check_trigger=scheduler`；不再通过环境变量配置触发来源。
+9. scheduler / `daily_integrity_check` 每次最终只发送一条 Hermes 固定模板结果通知，`report_status` 只能是 `healthy`、`unhealthy`、`unknown`、`skipped` 之一。
+10. scheduler 复核成功发送 `healthy`，发现 K线问题发送 `unhealthy`，参数配置或外部依赖异常发送 `unknown`，复核锁占用发送 `skipped` 并说明本次无法确认 K线健康。
+11. manual CLI 参数错误可以只返回错误，复核锁占用可以只返回 `skipped`，不强制发送 Hermes；该规则不影响 scheduler 每日结果通知。
+12. 结果通知不是交易建议，不调用 DeepSeek，不自动修复、不自动回补、不写入 `market_kline_4h`。

@@ -89,7 +89,7 @@ app/storage/mysql/repositories/market_kline_4h_repository.py::list_by_time_range
     ↓
 app/storage/mysql/repositories/data_quality_check_repository.py::create_quality_check_record
     ↓
-app/market_data/kline_quality/service.py::send_quality_alert_if_needed
+app/market_data/kline_integrity/kline_integrity_service.py::_send_daily_result_notification_and_adjust_result
     ↓
 app/alerting/service.py::send_alert
 ```
@@ -130,7 +130,8 @@ DAILY_KLINE_INTEGRITY_LIMIT=100
 DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS=true
 ```
 
-`DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS` 只控制成功健康通知，不控制失败报警。失败报警和异常报警不可由该配置关闭。
+`DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS` 只控制 manual CLI 成功健康通知；scheduler / `daily_integrity_check`
+每天必须发送一次结果通知，因此不允许用该配置关闭 scheduler 的 `healthy`、`unhealthy`、`unknown` 或 `skipped` 通知。
 
 ## 4. 数据库读写
 
@@ -212,30 +213,25 @@ scheduler job 不调用 scripts，不伪装成 CLI。
 报警统一通过：
 
 ```text
+scheduler / daily_integrity_check:
+app/market_data/kline_integrity/kline_integrity_service.py::_send_daily_result_notification_and_adjust_result
+    ↓
+app/alerting/service.py::send_alert
+
+manual CLI compatibility path:
 app/market_data/kline_quality/service.py::send_quality_alert_if_needed
 app/market_data/kline_quality/service.py::send_quality_task_failure_alert
 app/alerting/service.py::send_alert
 ```
 
-成功健康通知：
+scheduler / `daily_integrity_check` 每次最终只发送一条每日结果通知：
 
-- `AlertType.KLINE_INTEGRITY_CHECK_PASSED`
-- severity 为 `info`
-- 默认开启。
-- 内容包含 `symbol`、`interval`、`checked_count`、`checked_start_time`、`checked_end_time`、`source=Binance REST official klines`、`check_only_no_repair_no_backfill_no_market_kline_write`。
+- `report_status=healthy` 使用 `AlertType.KLINE_INTEGRITY_CHECK_PASSED`，severity 为 `info`。
+- `report_status=unhealthy` 使用 `AlertType.KLINE_INTEGRITY_CHECK_FAILED`，severity 为 `error`。
+- `report_status=unknown` 使用 `AlertType.KLINE_INTEGRITY_CHECK_FAILED`，severity 为 `critical`。
+- `report_status=skipped` 使用 `AlertType.KLINE_INTEGRITY_CHECK_FAILED`，severity 为 `warning`。
 
-复核失败报警：
-
-- `AlertType.KLINE_INTEGRITY_CHECK_FAILED`
-- severity 为 `error` 或 `critical`
-- 不受 `notify_success` 控制。
-- 内容包含 `symbol`、`interval`、`issue_count`、`first_issue_type`、`first_issue_message`、`checked_start_time`、`checked_end_time`、`data_quality_check_id`、不修复说明。
-
-任务异常报警：
-
-- `AlertType.KLINE_INTEGRITY_CHECK_FAILED`
-- severity 为 `critical`
-- 用于 Binance 请求失败、数据库读取失败、`data_quality_check` 写入失败、Hermes 发送失败以外的未知异常等无法确认健康状态的场景。
+每日结果通知内容包含 `symbol`、`interval`、`limit`、`trigger_source`、`checked_count`、`issue_count`、`first_issue_type`、`first_issue_message`、`checked_start_time`、`checked_end_time`、`data_quality_check_id`、`source=Binance REST official klines` 和 `no_repair_performed=true`。同一次 scheduler 每日检查不再额外拆分“成功健康通知”和“失败报警”两套 Hermes 通知。
 
 Hermes 发送失败时，service 返回 `exit_code=3` 或在任务异常结果中记录 `alert_status=failed`，不修改正式 K线表。
 
@@ -250,10 +246,12 @@ app/market_data/kline_quality/integrity_checker.py::run_recent_kline_integrity_c
     抛出异常
 app/market_data/kline_integrity/kline_integrity_service.py::run_daily_kline_integrity_check
     捕获异常
-    尽力调用 send_quality_task_failure_alert
+    尽力写 status=error 的 data_quality_check
+    scheduler / daily_integrity_check 场景只发送一次 report_status=unknown 每日结果通知
 ```
 
-因为此时还没有进入数据库读取阶段，通常不写 `data_quality_check`。
+如果 MySQL 或 `data_quality_check` 写入不可用，service 会写 emergency/error 日志，并继续尽力发送
+`report_status=unknown` 每日结果通知。
 
 数据库读取失败：
 
@@ -263,7 +261,7 @@ MarketKline4hRepository.list_by_time_range
 run_daily_kline_integrity_check
     捕获异常
     尝试写 status=error 的 data_quality_check
-    尽力发送 Hermes 异常报警
+    scheduler / daily_integrity_check 场景只发送一次 report_status=unknown 每日结果通知
 ```
 
 `data_quality_check` 写入失败：
@@ -274,14 +272,14 @@ DataQualityCheckRepository.create_quality_check_record
 run_daily_kline_integrity_check
     捕获异常
     rollback 当前 session
-    尽力发送 Hermes 异常报警
+    scheduler / daily_integrity_check 场景只发送一次 report_status=unknown 每日结果通知
 ```
 
-Hermes 成功通知或失败报警发送失败：
+Hermes 每日结果通知发送失败：
 
 ```text
-send_quality_alert_if_needed
-    返回 failed/skipped 或抛出异常
+_send_daily_result_notification_and_adjust_result
+    返回 failed/skipped 或捕获发送异常
 run_daily_kline_integrity_check
     返回 exit_code=3
 ```
@@ -340,8 +338,8 @@ python -m scripts.check_kline_integrity --check-trigger cli --lookback-count 100
 - `--interval`：只允许 `4h`。
 - `--lookback-count`：默认 `100`；本阶段只支持最近 N 根复核，`--limit` 仅作为兼容别名。
 - `--check-trigger`：必填，只允许 `cli`；`--trigger-source` 仅作为兼容别名。
-- `--notify-success`：开启成功健康通知。
-- `--no-notify-success`：关闭成功健康通知。
+- `--notify-success`：manual CLI 成功时开启健康通知。
+- `--no-notify-success`：manual CLI 成功时关闭健康通知；不影响 scheduler 每日结果通知。
 
 CLI 不支持 `--send-alert`。
 
@@ -407,15 +405,17 @@ tests/test_daily_kline_integrity_check.py
 
 覆盖范围：
 
-- 最近 100 根复核通过，写 `data_quality_check` passed，发送成功健康通知，不写正式 K线表。
-- Binance 官方有、数据库缺失，返回 failed，发送失败报警，不自动回补。
-- 数据库字段与官方不一致，返回 failed，发送失败报警，不覆盖数据库。
-- 数据库存在多余 K线，返回 failed，发送失败报警，不删除数据库。
-- Binance REST 请求失败，返回 error，发送异常报警，不写正式 K线表。
-- 数据库读取失败，返回 error，尽力写 error 质量记录并发送异常报警。
-- `data_quality_check` 写入失败，不静默吞掉，发送异常报警。
-- Hermes 成功通知失败，返回 `exit_code=3`，但质量记录仍为 passed。
-- `notify_success=false` 时成功不通知，失败仍报警。
+- scheduler 最近 100 根复核通过，写 `data_quality_check` passed，只发送一次 `healthy` 结果通知，不写正式 K线表。
+- scheduler 发现 Binance 官方有、数据库缺失，返回 failed，只发送一次 `unhealthy` 结果通知，不自动回补。
+- scheduler 数据库字段与官方不一致，返回 failed，只发送一次 `unhealthy` 结果通知，不覆盖数据库。
+- scheduler 数据库存在多余 K线，返回 failed，只发送一次 `unhealthy` 结果通知，不删除数据库。
+- scheduler Binance REST 请求失败，返回 error，只发送一次 `unknown` 结果通知，不写正式 K线表。
+- scheduler 数据库读取失败，返回 error，尽力写 error 质量记录并只发送一次 `unknown` 结果通知。
+- scheduler `data_quality_check` 写入失败，不静默吞掉，只发送一次 `unknown` 结果通知。
+- scheduler 复核锁占用时返回 skipped，只发送一次 `skipped` 结果通知，不请求 Binance、不读 MySQL、不写 `data_quality_check`。
+- manual CLI 参数错误不强制发送 Hermes。
+- manual CLI 复核锁占用不强制发送 Hermes。
+- Hermes 每日结果通知失败，返回 `exit_code=3`，但不会修改正式 K线表。
 - scheduler job 直接调用 service，并构造 `check_trigger=scheduler`。
 - CLI 只允许 `check_trigger=cli`，不恢复 `--send-alert`。
 - 新增源码不引入私有 Binance、自动修复或自动交易能力。
@@ -465,7 +465,7 @@ kline_integrity_check:BTCUSDT:4h
 ```
 
 `check_mode` 不进入锁 key，避免手动复核和 scheduler 复核同一 `symbol + interval` 时并发执行、重复记录或重复告警。
-锁有 TTL，释放时校验 owner；获取锁失败返回 `skipped`，不会请求 Binance、读取 MySQL、写 `data_quality_check` 或发送 Hermes。
+锁有 TTL，释放时校验 owner；获取锁失败返回 `skipped`，不会请求 Binance、读取 MySQL 或写 `data_quality_check`。scheduler / `daily_integrity_check` 会发送一次 `report_status=skipped` 每日结果通知；manual CLI 不强制发送 Hermes。
 
 ### 14.3 scheduler 边界
 
@@ -489,3 +489,16 @@ app/scheduler/jobs/daily_kline_integrity_check.py::run_daily_kline_integrity_che
 Binance REST 或 server time 请求失败时，只要 `data_quality_check` repository 可用，service 会写入 `status=error` 的
 质量记录，并尽力发送 Hermes 固定模板异常告警。MySQL 或质量记录写入不可用时，service 会写 emergency/error 日志，
 并继续尽力发送 Hermes 告警，不会静默丢失任务失败事实。
+
+### 14.5 每日结果通知边界
+
+scheduler / `daily_integrity_check` 场景下，`run_daily_kline_integrity_check()` 每次最终只发送一条 Hermes 固定模板结果通知：
+
+- `report_status=healthy`：复核完成且 K线健康。
+- `report_status=unhealthy`：复核完成但发现 K线问题。
+- `report_status=unknown`：参数配置错误、Binance 请求失败、数据库读取失败、`data_quality_check` 写入失败等导致无法确认健康状态。
+- `report_status=skipped`：复核锁被占用，本次未执行，无法确认本次 K线健康状态。
+
+这四类结果不再拆成“健康通知”和“失败报警”两套 scheduler 通知路径；同一次 scheduler 每日复核最多只产生一条 Hermes 结果通知。通知 `details` 必须包含 `report_status`、`symbol`、`interval`、`limit`、`trigger_source`、可用的检查数量和首个问题信息，以及 `no_repair_performed=true`。
+
+manual CLI 场景下，参数错误可以只返回错误，复核锁占用可以只返回 `skipped`，不强制发送 Hermes。该边界不影响 scheduler 每日结果通知规则。
