@@ -33,6 +33,7 @@ ALLOWED_CHECK_TRIGGER_SOURCES = frozenset(
 CHECK_TYPE_BATCH_BEFORE_PERSIST = "batch_before_persist"
 CHECK_TYPE_DATABASE_CONTEXT = "database_context"
 CHECK_TYPE_RECENT_KLINE_INTEGRITY = "recent_kline_integrity"
+CHECK_TYPE_DAILY_KLINE_INTEGRITY = "daily_kline_integrity"
 
 
 class KlineQualityStatus(str, Enum):
@@ -46,6 +47,7 @@ class KlineQualityStatus(str, Enum):
 
     PASSED = "passed"
     FAILED = "failed"
+    ERROR = "error"
     WARNING = "warning"
 
 
@@ -87,6 +89,8 @@ class KlineQualityIssueType(str, Enum):
     MISSING_IN_DATABASE = "missing_in_database"
     EXTRA_IN_DATABASE = "extra_in_database"
     DATABASE_FIELD_MISMATCH = "database_field_mismatch"
+    INVALID_DATA_SOURCE_MAPPING = "invalid_data_source_mapping"
+    TASK_ERROR = "task_error"
 
 
 _SEVERITY_RANK = {

@@ -1,7 +1,8 @@
 """Redis-backed task lock helpers.
 
 This file belongs to `app/core`.
-It provides a small owner-checked lock for phase-08 Kline write tasks. The lock
+It provides a small owner-checked Redis lock for shared infrastructure tasks,
+including formal Kline write tasks and Kline integrity review tasks. The lock
 uses Redis `SET key value NX EX ttl` and releases only when the stored owner
 matches the current task owner.
 It does not request Binance, read or write MySQL, send Hermes, call DeepSeek,
@@ -92,3 +93,13 @@ def build_kline_write_lock_key(*, symbol: str, interval_value: str) -> str:
     """Build the shared formal Kline write-lock key for one symbol and interval."""
 
     return f"kline_write:{symbol.strip().upper()}:{interval_value.strip()}"
+
+
+def build_kline_integrity_check_lock_key(*, symbol: str, interval_value: str) -> str:
+    """Build the shared Kline integrity-review lock key for one symbol and interval.
+
+    The review lock intentionally omits check mode so a manual CLI review and a
+    scheduler review cannot run concurrently for the same formal Kline stream.
+    """
+
+    return f"kline_integrity_check:{symbol.strip().upper()}:{interval_value.strip()}"
