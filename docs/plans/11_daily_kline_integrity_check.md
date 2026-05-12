@@ -225,11 +225,8 @@ scripts/check_kline_integrity.py
 python -m scripts.check_kline_integrity --symbol BTCUSDT --interval 4h --check-trigger cli --lookback-count 100
 ```
 
-或指定时间范围：
-
-```bash
-python -m scripts.check_kline_integrity --symbol BTCUSDT --interval 4h --check-trigger cli --start-time "2026-05-01T00:00:00Z" --end-time "2026-05-08T00:00:00Z"
-```
+本阶段只支持最近 N 根已收盘 K线复核，不实现 `--start-time` / `--end-time` 指定时间范围。
+如果传入 `--start-time` 或 `--end-time`，CLI 必须返回参数错误，不进入 Binance、MySQL、Redis 或 Hermes 调用。
 
 脚本只负责：
 
@@ -366,13 +363,14 @@ kline_integrity_check_failed
 
 规则：
 
-1. 同一 `symbol + interval + check_mode` 的复核任务不得并发运行。
+1. 同一 `symbol + interval` 的复核任务不得并发运行。
 2. scheduler 每日复核启动前应获取复核任务锁。
 3. CLI 手动复核启动前也应获取复核任务锁。
-4. 锁 key 示例：`kline_integrity_check:BTCUSDT:4h:daily_integrity_check`。
-5. 锁必须有 TTL。
-6. 释放锁时必须校验 owner。
-7. 获取锁失败时，本次任务应跳过或拒绝，并记录日志；如果有复核任务记录表，应记录 skipped。
+4. 锁 key 示例：`kline_integrity_check:BTCUSDT:4h`。
+5. `check_mode` 只进入 result details 或 quality metadata，不进入锁 key，避免 manual 与 scheduler 对同一 `symbol + interval` 并发复核。
+6. 锁必须有 TTL。
+7. 释放锁时必须校验 owner。
+8. 获取锁失败时，本次任务应跳过或拒绝，并记录日志；如果有复核任务记录表，应记录 skipped。
 
 注意：复核任务锁不是 K线写入锁，复核任务不得因持有锁而获得写入正式 K线表的权限。
 
@@ -523,3 +521,21 @@ grep -R "leverage" app scripts tests
 ```
 
 如果发现复核任务自动修复、自动回补、自动覆盖或自动删除正式 K线，应拒绝合并。
+
+---
+
+## 20. 当前分支验收补充
+
+1. CLI 统一入口为 `scripts/check_kline_integrity.py`，人工运行命令为：
+
+```bash
+python -m scripts.check_kline_integrity --check-trigger cli --lookback-count 100
+```
+
+2. `--trigger-source` 和 `--limit` 仅作为兼容别名保留；文档和测试以 `--check-trigger`、`--lookback-count` 为主。
+3. 本阶段只支持最近 N 根已收盘 K线复核，不实现 `--start-time` / `--end-time` 指定时间范围；如果传入范围参数，CLI 返回参数错误。
+4. 复核锁 key 统一为 `kline_integrity_check:{symbol}:{interval_value}`，例如 `kline_integrity_check:BTCUSDT:4h`；`check_mode` 不进入锁 key。
+5. `check_mode` 只进入 result details 或 quality metadata，用于审计，不用于区分并发锁。
+6. 本分支只提供 `app/scheduler/jobs/daily_kline_integrity_check.py::run_daily_kline_integrity_check_job` 作为 scheduler 可调用 job 入口；不新增常驻 scheduler runner，也不自动启动每日调度进程。
+7. 正式调度接入时必须直接调用该 job 或 app service，不得调用 `scripts/check_kline_integrity.py`。
+8. 触发来源由入口硬编码：CLI 构造 `check_trigger=cli`，scheduler job 构造 `check_trigger=scheduler`；不再通过环境变量配置触发来源。

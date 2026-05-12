@@ -9,7 +9,7 @@
 人工调试入口：
 
 ```bash
-python -m scripts.run_daily_kline_integrity_check --trigger-source cli
+python -m scripts.check_kline_integrity --check-trigger cli --lookback-count 100
 ```
 
 scheduler 正式入口：
@@ -25,7 +25,7 @@ scheduler 必须直接调用 service，不允许调用 `scripts/*.py`。
 人工 CLI 入口文件：
 
 ```text
-scripts/run_daily_kline_integrity_check.py
+scripts/check_kline_integrity.py
 ```
 
 入口方法：
@@ -69,7 +69,7 @@ app/market_data/kline_integrity/results.py
 核心调用链路：
 
 ```text
-scripts/run_daily_kline_integrity_check.py::main
+scripts/check_kline_integrity.py::main
     ↓
 app/market_data/kline_integrity/kline_integrity_service.py::run_daily_kline_integrity_check
     ↓
@@ -128,7 +128,6 @@ DAILY_KLINE_INTEGRITY_SYMBOL=BTCUSDT
 DAILY_KLINE_INTEGRITY_INTERVAL=4h
 DAILY_KLINE_INTEGRITY_LIMIT=100
 DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS=true
-DAILY_KLINE_INTEGRITY_TRIGGER_SOURCE=scheduler
 ```
 
 `DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS` 只控制成功健康通知，不控制失败报警。失败报警和异常报警不可由该配置关闭。
@@ -316,7 +315,7 @@ scheduler 不调用 scripts，不直接请求 Binance，不直接读写业务表
 scheduler 实际传入：
 
 ```text
-check_trigger_source=scheduler
+check_trigger=scheduler
 ```
 
 本功能不写正式 K线，因此 scheduler 不产生新的正式 K线 `data_source`。它只校验已有数据库行的 `data_source` 是否符合项目规则。
@@ -332,15 +331,15 @@ check_trigger_source=scheduler
 CLI 只供人工调试：
 
 ```bash
-python -m scripts.run_daily_kline_integrity_check --trigger-source cli
+python -m scripts.check_kline_integrity --check-trigger cli --lookback-count 100
 ```
 
 参数：
 
 - `--symbol`：默认 `BTCUSDT`。
 - `--interval`：只允许 `4h`。
-- `--limit`：默认 `100`。
-- `--trigger-source`：必填，只允许 `cli`。
+- `--lookback-count`：默认 `100`；本阶段只支持最近 N 根复核，`--limit` 仅作为兼容别名。
+- `--check-trigger`：必填，只允许 `cli`；`--trigger-source` 仅作为兼容别名。
 - `--notify-success`：开启成功健康通知。
 - `--no-notify-success`：关闭成功健康通知。
 
@@ -417,15 +416,15 @@ tests/test_daily_kline_integrity_check.py
 - `data_quality_check` 写入失败，不静默吞掉，发送异常报警。
 - Hermes 成功通知失败，返回 `exit_code=3`，但质量记录仍为 passed。
 - `notify_success=false` 时成功不通知，失败仍报警。
-- scheduler job 直接调用 service，并传入 `check_trigger_source=scheduler`。
-- CLI 只允许 `check_trigger_source=cli`，不恢复 `--send-alert`。
+- scheduler job 直接调用 service，并构造 `check_trigger=scheduler`。
+- CLI 只允许 `check_trigger=cli`，不恢复 `--send-alert`。
 - 新增源码不引入私有 Binance、自动修复或自动交易能力。
 
 人工检查命令：
 
 ```bash
 python -m py_compile app/market_data/kline_quality/*.py
-python -m py_compile scripts/run_daily_kline_integrity_check.py
+python -m py_compile scripts/check_kline_integrity.py
 
 python -m pytest tests/test_daily_kline_integrity_check.py
 python -m pytest tests/test_kline_quality_checker.py
@@ -436,3 +435,52 @@ python -m pytest
 
 python -m scripts.check_project_invariants
 ```
+
+## 14. 本次验收补充说明
+
+### 14.1 CLI 入口与参数
+
+本分支统一人工入口为：
+
+```bash
+python -m scripts.check_kline_integrity --check-trigger cli --lookback-count 100
+```
+
+`--trigger-source` 和 `--limit` 仅作为兼容别名保留，用于旧命令过渡；文档、测试和 service 注释统一以
+`scripts/check_kline_integrity.py` 为入口名。本阶段不实现 `--start-time` / `--end-time` 范围复核；如果传入这两个
+参数，CLI 返回参数错误，不进入 Binance、MySQL、Redis 或 Hermes 调用。
+
+### 14.2 复核任务锁
+
+CLI 与 scheduler 都通过 `run_daily_kline_integrity_check()` 获取同一把 Redis 复核锁。锁 key 格式为：
+
+```text
+kline_integrity_check:{symbol}:{interval_value}
+```
+
+例如：
+
+```text
+kline_integrity_check:BTCUSDT:4h
+```
+
+`check_mode` 不进入锁 key，避免手动复核和 scheduler 复核同一 `symbol + interval` 时并发执行、重复记录或重复告警。
+锁有 TTL，释放时校验 owner；获取锁失败返回 `skipped`，不会请求 Binance、读取 MySQL、写 `data_quality_check` 或发送 Hermes。
+
+### 14.3 scheduler 边界
+
+本分支提供 scheduler job 入口：
+
+```text
+app/scheduler/jobs/daily_kline_integrity_check.py::run_daily_kline_integrity_check_job
+```
+
+该 job 直接构造 `DailyKlineIntegrityCheckRequest(check_trigger="scheduler", check_mode="daily_integrity_check")` 并调用 app service。
+本分支不新增常驻 scheduler runner，也不在当前仓库内启动自动每日调度；正式调度器接入时必须直接调用该 job 或 service，
+不得调用 `scripts/check_kline_integrity.py`。
+
+### 14.4 异常审计
+
+Binance REST 或 server time 请求失败时，只要 `data_quality_check` repository 可用，service 会写入 `status=error` 的
+质量记录，并尽力发送 Hermes 固定模板异常告警。MySQL 或质量记录写入不可用时，service 会写 emergency/error 日志，
+并继续尽力发送 Hermes 告警，不会静默丢失任务失败事实。

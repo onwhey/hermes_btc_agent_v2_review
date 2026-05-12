@@ -33,8 +33,8 @@ from dataclasses import replace
 from typing import Any
 
 from app.alerting.types import AlertSendResult, AlertSendStatus
-from app.core.task_lock import RedisTaskLock
 from app.core.logger import get_logger
+from app.core.task_lock import RedisTaskLock, build_kline_integrity_check_lock_key
 from app.core.time_utils import now_utc
 from app.market_data.kline_constants import DEFAULT_KLINE_SYMBOL, KLINE_4H_INTERVAL_VALUE
 from app.market_data.kline_integrity.types import (
@@ -46,7 +46,6 @@ from app.market_data.kline_integrity.types import (
     DailyKlineIntegrityCheckRequest,
     DailyKlineIntegrityCheckResult,
     DailyKlineIntegrityStatus,
-    build_kline_integrity_check_lock_key,
 )
 from app.market_data.kline_integrity.results import (
     datetime_to_text,
@@ -123,7 +122,6 @@ def run_daily_kline_integrity_check(
     lock_key = build_kline_integrity_check_lock_key(
         symbol=request.symbol,
         interval_value=request.interval_value,
-        check_mode=request.check_mode,
     )
     database_state = {"entered": False}
     tracking_repository = _DatabaseReadTrackingRepository(kline_repository, database_state)
@@ -507,6 +505,20 @@ def _alert_status_text(result: AlertSendResult | None) -> str | None:
 def _rollback_if_possible(db_session: Any) -> None:
     if hasattr(db_session, "rollback"):
         db_session.rollback()
+
+
+def _release_integrity_lock_safely(task_lock: Any, *, key: str, owner: str) -> None:
+    """Release the Redis review lock without hiding the already computed result.
+
+    Release still validates the owner inside `RedisTaskLock.release_lock`; if
+    Redis is unavailable during cleanup, the task logs an error because the TTL
+    is the remaining safety net.
+    """
+
+    try:
+        task_lock.release_lock(key=key, owner=owner)
+    except Exception:  # noqa: BLE001 - cleanup failure is logged; TTL prevents permanent blocking.
+        LOGGER.exception("Failed to release daily Kline integrity lock key=%s trace_id=%s", key, owner)
 
 
 def _default_kline_repository() -> Any:

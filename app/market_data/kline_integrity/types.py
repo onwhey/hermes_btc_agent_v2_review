@@ -113,9 +113,3 @@ class DailyKlineIntegrityCheckResult:
         """Return whether Kline health was confirmed and all required alerts succeeded."""
 
         return self.status == DailyKlineIntegrityStatus.HEALTHY and self.exit_code == EXIT_SUCCESS
-
-
-def build_kline_integrity_check_lock_key(*, symbol: str, interval_value: str, check_mode: str) -> str:
-    """Build the Redis lock key for one integrity-review task identity."""
-
-    return f"kline_integrity_check:{symbol.strip().upper()}:{interval_value.strip()}:{check_mode.strip()}"

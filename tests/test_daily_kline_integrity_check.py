@@ -8,6 +8,7 @@ from typing import Any, Iterable
 import app.storage.mysql.session as mysql_session
 from app.alerting.types import AlertSendResult, AlertSendStatus
 from app.core.config import AppSettings
+from app.core.task_lock import build_kline_integrity_check_lock_key
 from app.market_data.kline_constants import (
     DATA_SOURCE_BINANCE_REST_BY_CLI,
     KLINE_4H_INTERVAL_MS,
@@ -16,7 +17,10 @@ from app.market_data.kline_constants import (
 )
 from app.market_data.kline_integrity.kline_integrity_service import run_daily_kline_integrity_check
 from app.market_data.kline_integrity.types import (
+    CHECK_MODE_DAILY_INTEGRITY_CHECK,
+    CHECK_MODE_MANUAL_INTEGRITY_CHECK,
     EXIT_ALERT_FAILED,
+    EXIT_PARAMETER_ERROR,
     EXIT_QUALITY_FAILED,
     EXIT_SUCCESS,
     EXIT_TASK_FAILED,
@@ -30,7 +34,7 @@ from app.market_data.kline_quality.types import (
     KlineQualityIssueType,
 )
 from app.scheduler.jobs.daily_kline_integrity_check import run_daily_kline_integrity_check_job
-from scripts import run_daily_kline_integrity_check as daily_script
+from scripts import check_kline_integrity as daily_script
 from tests.test_4h_kline_manual_backfill import (
     FakeAlertSender,
     FakeSession,
@@ -66,6 +70,7 @@ class FakeDailyKlineRepository:
     def __init__(self, existing: Iterable[Any] = (), *, fail_on_read: bool = False) -> None:
         self.rows = list(existing)
         self.fail_on_read = fail_on_read
+        self.read_calls = 0
         self.bulk_write_called = False
         self.delete_called = False
 
@@ -78,6 +83,7 @@ class FakeDailyKlineRepository:
         start_open_time_ms: int,
         end_open_time_ms: int,
     ) -> list[Any]:
+        self.read_calls += 1
         if self.fail_on_read:
             raise RuntimeError("market_kline_4h read failed")
         return [
@@ -112,6 +118,33 @@ class FakeQualityRepository:
         return record
 
 
+class FakeIntegrityTaskLock:
+    def __init__(
+        self,
+        *,
+        acquired: bool = True,
+        raise_on_acquire: bool = False,
+        raise_on_release: bool = False,
+    ) -> None:
+        self.acquired = acquired
+        self.raise_on_acquire = raise_on_acquire
+        self.raise_on_release = raise_on_release
+        self.acquire_calls: list[dict[str, Any]] = []
+        self.release_calls: list[dict[str, Any]] = []
+
+    def acquire_lock(self, *, key: str, owner: str, ttl_seconds: int) -> bool:
+        self.acquire_calls.append({"key": key, "owner": owner, "ttl_seconds": ttl_seconds})
+        if self.raise_on_acquire:
+            raise RuntimeError("Redis lock acquire failed")
+        return self.acquired
+
+    def release_lock(self, *, key: str, owner: str) -> bool:
+        self.release_calls.append({"key": key, "owner": owner})
+        if self.raise_on_release:
+            raise RuntimeError("Redis lock release failed")
+        return True
+
+
 def make_raw_klines(count: int) -> list[list[Any]]:
     return [build_raw(offset) for offset in range(count)]
 
@@ -140,6 +173,7 @@ def run_daily_with_fakes(
     kline_repository: FakeDailyKlineRepository | None = None,
     quality_repository: FakeQualityRepository | None = None,
     alert_sender: FakeAlertSender | None = None,
+    task_lock: FakeIntegrityTaskLock | None = None,
     fail_binance_on: str = "",
 ) -> tuple[Any, FakeDailyKlineRepository, FakeQualityRepository, FakeAlertSender, FakeSession, FakeDailyBinanceClient]:
     active_request = request or DailyKlineIntegrityCheckRequest()
@@ -154,6 +188,7 @@ def run_daily_with_fakes(
     fake_repository = kline_repository or FakeDailyKlineRepository(existing)
     fake_quality_repository = quality_repository or FakeQualityRepository()
     fake_alert_sender = alert_sender or FakeAlertSender()
+    fake_task_lock = task_lock or FakeIntegrityTaskLock()
     fake_session = FakeSession()
 
     result = run_daily_kline_integrity_check(
@@ -164,6 +199,7 @@ def run_daily_with_fakes(
         data_quality_repository=fake_quality_repository,
         alert_sender=fake_alert_sender,
         alert_repository=object(),
+        task_lock=fake_task_lock,
     )
     return result, fake_repository, fake_quality_repository, fake_alert_sender, fake_session, fake_client
 
@@ -185,6 +221,81 @@ def test_daily_recent_100_pass_records_quality_and_sends_success_alert_without_f
     assert alert_sender.calls[0]["event"].details["source"] == "Binance REST official klines"
     assert repository.bulk_write_called is False
     assert repository.delete_called is False
+
+
+def test_daily_integrity_lock_acquire_success_uses_symbol_interval_key_and_releases() -> None:
+    task_lock = FakeIntegrityTaskLock()
+    expected_key = build_kline_integrity_check_lock_key(symbol="BTCUSDT", interval_value="4h")
+    request = DailyKlineIntegrityCheckRequest(
+        lookback_count=100,
+        check_trigger=CHECK_TRIGGER_SOURCE_CLI,
+        check_mode=CHECK_MODE_MANUAL_INTEGRITY_CHECK,
+        lock_ttl_seconds=123,
+    )
+
+    result, _repository, _quality_repository, _alert_sender, _session, _client = run_daily_with_fakes(
+        request=request,
+        raw_klines=make_raw_klines(101),
+        existing=[official_model(offset) for offset in range(100)],
+        task_lock=task_lock,
+    )
+
+    assert result.status == DailyKlineIntegrityStatus.HEALTHY
+    assert result.lock_key == expected_key
+    assert task_lock.acquire_calls == [
+        {"key": expected_key, "owner": request.trace_id, "ttl_seconds": 123}
+    ]
+    assert task_lock.release_calls == [{"key": expected_key, "owner": request.trace_id}]
+
+
+def test_daily_integrity_lock_occupied_skips_without_external_or_database_work() -> None:
+    task_lock = FakeIntegrityTaskLock(acquired=False)
+    repository = FakeDailyKlineRepository([official_model(offset) for offset in range(100)])
+    quality_repository = FakeQualityRepository()
+    alert_sender = FakeAlertSender()
+
+    result, repository, quality_repository, alert_sender, _session, client = run_daily_with_fakes(
+        raw_klines=make_raw_klines(101),
+        existing=[],
+        kline_repository=repository,
+        quality_repository=quality_repository,
+        alert_sender=alert_sender,
+        task_lock=task_lock,
+    )
+
+    assert result.status == DailyKlineIntegrityStatus.SKIPPED
+    assert result.exit_code == EXIT_SUCCESS
+    assert client.get_server_time_calls == 0
+    assert client.get_klines_calls == []
+    assert repository.read_calls == 0
+    assert quality_repository.records == []
+    assert alert_sender.calls == []
+    assert task_lock.release_calls == []
+
+
+def test_daily_integrity_lock_acquire_exception_returns_error_and_alerts() -> None:
+    task_lock = FakeIntegrityTaskLock(raise_on_acquire=True)
+    repository = FakeDailyKlineRepository([official_model(offset) for offset in range(100)])
+    quality_repository = FakeQualityRepository()
+    alert_sender = FakeAlertSender()
+
+    result, repository, quality_repository, alert_sender, _session, client = run_daily_with_fakes(
+        raw_klines=make_raw_klines(101),
+        existing=[],
+        kline_repository=repository,
+        quality_repository=quality_repository,
+        alert_sender=alert_sender,
+        task_lock=task_lock,
+    )
+
+    assert result.status == DailyKlineIntegrityStatus.ERROR
+    assert result.exit_code == EXIT_TASK_FAILED
+    assert client.get_server_time_calls == 0
+    assert client.get_klines_calls == []
+    assert repository.read_calls == 0
+    assert quality_repository.records[0].report.status.value == "error"
+    assert len(alert_sender.calls) == 1
+    assert task_lock.release_calls == []
 
 
 def test_daily_missing_database_kline_fails_alerts_and_does_not_backfill() -> None:
@@ -243,9 +354,48 @@ def test_daily_binance_rest_failure_alerts_task_error_without_formal_write() -> 
     assert result.status == DailyKlineIntegrityStatus.ERROR
     assert result.exit_code == EXIT_TASK_FAILED
     assert result.first_issue_type == KlineQualityIssueType.TASK_ERROR.value
-    assert quality_repository.records == []
+    assert quality_repository.records[0].report.status.value == "error"
     assert len(alert_sender.calls) == 1
     assert repository.bulk_write_called is False
+
+
+def test_daily_task_exception_releases_integrity_lock() -> None:
+    task_lock = FakeIntegrityTaskLock()
+
+    result, _repository, _quality_repository, _alert_sender, _session, _client = run_daily_with_fakes(
+        raw_klines=make_raw_klines(101),
+        existing=[official_model(offset) for offset in range(100)],
+        task_lock=task_lock,
+        fail_binance_on="klines",
+    )
+
+    assert result.status == DailyKlineIntegrityStatus.ERROR
+    assert len(task_lock.acquire_calls) == 1
+    assert task_lock.release_calls == [
+        {"key": task_lock.acquire_calls[0]["key"], "owner": task_lock.acquire_calls[0]["owner"]}
+    ]
+
+
+def test_daily_lock_release_failure_is_logged(monkeypatch: Any) -> None:
+    import app.market_data.kline_integrity.kline_integrity_service as daily_service
+
+    task_lock = FakeIntegrityTaskLock(raise_on_release=True)
+    logged: list[tuple[str, tuple[Any, ...]]] = []
+
+    def fake_log_exception(message: str, *args: Any, **_kwargs: Any) -> None:
+        logged.append((message, args))
+
+    monkeypatch.setattr(daily_service.LOGGER, "exception", fake_log_exception)
+
+    result, _repository, _quality_repository, _alert_sender, _session, _client = run_daily_with_fakes(
+        raw_klines=make_raw_klines(101),
+        existing=[official_model(offset) for offset in range(100)],
+        task_lock=task_lock,
+    )
+
+    assert result.status == DailyKlineIntegrityStatus.HEALTHY
+    assert len(task_lock.release_calls) == 1
+    assert logged[0][0].startswith("Failed to release daily Kline integrity lock")
 
 
 def test_daily_database_read_failure_records_error_when_possible_and_alerts() -> None:
@@ -338,12 +488,13 @@ def test_daily_scheduler_job_calls_service_directly_with_scheduler_trigger_sourc
     )
 
     assert result is expected_result
-    assert called["request"].check_trigger_source == CHECK_TRIGGER_SOURCE_SCHEDULER
+    assert called["request"].check_trigger == CHECK_TRIGGER_SOURCE_SCHEDULER
+    assert called["request"].check_mode == CHECK_MODE_DAILY_INTEGRITY_CHECK
     assert called["kwargs"]["db_session"] is db_session
 
 
 def test_daily_cli_allows_only_cli_trigger_and_does_not_restore_send_alert(monkeypatch: Any) -> None:
-    source = Path("scripts/run_daily_kline_integrity_check.py").read_text(encoding="utf-8")
+    source = Path("scripts/check_kline_integrity.py").read_text(encoding="utf-8")
     legacy_alert_flag = "--send" "-alert"
 
     assert legacy_alert_flag not in source
@@ -382,14 +533,46 @@ def test_daily_cli_allows_only_cli_trigger_and_does_not_restore_send_alert(monke
 
     assert exit_code == EXIT_SUCCESS
     assert called["commit_on_success"] is True
-    assert called["request"].check_trigger_source == CHECK_TRIGGER_SOURCE_CLI
+    assert called["request"].check_trigger == CHECK_TRIGGER_SOURCE_CLI
+    assert called["request"].check_mode == CHECK_MODE_MANUAL_INTEGRITY_CHECK
+    assert called["request"].lookback_count == 1
     assert called["request"].notify_success is False
+
+    exit_code = daily_script.main(["--check-trigger", "cli", "--lookback-count", "2", "--no-notify-success"])
+
+    assert exit_code == EXIT_SUCCESS
+    assert called["request"].check_trigger == CHECK_TRIGGER_SOURCE_CLI
+    assert called["request"].lookback_count == 2
+
+
+def test_daily_cli_rejects_start_end_range_in_phase_11(monkeypatch: Any) -> None:
+    called: dict[str, bool] = {}
+
+    def fake_service(*_args: Any, **_kwargs: Any) -> Any:
+        called["service"] = True
+        raise AssertionError("service must not run for unsupported range review")
+
+    monkeypatch.setattr(daily_script, "run_daily_kline_integrity_check", fake_service)
+
+    exit_code = daily_script.main(
+        [
+            "--check-trigger",
+            "cli",
+            "--start-time",
+            "2026-05-01T00:00:00Z",
+            "--end-time",
+            "2026-05-08T00:00:00Z",
+        ]
+    )
+
+    assert exit_code == EXIT_PARAMETER_ERROR
+    assert "service" not in called
 
 
 def test_daily_review_sources_do_not_use_forbidden_private_or_repair_capabilities() -> None:
     source = (
         Path("app/market_data/kline_integrity/kline_integrity_service.py").read_text(encoding="utf-8")
-        + Path("scripts/run_daily_kline_integrity_check.py").read_text(encoding="utf-8")
+        + Path("scripts/check_kline_integrity.py").read_text(encoding="utf-8")
     )
     forbidden_terms = [
         "--send" "-alert",

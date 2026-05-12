@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from app.core.config import AppSettings, get_settings
 from app.market_data.kline_integrity.types import (
+    CHECK_MODE_DAILY_INTEGRITY_CHECK,
     EXIT_SUCCESS,
     DailyKlineIntegrityCheckRequest,
     DailyKlineIntegrityCheckResult,
@@ -45,9 +46,11 @@ def run_daily_kline_integrity_check_job(
     request = DailyKlineIntegrityCheckRequest(
         symbol=active_settings.daily_kline_integrity_symbol.strip().upper(),
         interval_value=active_settings.daily_kline_integrity_interval,
-        limit=active_settings.daily_kline_integrity_limit,
-        check_trigger_source=CHECK_TRIGGER_SOURCE_SCHEDULER,
+        lookback_count=active_settings.daily_kline_integrity_limit,
+        check_trigger=CHECK_TRIGGER_SOURCE_SCHEDULER,
+        check_mode=CHECK_MODE_DAILY_INTEGRITY_CHECK,
         notify_success=active_settings.daily_kline_integrity_notify_success,
+        lock_ttl_seconds=active_settings.daily_kline_integrity_lock_ttl_seconds,
     )
     if not active_settings.daily_kline_integrity_enabled:
         return DailyKlineIntegrityCheckResult(
@@ -56,7 +59,7 @@ def run_daily_kline_integrity_check_job(
             trace_id=request.trace_id,
             message="Daily Kline integrity scheduler job is disabled",
             requested_count=request.requested_count,
-            details={"configured_trigger_source": active_settings.daily_kline_integrity_trigger_source},
+            details={"check_trigger": CHECK_TRIGGER_SOURCE_SCHEDULER},
         )
 
     runner = service_runner or _default_service_runner()
