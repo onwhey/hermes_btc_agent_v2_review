@@ -72,3 +72,7 @@ class BinanceResponseError(BinanceError):
 
 class BinanceValidationError(ValidationError):
     """Raised when local Binance public REST input validation fails."""
+
+
+class BinanceWebSocketError(BinanceError):
+    """Raised when a public Binance WebSocket market stream cannot run safely."""
