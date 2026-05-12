@@ -24,6 +24,7 @@ from app.core.constants import (
     DEFAULT_BINANCE_MAX_RETRIES,
     DEFAULT_BINANCE_RETRY_BACKOFF_SECONDS,
     DEFAULT_BINANCE_TIMEOUT_SECONDS,
+    DEFAULT_BINANCE_WS_BASE_URL,
     DEFAULT_INTERVAL,
     DEFAULT_HERMES_DRY_RUN,
     DEFAULT_HERMES_ENABLED,
@@ -40,6 +41,17 @@ from app.core.constants import (
     DEFAULT_REDIS_DECODE_RESPONSES,
     DEFAULT_REDIS_PORT,
     DEFAULT_REDIS_SOCKET_TIMEOUT,
+    DEFAULT_PRICE_MONITOR_ALERT_COOLDOWN_SECONDS,
+    DEFAULT_PRICE_MONITOR_CHANGE_THRESHOLD,
+    DEFAULT_PRICE_MONITOR_ENABLE_PRICE_ALERTS,
+    DEFAULT_PRICE_MONITOR_INTERVAL_SECONDS,
+    DEFAULT_PRICE_MONITOR_NO_EVENT_TIMEOUT_SECONDS,
+    DEFAULT_PRICE_MONITOR_REDIS_KEY,
+    DEFAULT_PRICE_MONITOR_REDIS_TTL_SECONDS,
+    DEFAULT_PRICE_MONITOR_SYMBOL,
+    DEFAULT_PRICE_MONITOR_WS_RECONNECT_MAX_SECONDS,
+    DEFAULT_PRICE_MONITOR_WS_RECONNECT_MIN_SECONDS,
+    DEFAULT_PRICE_MONITOR_WS_STREAM,
     DEFAULT_SYMBOL,
     DEFAULT_TIMEZONE,
     SENSITIVE_FIELD_NAMES,
@@ -96,6 +108,18 @@ class AppSettings:
     binance_default_interval: str = DEFAULT_INTERVAL
     binance_kline_default_limit: int = DEFAULT_BINANCE_KLINE_DEFAULT_LIMIT
     binance_kline_max_limit: int = DEFAULT_BINANCE_KLINE_MAX_LIMIT
+    binance_ws_base_url: str = DEFAULT_BINANCE_WS_BASE_URL
+    price_monitor_symbol: str = DEFAULT_PRICE_MONITOR_SYMBOL
+    price_monitor_ws_stream: str = DEFAULT_PRICE_MONITOR_WS_STREAM
+    price_monitor_interval_seconds: int = DEFAULT_PRICE_MONITOR_INTERVAL_SECONDS
+    price_monitor_change_threshold: str = DEFAULT_PRICE_MONITOR_CHANGE_THRESHOLD
+    price_monitor_redis_key: str = DEFAULT_PRICE_MONITOR_REDIS_KEY
+    price_monitor_redis_ttl_seconds: int = DEFAULT_PRICE_MONITOR_REDIS_TTL_SECONDS
+    price_monitor_alert_cooldown_seconds: int = DEFAULT_PRICE_MONITOR_ALERT_COOLDOWN_SECONDS
+    price_monitor_enable_price_alerts: bool = DEFAULT_PRICE_MONITOR_ENABLE_PRICE_ALERTS
+    price_monitor_ws_reconnect_min_seconds: float = DEFAULT_PRICE_MONITOR_WS_RECONNECT_MIN_SECONDS
+    price_monitor_ws_reconnect_max_seconds: float = DEFAULT_PRICE_MONITOR_WS_RECONNECT_MAX_SECONDS
+    price_monitor_no_event_timeout_seconds: int = DEFAULT_PRICE_MONITOR_NO_EVENT_TIMEOUT_SECONDS
     hermes_webhook_url: str = ""
     hermes_secret: str = ""
     hermes_timeout_seconds: float = DEFAULT_HERMES_TIMEOUT_SECONDS
@@ -404,6 +428,94 @@ def load_settings(
             ),
             "BINANCE_KLINE_MAX_LIMIT",
             DEFAULT_BINANCE_KLINE_MAX_LIMIT,
+        ),
+        binance_ws_base_url=_get_config_value(
+            merged_values,
+            "BINANCE_WS_BASE_URL",
+            DEFAULT_BINANCE_WS_BASE_URL,
+        ),
+        price_monitor_symbol=_get_config_value(
+            merged_values,
+            "PRICE_MONITOR_SYMBOL",
+            DEFAULT_PRICE_MONITOR_SYMBOL,
+        ),
+        price_monitor_ws_stream=_get_config_value(
+            merged_values,
+            "PRICE_MONITOR_WS_STREAM",
+            DEFAULT_PRICE_MONITOR_WS_STREAM,
+        ),
+        price_monitor_interval_seconds=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "PRICE_MONITOR_INTERVAL_SECONDS",
+                str(DEFAULT_PRICE_MONITOR_INTERVAL_SECONDS),
+            ),
+            "PRICE_MONITOR_INTERVAL_SECONDS",
+            DEFAULT_PRICE_MONITOR_INTERVAL_SECONDS,
+        ),
+        price_monitor_change_threshold=_get_config_value(
+            merged_values,
+            "PRICE_MONITOR_CHANGE_THRESHOLD",
+            DEFAULT_PRICE_MONITOR_CHANGE_THRESHOLD,
+        ),
+        price_monitor_redis_key=_get_config_value(
+            merged_values,
+            "PRICE_MONITOR_REDIS_KEY",
+            DEFAULT_PRICE_MONITOR_REDIS_KEY,
+        ),
+        price_monitor_redis_ttl_seconds=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "PRICE_MONITOR_REDIS_TTL_SECONDS",
+                str(DEFAULT_PRICE_MONITOR_REDIS_TTL_SECONDS),
+            ),
+            "PRICE_MONITOR_REDIS_TTL_SECONDS",
+            DEFAULT_PRICE_MONITOR_REDIS_TTL_SECONDS,
+        ),
+        price_monitor_alert_cooldown_seconds=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "PRICE_MONITOR_ALERT_COOLDOWN_SECONDS",
+                str(DEFAULT_PRICE_MONITOR_ALERT_COOLDOWN_SECONDS),
+            ),
+            "PRICE_MONITOR_ALERT_COOLDOWN_SECONDS",
+            DEFAULT_PRICE_MONITOR_ALERT_COOLDOWN_SECONDS,
+        ),
+        price_monitor_enable_price_alerts=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "PRICE_MONITOR_ENABLE_PRICE_ALERTS",
+                str(DEFAULT_PRICE_MONITOR_ENABLE_PRICE_ALERTS).lower(),
+            ),
+            "PRICE_MONITOR_ENABLE_PRICE_ALERTS",
+            DEFAULT_PRICE_MONITOR_ENABLE_PRICE_ALERTS,
+        ),
+        price_monitor_ws_reconnect_min_seconds=_parse_float_config(
+            _get_config_value(
+                merged_values,
+                "PRICE_MONITOR_WS_RECONNECT_MIN_SECONDS",
+                str(DEFAULT_PRICE_MONITOR_WS_RECONNECT_MIN_SECONDS),
+            ),
+            "PRICE_MONITOR_WS_RECONNECT_MIN_SECONDS",
+            DEFAULT_PRICE_MONITOR_WS_RECONNECT_MIN_SECONDS,
+        ),
+        price_monitor_ws_reconnect_max_seconds=_parse_float_config(
+            _get_config_value(
+                merged_values,
+                "PRICE_MONITOR_WS_RECONNECT_MAX_SECONDS",
+                str(DEFAULT_PRICE_MONITOR_WS_RECONNECT_MAX_SECONDS),
+            ),
+            "PRICE_MONITOR_WS_RECONNECT_MAX_SECONDS",
+            DEFAULT_PRICE_MONITOR_WS_RECONNECT_MAX_SECONDS,
+        ),
+        price_monitor_no_event_timeout_seconds=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "PRICE_MONITOR_NO_EVENT_TIMEOUT_SECONDS",
+                str(DEFAULT_PRICE_MONITOR_NO_EVENT_TIMEOUT_SECONDS),
+            ),
+            "PRICE_MONITOR_NO_EVENT_TIMEOUT_SECONDS",
+            DEFAULT_PRICE_MONITOR_NO_EVENT_TIMEOUT_SECONDS,
         ),
         hermes_webhook_url=_get_config_value(merged_values, "HERMES_WEBHOOK_URL"),
         hermes_secret=_get_config_value(merged_values, "HERMES_SECRET"),
