@@ -42,6 +42,7 @@ from app.market_data.kline_quality.integrity_checker import (
 from app.market_data.kline_quality.report_formatter import format_quality_report_summary
 from app.market_data.kline_quality.types import (
     CHECK_TRIGGER_SOURCE_SERVICE,
+    CHECK_TYPE_DAILY_KLINE_INTEGRITY,
     CHECK_TYPE_RECENT_KLINE_INTEGRITY,
     KlineQualityReport,
 )
@@ -132,6 +133,8 @@ def run_recent_kline_integrity_check(
     send_success_alert: bool = False,
     alert_sender: AlertSender | None = None,
     alert_repository: Any | None = None,
+    check_type: str = CHECK_TYPE_RECENT_KLINE_INTEGRITY,
+    enforce_database_source_rules: bool = False,
 ) -> KlineQualityReport:
     """Run a recent official-vs-database integrity check.
 
@@ -143,6 +146,8 @@ def run_recent_kline_integrity_check(
     External service access: may request Binance only when explicitly called without a fake client.
     Data impact: can write one `data_quality_check` record when `record_result=True`;
     never writes formal Kline rows, Redis, or scheduler state.
+    Phase-11 daily callers pass a daily check type plus strict database-row checks
+    while still reusing this same Binance/database comparison path.
     """
 
     report = run_integrity_check(
@@ -154,6 +159,8 @@ def run_recent_kline_integrity_check(
         binance_client=binance_client,
         repository=kline_repository,
         server_time_ms=server_time_ms,
+        check_type=check_type,
+        enforce_database_source_rules=enforce_database_source_rules,
     )
     if record_result:
         record_quality_check_result(
@@ -305,7 +312,7 @@ def _build_quality_alert_event(report: KlineQualityReport) -> AlertEvent:
     else:
         alert_type = (
             AlertType.KLINE_INTEGRITY_CHECK_FAILED
-            if report.check_type == CHECK_TYPE_RECENT_KLINE_INTEGRITY
+            if report.check_type in {CHECK_TYPE_RECENT_KLINE_INTEGRITY, CHECK_TYPE_DAILY_KLINE_INTEGRITY}
             else AlertType.KLINE_DATA_QUALITY_ERROR
         )
         severity = AlertSeverity.CRITICAL if report.severity.value == "critical" else AlertSeverity.ERROR
@@ -324,6 +331,12 @@ def _build_quality_alert_event(report: KlineQualityReport) -> AlertEvent:
             "checked_count": report.checked_count,
             "issue_count": report.issue_count,
             "first_issue_type": first_issue.issue_type.value if first_issue else "",
+            "first_issue_message": first_issue.message if first_issue else "",
+            "checked_start_time": report.start_open_time_utc.isoformat() if report.start_open_time_utc else "",
+            "checked_end_time": report.end_open_time_utc.isoformat() if report.end_open_time_utc else "",
+            "data_quality_check_id": report.metadata.get("data_quality_check_id", ""),
+            "source": "Binance REST official klines",
+            "action": "check_only_no_repair_no_backfill_no_market_kline_write",
             "report": format_quality_report_summary(report),
         },
         source="app.market_data.kline_quality.service",

@@ -15,9 +15,12 @@ from typing import Any, Iterable, Protocol
 from app.core.exceptions import KlineIntegrityCheckError
 from app.exchange.binance.rest_client import BinanceRestClient
 from app.market_data.kline_constants import (
+    ALLOWED_DATA_SOURCES,
+    KLINE_4H_INTERVAL_MS,
     KLINE_4H_INTERVAL_VALUE,
     TRIGGER_SOURCE_CLI,
     TRIGGER_SOURCE_SCHEDULER,
+    TRIGGER_SOURCE_TO_DATA_SOURCE,
 )
 from app.market_data.kline_dto import MarketKlineDTO
 from app.market_data.kline_parser import parse_binance_klines
@@ -80,6 +83,8 @@ def run_recent_kline_integrity_check(
     binance_client: BinanceKlineClientProtocol | None = None,
     repository: KlineIntegrityReaderProtocol | None = None,
     server_time_ms: int | None = None,
+    check_type: str = CHECK_TYPE_RECENT_KLINE_INTEGRITY,
+    enforce_database_source_rules: bool = False,
 ) -> KlineQualityReport:
     """Compare recent official Klines with existing database rows.
 
@@ -91,6 +96,8 @@ def run_recent_kline_integrity_check(
     External service access: calls Binance only when no fake client is supplied and this method
     is explicitly invoked.
     Data impact: reads `market_kline_4h`; never writes formal Kline rows.
+    Daily phase-11 callers pass `check_type=daily_kline_integrity` and enable
+    strict database-row checks. Those checks still only read MySQL and never repair data.
     """
 
     if limit <= 0:
@@ -118,7 +125,7 @@ def run_recent_kline_integrity_check(
     )
     if len(closed_klines) < limit:
         return build_quality_report(
-            check_type=CHECK_TYPE_RECENT_KLINE_INTEGRITY,
+            check_type=check_type,
             klines=closed_klines,
             issues=(
                 KlineQualityIssue(
@@ -150,7 +157,7 @@ def run_recent_kline_integrity_check(
     batch_report = check_kline_batch_before_persist(
         official_klines,
         server_time_ms=active_server_time_ms,
-        check_type=CHECK_TYPE_RECENT_KLINE_INTEGRITY,
+        check_type=check_type,
         check_trigger_source=check_trigger_source,
     )
     if not batch_report.passed or not official_klines:
@@ -168,10 +175,12 @@ def run_recent_kline_integrity_check(
     issues = _compare_official_klines_with_database_rows(
         official_klines=official_klines,
         database_rows=database_rows,
+        server_time_ms=active_server_time_ms,
+        enforce_database_source_rules=enforce_database_source_rules,
     )
 
     return build_quality_report(
-        check_type=CHECK_TYPE_RECENT_KLINE_INTEGRITY,
+        check_type=check_type,
         klines=official_klines,
         issues=issues,
         check_trigger_source=check_trigger_source,
@@ -182,6 +191,7 @@ def run_recent_kline_integrity_check(
             "database_count": len(database_rows),
             "requested_binance_limit": requested_limit,
             "filtered_unclosed_count": len(parsed_klines) - len(closed_klines),
+            "enforce_database_source_rules": enforce_database_source_rules,
         },
     )
 
@@ -190,10 +200,37 @@ def _compare_official_klines_with_database_rows(
     *,
     official_klines: Iterable[MarketKlineDTO],
     database_rows: Iterable[Any],
+    server_time_ms: int | None = None,
+    enforce_database_source_rules: bool = False,
 ) -> tuple[KlineQualityIssue, ...]:
     official_by_open_time = {kline.open_time_ms: kline for kline in official_klines}
-    database_by_open_time = {int(row.open_time_ms): row for row in database_rows}
+    database_row_list = list(database_rows)
+    database_by_open_time: dict[int, Any] = {}
     issues: list[KlineQualityIssue] = []
+
+    for row in database_row_list:
+        open_time_ms = int(row.open_time_ms)
+        if open_time_ms in database_by_open_time:
+            issues.append(
+                KlineQualityIssue(
+                    issue_type=KlineQualityIssueType.DUPLICATE_OPEN_TIME,
+                    severity=KlineQualitySeverity.CRITICAL,
+                    message=f"Database contains duplicate Kline rows open_time_ms={open_time_ms}",
+                    open_time_ms=open_time_ms,
+                    field_name="open_time_ms",
+                )
+            )
+            continue
+        database_by_open_time[open_time_ms] = row
+
+    if enforce_database_source_rules:
+        issues.extend(
+            _check_strict_database_row_invariants(
+                official_by_open_time=official_by_open_time,
+                database_rows=database_row_list,
+                server_time_ms=server_time_ms,
+            )
+        )
 
     for open_time_ms, official_kline in official_by_open_time.items():
         database_row = database_by_open_time.get(open_time_ms)
@@ -233,6 +270,109 @@ def _compare_official_klines_with_database_rows(
             )
         )
 
+    return tuple(issues)
+
+
+def _check_strict_database_row_invariants(
+    *,
+    official_by_open_time: dict[int, MarketKlineDTO],
+    database_rows: Iterable[Any],
+    server_time_ms: int | None,
+) -> tuple[KlineQualityIssue, ...]:
+    """Return daily-review-only database row invariant issues.
+
+    The recent checker keeps this strict path opt-in so phase-07 tests and callers
+    keep their original behavior. Phase 11 enables it to confirm persisted rows
+    still obey the official 4h source and time-boundary rules. The function only
+    inspects ORM/fake rows and never writes or repairs `market_kline_4h`.
+    """
+
+    issues: list[KlineQualityIssue] = []
+    for row in database_rows:
+        open_time_ms = int(row.open_time_ms)
+        official_kline = official_by_open_time.get(open_time_ms)
+
+        if official_kline is not None:
+            if getattr(row, "symbol", None) != official_kline.symbol:
+                issues.append(
+                    KlineQualityIssue(
+                        issue_type=KlineQualityIssueType.INVALID_KLINE,
+                        severity=KlineQualitySeverity.ERROR,
+                        message=(
+                            "Database Kline symbol does not match official range; "
+                            f"open_time_ms={open_time_ms}"
+                        ),
+                        open_time_ms=open_time_ms,
+                        field_name="symbol",
+                        expected_value=official_kline.symbol,
+                        actual_value=str(getattr(row, "symbol", "")),
+                    )
+                )
+            if getattr(row, "interval_value", None) != official_kline.interval_value:
+                issues.append(
+                    KlineQualityIssue(
+                        issue_type=KlineQualityIssueType.INVALID_KLINE,
+                        severity=KlineQualitySeverity.ERROR,
+                        message=(
+                            "Database Kline interval does not match official 4h range; "
+                            f"open_time_ms={open_time_ms}"
+                        ),
+                        open_time_ms=open_time_ms,
+                        field_name="interval_value",
+                        expected_value=official_kline.interval_value,
+                        actual_value=str(getattr(row, "interval_value", "")),
+                    )
+                )
+
+        data_source = str(getattr(row, "data_source", "") or "")
+        trigger_source = str(getattr(row, "trigger_source", "") or "")
+        expected_data_source = TRIGGER_SOURCE_TO_DATA_SOURCE.get(trigger_source)
+        if data_source not in ALLOWED_DATA_SOURCES or expected_data_source != data_source:
+            issues.append(
+                KlineQualityIssue(
+                    issue_type=KlineQualityIssueType.INVALID_DATA_SOURCE_MAPPING,
+                    severity=KlineQualitySeverity.ERROR,
+                    message=(
+                        "Database Kline data_source/trigger_source mapping is not an allowed "
+                        f"Binance REST official mapping; open_time_ms={open_time_ms}"
+                    ),
+                    open_time_ms=open_time_ms,
+                    field_name="data_source,trigger_source",
+                    expected_value=str(expected_data_source or sorted(ALLOWED_DATA_SOURCES)),
+                    actual_value=f"{data_source},{trigger_source}",
+                )
+            )
+
+        close_time_ms = int(getattr(row, "close_time_ms"))
+        if server_time_ms is not None and close_time_ms >= server_time_ms:
+            issues.append(
+                KlineQualityIssue(
+                    issue_type=KlineQualityIssueType.UNCLOSED_KLINE,
+                    severity=KlineQualitySeverity.CRITICAL,
+                    message=f"Database contains an unclosed Kline open_time_ms={open_time_ms}",
+                    open_time_ms=open_time_ms,
+                    field_name="close_time_ms",
+                    expected_value=f"<{server_time_ms}",
+                    actual_value=str(close_time_ms),
+                )
+            )
+
+        expected_close_time_ms = open_time_ms + KLINE_4H_INTERVAL_MS - 1
+        if close_time_ms != expected_close_time_ms:
+            issues.append(
+                KlineQualityIssue(
+                    issue_type=KlineQualityIssueType.INVALID_KLINE,
+                    severity=KlineQualitySeverity.ERROR,
+                    message=(
+                        "Database Kline close_time_ms does not match the 4h open/close "
+                        f"boundary rule; open_time_ms={open_time_ms}"
+                    ),
+                    open_time_ms=open_time_ms,
+                    field_name="close_time_ms",
+                    expected_value=str(expected_close_time_ms),
+                    actual_value=str(close_time_ms),
+                )
+            )
     return tuple(issues)
 
 
