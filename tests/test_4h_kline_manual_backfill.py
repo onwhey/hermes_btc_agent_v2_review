@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 from app.alerting.types import AlertSendResult, AlertSendStatus
 from app.core.exceptions import RedisError
+from app.core.task_lock import RedisTaskLock
 from app.market_data.backfill.kline_4h_backfill_service import run_manual_4h_backfill
 from app.market_data.backfill.types import (
     EXIT_ALERT_FAILED,
@@ -238,6 +239,44 @@ class FakeQualityRepository:
         return record
 
 
+class FakeCollectorEventRepository:
+    def __init__(self, *, raise_on_create: bool = False, raise_on_mark_failed: bool = False) -> None:
+        self.raise_on_create = raise_on_create
+        self.raise_on_mark_failed = raise_on_mark_failed
+        self.records: list[Any] = []
+        self.status_calls: list[dict[str, Any]] = []
+
+    def create_running_event(self, _db_session: Any, **kwargs: Any) -> Any:
+        if self.raise_on_create:
+            raise RuntimeError("collector_event_log create failed")
+        record = SimpleNamespace(id=len(self.records) + 1, status="running", kwargs=kwargs)
+        self.records.append(record)
+        return record
+
+    def create_skipped_event(self, _db_session: Any, **kwargs: Any) -> Any:
+        record = self.create_running_event(_db_session, **kwargs)
+        record.status = "skipped"
+        self.status_calls.append({"status": "skipped", "values": kwargs})
+        return record
+
+    def mark_success(self, _db_session: Any, event: Any, **values: Any) -> Any:
+        event.status = "success"
+        self.status_calls.append({"status": "success", "values": values})
+        return event
+
+    def mark_blocked(self, _db_session: Any, event: Any, **values: Any) -> Any:
+        event.status = "blocked"
+        self.status_calls.append({"status": "blocked", "values": values})
+        return event
+
+    def mark_failed(self, _db_session: Any, event: Any, **values: Any) -> Any:
+        if self.raise_on_mark_failed:
+            raise RuntimeError("collector_event_log mark_failed failed")
+        event.status = "failed"
+        self.status_calls.append({"status": "failed", "values": values})
+        return event
+
+
 class FakeAlertSender:
     def __init__(self, result: AlertSendResult | None = None) -> None:
         self.result = result or AlertSendResult(status=AlertSendStatus.SENT, attempted_real_send=True)
@@ -257,6 +296,7 @@ def run_backfill_with_fakes(
     repository: FakeKlineRepository | None = None,
     task_lock: FakeTaskLock | None = None,
     alert_sender: FakeAlertSender | None = None,
+    collector_repository: FakeCollectorEventRepository | None = None,
 ) -> tuple[Any, FakeKlineRepository, FakeTaskLock, FakeAlertSender, FakeQualityRepository, FakeSession, FakeBinanceClient]:
     dto = build_dto(0)
     fake_client = FakeBinanceClient(
@@ -276,6 +316,7 @@ def run_backfill_with_fakes(
         task_lock=fake_task_lock,
         kline_repository=fake_repository,
         data_quality_repository=fake_quality_repository,
+        collector_event_repository=collector_repository or FakeCollectorEventRepository(),
         alert_sender=fake_alert_sender,
         alert_repository=object(),
     )
@@ -446,6 +487,75 @@ def test_redis_exception_fails_without_binance_or_formal_write_and_alerts() -> N
     assert len(alert_sender.calls) == 1
 
 
+def test_collector_event_create_failure_still_alerts_without_binance_or_formal_write() -> None:
+    collector_repository = FakeCollectorEventRepository(raise_on_create=True)
+
+    result, repository, _lock, alert_sender, _quality_repo, session, client = run_backfill_with_fakes(
+        request_for_offsets(0, 0),
+        [build_raw(0)],
+        collector_repository=collector_repository,
+    )
+
+    assert result.status == KlineBackfillStatus.FAILED
+    assert result.exit_code == EXIT_TASK_FAILED
+    assert result.details["event_log_record_failed"] is True
+    assert client.get_server_time_calls == 0
+    assert client.get_klines_calls == []
+    assert repository.bulk_write_called is False
+    assert session.rollbacks >= 1
+    assert len(alert_sender.calls) == 1
+
+
+def test_collector_event_mark_failed_failure_still_alerts_without_crashing() -> None:
+    collector_repository = FakeCollectorEventRepository(raise_on_mark_failed=True)
+    task_lock = FakeTaskLock(raise_on_acquire=True)
+
+    result, repository, _lock, alert_sender, _quality_repo, session, client = run_backfill_with_fakes(
+        request_for_offsets(0, 0),
+        [build_raw(0)],
+        task_lock=task_lock,
+        collector_repository=collector_repository,
+    )
+
+    assert result.status == KlineBackfillStatus.FAILED
+    assert result.exit_code == EXIT_TASK_FAILED
+    assert result.details["event_log_record_failed"] is True
+    assert client.get_server_time_calls == 0
+    assert repository.bulk_write_called is False
+    assert session.rollbacks >= 1
+    assert len(alert_sender.calls) == 1
+
+
+def test_redis_release_lock_does_not_delete_other_owner_lock() -> None:
+    class FakeRedisClient:
+        def __init__(self) -> None:
+            self.eval_calls: list[tuple[Any, ...]] = []
+            self.delete_calls = 0
+
+        def eval(self, *args: Any) -> int:
+            self.eval_calls.append(args)
+            return 0
+
+        def delete(self, _key: str) -> int:
+            self.delete_calls += 1
+            raise AssertionError("release_lock must not call delete outside Lua")
+
+    redis_client = FakeRedisClient()
+    task_lock = RedisTaskLock(redis_client=redis_client)
+
+    released = task_lock.release_lock(key="kline_write:BTCUSDT:4h", owner="owner-a")
+
+    assert released is False
+    assert len(redis_client.eval_calls) == 1
+    script, key_count, key, owner = redis_client.eval_calls[0]
+    assert "GET" in script
+    assert "DEL" in script
+    assert key_count == 1
+    assert key == "kline_write:BTCUSDT:4h"
+    assert owner == "owner-a"
+    assert redis_client.delete_calls == 0
+
+
 def test_parameter_validation_requires_trigger_source_cli_and_confirm_write() -> None:
     missing_confirm = ManualKlineBackfillRequest(
         start_open_time_ms=build_dto(0).open_time_ms,
@@ -511,6 +621,30 @@ def test_success_notify_success_sends_fixed_template_success_alert() -> None:
     assert result.status == KlineBackfillStatus.SUCCESS
     assert len(alert_sender.calls) == 1
     assert alert_sender.calls[0]["event"].severity.value == "info"
+
+
+def test_dry_run_notify_success_alert_clearly_marks_no_formal_write() -> None:
+    request = replace(
+        request_for_offsets(0, 0, notify_success=True),
+        dry_run=True,
+        confirm_write=False,
+    )
+
+    result, repository, _lock, alert_sender, _quality_repo, _session, _client = run_backfill_with_fakes(
+        request,
+        [build_raw(0)],
+    )
+
+    assert result.status == KlineBackfillStatus.SUCCESS
+    assert result.details["dry_run"] is True
+    assert result.details["formal_write_performed"] is False
+    assert repository.bulk_write_called is False
+    assert len(alert_sender.calls) == 1
+    event = alert_sender.calls[0]["event"]
+    assert "dry-run" in event.title
+    assert "no formal Kline write" in event.summary
+    assert event.details["dry_run"] is True
+    assert event.details["formal_write_performed"] is False
 
 
 def test_hermes_delivery_failure_returns_alert_failed_exit_code() -> None:

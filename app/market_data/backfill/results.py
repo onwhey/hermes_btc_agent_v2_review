@@ -10,10 +10,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.market_data.backfill.types import KlineBackfillStatus, ManualKlineBackfillRequest, ManualKlineBackfillResult
+from app.market_data.backfill.quality import closed_kline_count_from_report
+from app.market_data.backfill.types import (
+    KlineBackfillStatus,
+    ManualKlineBackfillRequest,
+    ManualKlineBackfillResult,
+)
 from app.market_data.kline_quality.report_formatter import format_quality_report_summary
 from app.market_data.kline_quality.types import KlineQualityReport
-from app.market_data.backfill.quality import closed_kline_count_from_report
 
 
 def format_manual_backfill_result_lines(result: ManualKlineBackfillResult) -> list[str]:
@@ -117,4 +121,3 @@ def record_id(record: Any | None) -> int | None:
 
     value = getattr(record, "id", None)
     return int(value) if value is not None else None
-

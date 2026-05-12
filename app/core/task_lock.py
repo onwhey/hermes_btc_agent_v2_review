@@ -15,6 +15,14 @@ from typing import Any
 
 from app.core.exceptions import RedisError
 
+_RELEASE_LOCK_SCRIPT = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+else
+    return 0
+end
+"""
+
 
 @dataclass(frozen=True)
 class TaskLockIdentity:
@@ -72,12 +80,10 @@ class RedisTaskLock:
         """
 
         try:
-            current_owner = self._client().get(key)
-            if isinstance(current_owner, bytes):
-                current_owner = current_owner.decode("utf-8", errors="replace")
-            if current_owner != owner:
-                return False
-            return bool(self._client().delete(key))
+            # Owner check and delete must be atomic; GET followed by DELETE can
+            # remove a lock reacquired by a different task between commands.
+            result = self._client().eval(_RELEASE_LOCK_SCRIPT, 1, key, owner)
+            return bool(int(result or 0))
         except Exception as exc:  # noqa: BLE001 - normalize Redis driver errors.
             raise RedisError(f"failed to release task lock key={key}") from exc
 
@@ -86,4 +92,3 @@ def build_kline_write_lock_key(*, symbol: str, interval_value: str) -> str:
     """Build the shared formal Kline write-lock key for one symbol and interval."""
 
     return f"kline_write:{symbol.strip().upper()}:{interval_value.strip()}"
-

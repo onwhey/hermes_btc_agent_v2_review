@@ -22,6 +22,7 @@ automatic repair, overwrite/delete of formal Klines, or trading execution.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Sequence
 
 from app.core.exceptions import RedisError
@@ -403,7 +404,7 @@ def _handle_success(
         request,
         report,
         fetched_count=fetched_count,
-            quality_check_id=record_id(quality_record),
+        quality_check_id=record_id(quality_record),
     )
     success_event_values.update(
         {
@@ -427,6 +428,14 @@ def _handle_success(
         fetched_count=fetched_count,
         inserted_count=inserted_count,
         skipped_existing_count=skipped_existing_count,
+    )
+    result = replace(
+        result,
+        details={
+            **dict(result.details),
+            "dry_run": request.dry_run,
+            "formal_write_performed": (not request.dry_run and inserted_count > 0),
+        },
     )
     if request.notify_success:
         return send_success_alert_and_adjust_exit_code(
@@ -454,18 +463,29 @@ def _handle_task_failure(
     alert_repository: Any | None,
 ) -> ManualKlineBackfillResult:
     _rollback_if_possible(db_session)
-    event_log = mark_existing_or_pre_execution_failure(
-        db_session,
-        collector_repository,
-        request,
-        event_log,
-        error_code=error_code,
-        error_message=error_message,
-        fetched_count=fetched_count,
-        parsed_klines=parsed_klines,
-        report=report,
-    )
-    _commit_if_possible(db_session)
+    event_log_record_failed = False
+    event_log_error_message: str | None = None
+    try:
+        event_log = mark_existing_or_pre_execution_failure(
+            db_session,
+            collector_repository,
+            request,
+            event_log,
+            error_code=error_code,
+            error_message=error_message,
+            fetched_count=fetched_count,
+            parsed_klines=parsed_klines,
+            report=report,
+        )
+        _commit_if_possible(db_session)
+    except Exception as event_log_exc:  # noqa: BLE001 - alert even when event logging fails.
+        event_log_record_failed = True
+        event_log_error_message = str(event_log_exc)
+        LOGGER.exception(
+            "collector_event_log failure while handling manual 4h backfill failure trace_id=%s",
+            request.trace_id,
+        )
+        _rollback_if_possible(db_session)
     exit_code = EXIT_PERSIST_FAILED if error_code == "KlineBackfillPersistError" else EXIT_TASK_FAILED
     result = build_failed_result(
         request,
@@ -476,6 +496,16 @@ def _handle_task_failure(
         fetched_count=fetched_count,
         parsed_count=len(parsed_klines),
     )
+    if event_log_record_failed:
+        result = replace(
+            result,
+            details={
+                **dict(result.details),
+                "event_log_record_failed": True,
+                "event_log_record_error": event_log_error_message or "",
+                "formal_write_performed": False,
+            },
+        )
     return send_failure_alert_and_adjust_exit_code(
         request,
         result,

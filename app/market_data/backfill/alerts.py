@@ -111,11 +111,16 @@ def _build_backfill_alert_event(
     success: bool,
 ) -> AlertEvent:
     if success:
+        title = "Manual 4h Kline backfill succeeded"
+        summary = "Manual 4h Kline backfill completed successfully"
+        if request.dry_run:
+            title = "Manual 4h Kline backfill dry-run passed"
+            summary = "Manual 4h Kline backfill dry-run completed; no formal Kline write was performed"
         return AlertEvent(
             alert_type=AlertType.KLINE_INTEGRITY_CHECK_PASSED,
             severity=AlertSeverity.INFO,
-            title="Manual 4h Kline backfill succeeded",
-            summary="Manual 4h Kline backfill completed successfully",
+            title=title,
+            summary=summary,
             details=_alert_details(request, result, report),
             source="app.market_data.backfill.alerts",
             trace_id=request.trace_id,
@@ -142,12 +147,20 @@ def _alert_details(
     result: ManualKlineBackfillResult,
     report: KlineQualityReport | None,
 ) -> dict[str, object]:
+    formal_write_performed = bool(
+        result.details.get(
+            "formal_write_performed",
+            (not request.dry_run and result.inserted_count > 0),
+        )
+    )
     return {
         "event_type": BACKFILL_EVENT_TYPE,
         "symbol": request.symbol,
         "interval_value": request.interval_value,
         "trigger_source": request.trigger_source,
         "data_source": request.data_source,
+        "dry_run": request.dry_run,
+        "formal_write_performed": formal_write_performed,
         "requested_start_open_time_ms": request.start_open_time_ms,
         "requested_end_open_time_ms": request.end_open_time_ms,
         "status": result.status.value,
