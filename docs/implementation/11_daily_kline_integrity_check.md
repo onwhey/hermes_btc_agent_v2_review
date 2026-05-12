@@ -479,6 +479,11 @@ app/scheduler/jobs/daily_kline_integrity_check.py::run_daily_kline_integrity_che
 本分支不新增常驻 scheduler runner，也不在当前仓库内启动自动每日调度；正式调度器接入时必须直接调用该 job 或 service，
 不得调用 `scripts/check_kline_integrity.py`。
 
+调度窗口要求：
+- 每日复核读取 `market_kline_4h`，但不持有正式 K线写入锁，也不写正式 K线表。
+- 正式部署时应让每日复核避开 4h incremental collector 写入窗口，建议在 collector 预期完成并留出缓冲后触发。
+- 本阶段未实现“检测正式 K线写入锁并跳过复核”或“跳过最近 1 根已收盘 4h K线”；后续如要进一步降低误报风险，应在 service 层补该能力并增加测试。
+
 ### 14.4 异常审计
 
 Binance REST 或 server time 请求失败时，只要 `data_quality_check` repository 可用，service 会写入 `status=error` 的

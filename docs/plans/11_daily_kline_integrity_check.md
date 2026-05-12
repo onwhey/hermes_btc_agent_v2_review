@@ -6,8 +6,8 @@
 
 本阶段目标是：
 
-1. 每日由 scheduler 定时触发一次自动复核。
-2. 支持用户通过 CLI 手动触发指定范围复核。
+1. 本阶段提供 scheduler job 函数，供外部调度入口每日调用；本仓库不新增常驻 scheduler runner。
+2. 支持用户通过 CLI 手动触发最近 N 根复核；本阶段不支持指定时间范围复核。
 3. 默认检查最近 100 根 BTCUSDT 4h 已收盘 K线。
 4. 复核时重新请求 Binance REST 官方已收盘 K线。
 5. 将 Binance REST 返回的官方 K线与数据库正式 K线按 `open_time_ms` 对齐比较。
@@ -305,7 +305,7 @@ kline_integrity_check_log
 4. check_mode。
 5. check_trigger。
 6. compare_source。
-7. lookback_count 或 start/end range。
+7. lookback_count。
 8. checked_kline_count。
 9. issue_count。
 10. issue_summary。
@@ -373,6 +373,11 @@ kline_integrity_check_failed
 8. 获取锁失败时，本次任务应跳过或拒绝，并记录日志；如果有复核任务记录表，应记录 skipped。
 
 注意：复核任务锁不是 K线写入锁，复核任务不得因持有锁而获得写入正式 K线表的权限。
+
+并发误报边界：
+1. 每日复核本身不写 `market_kline_4h`，但它读取正式 K线表时可能与 4h incremental collector 的写入窗口重叠。
+2. 正式部署调度时，每日复核应避开 4h collector 写入窗口，建议在 collector 预期完成并留出缓冲后再触发。
+3. 如果后续需要在代码层进一步降低误报风险，应优先增加“检测正式 K线写入锁并跳过复核”或“跳过最近 1 根已收盘 4h K线”的能力；本阶段只在文档中明确调度避让边界，不实现自动修复、自动回补或正式 K线写入。
 
 ---
 
