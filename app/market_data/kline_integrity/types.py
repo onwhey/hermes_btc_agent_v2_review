@@ -16,11 +16,16 @@ from uuid import uuid4
 
 from app.core.constants import (
     DEFAULT_DAILY_KLINE_INTEGRITY_LIMIT,
+    DEFAULT_DAILY_KLINE_INTEGRITY_LOCK_TTL_SECONDS,
     DEFAULT_DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS,
     DEFAULT_DAILY_KLINE_INTEGRITY_SYMBOL,
 )
 from app.market_data.kline_constants import KLINE_4H_INTERVAL_VALUE
 from app.market_data.kline_quality.types import CHECK_TRIGGER_SOURCE_SCHEDULER
+
+CHECK_MODE_DAILY_INTEGRITY_CHECK = "daily_integrity_check"
+CHECK_MODE_MANUAL_INTEGRITY_CHECK = "manual_integrity_check"
+ALLOWED_CHECK_MODES = frozenset({CHECK_MODE_DAILY_INTEGRITY_CHECK, CHECK_MODE_MANUAL_INTEGRITY_CHECK})
 
 EXIT_SUCCESS = 0
 EXIT_PARAMETER_ERROR = 1
@@ -43,8 +48,8 @@ class DailyKlineIntegrityCheckRequest:
     """Input for one daily official-vs-database 4h Kline review.
 
     Parameters: `symbol` and `interval_value` identify the reviewed formal Kline
-    stream; `limit` is the count of recent closed official Klines to compare;
-    `check_trigger_source` must be explicit (`cli` or `scheduler`); and
+    stream; `lookback_count` is the count of recent closed official Klines to compare;
+    `check_trigger` must be explicit (`cli` or `scheduler`); and
     `notify_success` controls only the healthy notification.
     Return value: immutable request object.
     Failure scenarios: the service validates values before any external access.
@@ -53,16 +58,30 @@ class DailyKlineIntegrityCheckRequest:
 
     symbol: str = DEFAULT_DAILY_KLINE_INTEGRITY_SYMBOL
     interval_value: str = KLINE_4H_INTERVAL_VALUE
-    limit: int = DEFAULT_DAILY_KLINE_INTEGRITY_LIMIT
-    check_trigger_source: str = CHECK_TRIGGER_SOURCE_SCHEDULER
+    lookback_count: int = DEFAULT_DAILY_KLINE_INTEGRITY_LIMIT
+    check_trigger: str = CHECK_TRIGGER_SOURCE_SCHEDULER
+    check_mode: str = CHECK_MODE_DAILY_INTEGRITY_CHECK
     notify_success: bool = DEFAULT_DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS
+    lock_ttl_seconds: int = DEFAULT_DAILY_KLINE_INTEGRITY_LOCK_TTL_SECONDS
     trace_id: str = field(default_factory=lambda: uuid4().hex)
 
     @property
     def requested_count(self) -> int:
         """Return the requested count of recent closed 4h Klines."""
 
-        return self.limit
+        return self.lookback_count
+
+    @property
+    def limit(self) -> int:
+        """Backward-compatible alias for the recent lookback count."""
+
+        return self.lookback_count
+
+    @property
+    def check_trigger_source(self) -> str:
+        """Return the quality-check trigger field used by phase-07 shared types."""
+
+        return self.check_trigger
 
 
 @dataclass(frozen=True)
@@ -86,6 +105,7 @@ class DailyKlineIntegrityCheckResult:
     checked_end_time: str | None = None
     quality_check_id: int | None = None
     alert_status: str | None = None
+    lock_key: str | None = None
     details: Mapping[str, Any] = field(default_factory=dict)
 
     @property
@@ -93,3 +113,9 @@ class DailyKlineIntegrityCheckResult:
         """Return whether Kline health was confirmed and all required alerts succeeded."""
 
         return self.status == DailyKlineIntegrityStatus.HEALTHY and self.exit_code == EXIT_SUCCESS
+
+
+def build_kline_integrity_check_lock_key(*, symbol: str, interval_value: str, check_mode: str) -> str:
+    """Build the Redis lock key for one integrity-review task identity."""
+
+    return f"kline_integrity_check:{symbol.strip().upper()}:{interval_value.strip()}:{check_mode.strip()}"

@@ -1,8 +1,9 @@
 """Daily BTCUSDT 4h Kline integrity review service.
 
 Call chain for manual debugging:
-scripts/run_daily_kline_integrity_check.py::main
+scripts/check_kline_integrity.py::main
     -> app/market_data/kline_integrity/kline_integrity_service.py::run_daily_kline_integrity_check
+    -> app/core/task_lock.py::RedisTaskLock.acquire_lock
     -> app/market_data/kline_quality/service.py::run_recent_kline_integrity_check
     -> app/market_data/kline_quality/integrity_checker.py::run_recent_kline_integrity_check
     -> app/exchange/binance/rest_client.py::BinanceRestClient.get_server_time
@@ -19,9 +20,10 @@ This file belongs to `app/market_data/kline_integrity`.
 It orchestrates the phase-11 daily review of official Binance REST closed 4h
 Klines against `market_kline_4h`. It may request Binance public REST Klines,
 read `market_kline_4h`, write `data_quality_check`, optionally write
-`alert_message` through `app/alerting`, and send fixed-template Hermes alerts.
+`alert_message` through `app/alerting`, acquire a short Redis re-entry lock,
+and send fixed-template Hermes alerts.
 It does not write, overwrite, delete, repair, or backfill formal Kline rows. It
-does not read/write Redis, call DeepSeek, generate strategy advice, or perform
+does not use Redis for market data, call DeepSeek, generate strategy advice, or perform
 any trading execution.
 """
 
@@ -31,16 +33,20 @@ from dataclasses import replace
 from typing import Any
 
 from app.alerting.types import AlertSendResult, AlertSendStatus
+from app.core.task_lock import RedisTaskLock
 from app.core.logger import get_logger
 from app.core.time_utils import now_utc
 from app.market_data.kline_constants import DEFAULT_KLINE_SYMBOL, KLINE_4H_INTERVAL_VALUE
 from app.market_data.kline_integrity.types import (
+    ALLOWED_CHECK_MODES,
     EXIT_ALERT_FAILED,
     EXIT_PARAMETER_ERROR,
+    EXIT_SUCCESS,
     EXIT_TASK_FAILED,
     DailyKlineIntegrityCheckRequest,
     DailyKlineIntegrityCheckResult,
     DailyKlineIntegrityStatus,
+    build_kline_integrity_check_lock_key,
 )
 from app.market_data.kline_integrity.results import (
     datetime_to_text,
@@ -82,6 +88,7 @@ def run_daily_kline_integrity_check(
     data_quality_repository: Any | None = None,
     alert_sender: Any | None = None,
     alert_repository: Any | None = None,
+    task_lock: Any | None = None,
 ) -> DailyKlineIntegrityCheckResult:
     """Run one daily official-vs-database 4h Kline review.
 
@@ -96,7 +103,8 @@ def run_daily_kline_integrity_check(
     External service access: Binance public REST and Hermes only through injected
     or default clients.
     Data impact: reads `market_kline_4h`; writes only `data_quality_check` and
-    optional `alert_message`; never writes formal Kline rows or Redis.
+    optional `alert_message`; writes Redis only for the owner-checked re-entry lock.
+    It never writes formal Kline rows.
     """
 
     try:
@@ -112,18 +120,51 @@ def run_daily_kline_integrity_check(
         )
 
     started_at = now_utc()
+    lock_key = build_kline_integrity_check_lock_key(
+        symbol=request.symbol,
+        interval_value=request.interval_value,
+        check_mode=request.check_mode,
+    )
     database_state = {"entered": False}
     tracking_repository = _DatabaseReadTrackingRepository(kline_repository, database_state)
     active_quality_repository = data_quality_repository or _default_data_quality_repository()
+    active_task_lock = task_lock or RedisTaskLock()
     quality_record: Any | None = None
     final_report: KlineQualityReport | None = None
+    lock_acquired = False
 
     try:
+        lock_acquired = active_task_lock.acquire_lock(
+            key=lock_key,
+            owner=request.trace_id,
+            ttl_seconds=request.lock_ttl_seconds,
+        )
+        if not lock_acquired:
+            LOGGER.warning(
+                "Daily Kline integrity check skipped because lock is held key=%s trace_id=%s",
+                lock_key,
+                request.trace_id,
+            )
+            return DailyKlineIntegrityCheckResult(
+                status=DailyKlineIntegrityStatus.SKIPPED,
+                exit_code=EXIT_SUCCESS,
+                trace_id=request.trace_id,
+                message="Daily Kline integrity check skipped because another task holds the lock",
+                requested_count=request.requested_count,
+                lock_key=lock_key,
+                details={
+                    "lock_key": lock_key,
+                    "check_mode": request.check_mode,
+                    "check_trigger": request.check_trigger,
+                    "lock_acquired": False,
+                },
+            )
+
         report = run_recent_kline_integrity_check(
             db_session,
             symbol=request.symbol,
             interval_value=request.interval_value,
-            limit=request.limit,
+            limit=request.lookback_count,
             check_trigger_source=request.check_trigger_source,
             binance_client=binance_client,
             kline_repository=tracking_repository,
@@ -158,6 +199,17 @@ def run_daily_kline_integrity_check(
             final_report,
             quality_record=quality_record,
         )
+        result = replace(
+            result,
+            lock_key=lock_key,
+            details={
+                **dict(result.details),
+                "lock_key": lock_key,
+                "check_mode": request.check_mode,
+                "check_trigger": request.check_trigger,
+                "lookback_count": request.lookback_count,
+            },
+        )
         if final_report.passed and not request.notify_success:
             return result
         return _send_report_alert_and_adjust_result(
@@ -174,28 +226,32 @@ def run_daily_kline_integrity_check(
         _rollback_if_possible(db_session)
         quality_record_failed = False
         quality_record_error = ""
-        if database_state["entered"] or final_report is not None:
-            try:
-                error_report = _build_task_error_quality_report(
-                    request,
-                    error_message=str(exc),
-                    started_at=started_at,
-                    finished_at=now_utc(),
-                    previous_report=final_report,
-                )
-                quality_record = record_quality_check_result(
-                    db_session,
-                    error_report,
-                    repository=active_quality_repository,
-                )
-            except Exception as quality_exc:  # noqa: BLE001 - still alert when quality recording fails.
-                quality_record_failed = True
-                quality_record_error = str(quality_exc)
-                LOGGER.exception(
-                    "Failed to record daily Kline integrity error report trace_id=%s",
-                    request.trace_id,
-                )
-                _rollback_if_possible(db_session)
+        try:
+            error_report = _build_task_error_quality_report(
+                request,
+                error_message=str(exc),
+                started_at=started_at,
+                finished_at=now_utc(),
+                previous_report=final_report,
+            )
+            quality_record = record_quality_check_result(
+                db_session,
+                error_report,
+                repository=active_quality_repository,
+            )
+        except Exception as quality_exc:  # noqa: BLE001 - still alert when quality recording fails.
+            quality_record_failed = True
+            quality_record_error = str(quality_exc)
+            LOGGER.critical(
+                "EMERGENCY daily Kline integrity failure record unavailable trace_id=%s error=%s",
+                request.trace_id,
+                quality_record_error,
+            )
+            LOGGER.exception(
+                "Failed to record daily Kline integrity error report trace_id=%s",
+                request.trace_id,
+            )
+            _rollback_if_possible(db_session)
 
         alert_result = _send_task_failure_alert_safely(
             request,
@@ -222,6 +278,7 @@ def run_daily_kline_integrity_check(
             checked_end_time=datetime_to_text(final_report.end_open_time_utc if final_report else None),
             quality_check_id=record_id(quality_record),
             alert_status=_alert_status_text(alert_result),
+            lock_key=lock_key,
             details={
                 "error_code": exc.__class__.__name__,
                 "error_message": str(exc),
@@ -230,9 +287,14 @@ def run_daily_kline_integrity_check(
                 "data_quality_check_record_error": quality_record_error,
                 "alert_error": alert_result.error_message if alert_result else "",
                 "source": "Binance REST official klines",
+                "lock_key": lock_key,
+                "check_mode": request.check_mode,
                 "action": "check_only_no_repair_no_backfill_no_market_kline_write",
             },
         )
+    finally:
+        if lock_acquired:
+            _release_integrity_lock_safely(active_task_lock, key=lock_key, owner=request.trace_id)
 
 
 def validate_daily_kline_integrity_request(request: DailyKlineIntegrityCheckRequest) -> None:
@@ -244,10 +306,14 @@ def validate_daily_kline_integrity_request(request: DailyKlineIntegrityCheckRequ
         raise DailyKlineIntegrityParameterError("daily Kline integrity check only supports BTCUSDT")
     if request.interval_value != KLINE_4H_INTERVAL_VALUE:
         raise DailyKlineIntegrityParameterError("interval must be 4h")
-    if request.limit <= 0:
-        raise DailyKlineIntegrityParameterError("limit must be greater than 0")
-    if request.check_trigger_source not in ALLOWED_DAILY_TRIGGER_SOURCES:
-        raise DailyKlineIntegrityParameterError("check_trigger_source must be cli or scheduler")
+    if request.lookback_count <= 0:
+        raise DailyKlineIntegrityParameterError("lookback_count must be greater than 0")
+    if request.check_trigger not in ALLOWED_DAILY_TRIGGER_SOURCES:
+        raise DailyKlineIntegrityParameterError("check_trigger must be cli or scheduler")
+    if request.check_mode not in ALLOWED_CHECK_MODES:
+        raise DailyKlineIntegrityParameterError("check_mode must be daily_integrity_check or manual_integrity_check")
+    if request.lock_ttl_seconds <= 0:
+        raise DailyKlineIntegrityParameterError("lock_ttl_seconds must be greater than 0")
 
 
 class _DatabaseReadTrackingRepository:

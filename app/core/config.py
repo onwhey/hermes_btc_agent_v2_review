@@ -28,7 +28,10 @@ from app.core.constants import (
     DEFAULT_DAILY_KLINE_INTEGRITY_ENABLED,
     DEFAULT_DAILY_KLINE_INTEGRITY_INTERVAL,
     DEFAULT_DAILY_KLINE_INTEGRITY_LIMIT,
+    DEFAULT_DAILY_KLINE_INTEGRITY_LOCK_TTL_SECONDS,
     DEFAULT_DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS,
+    DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC,
+    DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC,
     DEFAULT_DAILY_KLINE_INTEGRITY_SYMBOL,
     DEFAULT_DAILY_KLINE_INTEGRITY_TRIGGER_SOURCE,
     DEFAULT_INTERVAL,
@@ -132,6 +135,9 @@ class AppSettings:
     daily_kline_integrity_limit: int = DEFAULT_DAILY_KLINE_INTEGRITY_LIMIT
     daily_kline_integrity_notify_success: bool = DEFAULT_DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS
     daily_kline_integrity_trigger_source: str = DEFAULT_DAILY_KLINE_INTEGRITY_TRIGGER_SOURCE
+    daily_kline_integrity_lock_ttl_seconds: int = DEFAULT_DAILY_KLINE_INTEGRITY_LOCK_TTL_SECONDS
+    daily_kline_integrity_schedule_hour_utc: int = DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC
+    daily_kline_integrity_schedule_minute_utc: int = DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC
     hermes_webhook_url: str = ""
     hermes_secret: str = ""
     hermes_timeout_seconds: float = DEFAULT_HERMES_TIMEOUT_SECONDS
@@ -570,6 +576,33 @@ def load_settings(
             merged_values,
             "DAILY_KLINE_INTEGRITY_TRIGGER_SOURCE",
             DEFAULT_DAILY_KLINE_INTEGRITY_TRIGGER_SOURCE,
+        ),
+        daily_kline_integrity_lock_ttl_seconds=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "DAILY_KLINE_INTEGRITY_LOCK_TTL_SECONDS",
+                str(DEFAULT_DAILY_KLINE_INTEGRITY_LOCK_TTL_SECONDS),
+            ),
+            "DAILY_KLINE_INTEGRITY_LOCK_TTL_SECONDS",
+            DEFAULT_DAILY_KLINE_INTEGRITY_LOCK_TTL_SECONDS,
+        ),
+        daily_kline_integrity_schedule_hour_utc=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC",
+                str(DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC),
+            ),
+            "DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC",
+            DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC,
+        ),
+        daily_kline_integrity_schedule_minute_utc=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC",
+                str(DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC),
+            ),
+            "DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC",
+            DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC,
         ),
         hermes_webhook_url=_get_config_value(merged_values, "HERMES_WEBHOOK_URL"),
         hermes_secret=_get_config_value(merged_values, "HERMES_SECRET"),
