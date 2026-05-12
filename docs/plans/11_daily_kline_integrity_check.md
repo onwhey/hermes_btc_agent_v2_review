@@ -203,10 +203,21 @@ app/market_data/kline_integrity/kline_integrity_service.py
     ↓
 写 data_quality_check 或 kline_integrity_check_log
     ↓
+生成每日复核结果状态：healthy / unhealthy / unknown / skipped
+    ↓
 发送一条 Hermes 固定模板每日结果通知
     ↓
 任务结束
 ```
+
+scheduler / `daily_integrity_check` 每次最终只发送一条 Hermes 固定模板结果通知。
+
+结果状态含义：
+
+1. `healthy`：检查完成且 K线健康。
+2. `unhealthy`：检查完成但发现 K线问题。
+3. `unknown`：任务异常，无法确认 K线健康。
+4. `skipped`：任务被跳过，无法确认本次 K线健康。
 
 每日自动复核不得写入、修改、删除 `market_kline_4h`。
 
@@ -355,6 +366,8 @@ scheduler / `daily_integrity_check` 每次最终只发送一条 Hermes 固定模
 
 manual CLI 场景下，参数错误、复核锁占用等可以只返回错误或 `skipped`，不强制发送 Hermes。
 
+每日结果通知不是交易建议，不调用 DeepSeek，不自动修复、不自动回补、不写入 `market_kline_4h`。
+
 禁止：
 
 1. 调用 DeepSeek 生成复核通知。
@@ -439,14 +452,15 @@ tests/test_daily_kline_integrity_check.py
 10. 禁止来源字段能识别。
 11. scheduler 检查成功时只发送一次 `healthy` 每日结果通知。
 12. scheduler 发现异常 K线时只发送一次 `unhealthy` 每日结果通知。
-13. scheduler 任务异常时只发送一次 `unknown` 每日结果通知。
+13. scheduler 参数错误或外部依赖异常时只发送一次 `unknown` 每日结果通知。
 14. scheduler 任务跳过时只发送一次 `skipped` 每日结果通知。
-15. manual CLI 参数错误或锁占用时不强制发送 Hermes。
-16. 复核任务不写 `market_kline_4h`。
-17. 复核任务不调用回补 service。
-18. 复核任务不调用 DeepSeek。
-19. 复核任务不涉及交易接口。
-20. 复核任务锁获取失败时跳过或拒绝。
+15. manual CLI 参数错误时不强制发送 Hermes。
+16. manual CLI 锁占用时不强制发送 Hermes。
+17. 复核任务不写 `market_kline_4h`。
+18. 复核任务不调用回补 service。
+19. 复核任务不调用 DeepSeek。
+20. 复核任务不涉及交易接口。
+21. 复核任务锁获取失败时跳过或拒绝。
 
 真实集成测试必须使用显式开关，例如：
 
@@ -497,14 +511,16 @@ docs/implementation/11_daily_kline_integrity_check.md
 7. 复核按 `open_time_ms` 对齐比较。
 8. 能识别缺失、不连续、字段不一致、非法来源等问题。
 9. scheduler / `daily_integrity_check` 每次最终只通过 `app/alerting` 发送一条 Hermes 固定模板每日结果通知。
-10. 不写入、修改、删除 `market_kline_4h`。
-11. 不自动回补。
-12. 不自动修复。
-13. 不调用 DeepSeek。
-14. 不生成交易建议。
-15. 不涉及交易接口。
-16. 默认测试不访问真实外部服务。
-17. `docs/implementation/11_daily_kline_integrity_check.md` 已创建或补齐。
+10. scheduler 每日复核无论结果是 `healthy`、`unhealthy`、`unknown` 还是 `skipped`，都必须产生一次最终结果通知。
+11. 失败报警和每日健康结果通知不是两套机制，而是同一套每日结果通知机制。
+12. 不写入、修改、删除 `market_kline_4h`。
+13. 不自动回补。
+14. 不自动修复。
+15. 不调用 DeepSeek。
+16. 不生成交易建议。
+17. 不涉及交易接口。
+18. 默认测试不访问真实外部服务。
+19. `docs/implementation/11_daily_kline_integrity_check.md` 已创建或补齐。
 
 ---
 
@@ -517,7 +533,7 @@ docs/implementation/11_daily_kline_integrity_check.md
 3. 查看是否出现 `manual_repair`、`human_edit`、`manual_input`、`system_repair` 的正向使用。
 4. 查看是否调用 DeepSeek。
 5. 查看是否调用交易接口。
-6. 查看 scheduler / `daily_integrity_check` 是否通过 `app/alerting` 发送固定模板每日结果通知。
+6. 查看 scheduler 每日复核是否最终发送一条固定模板结果通知。
 7. 查看是否默认检查最近 100 根已收盘 4h K线。
 8. 查看是否使用 Binance REST 官方 K线作为对比源。
 9. 查看 implementation 是否写清楚完整流程。
