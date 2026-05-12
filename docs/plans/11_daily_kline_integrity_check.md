@@ -13,7 +13,8 @@
 5. 将 Binance REST 返回的官方 K线与数据库正式 K线按 `open_time_ms` 对齐比较。
 6. 检查缺失、不连续、字段不一致、重复、未收盘误写入、非法 `data_source` 等问题。
 7. 复核结果写入 `data_quality_check`，或者后续明确设计的 `kline_integrity_check_log`。
-8. 发现异常时通过 Hermes 发送固定模板报警。
+8. scheduler / `daily_integrity_check` 每次最终只发送一条 Hermes 固定模板每日结果通知。
+   `healthy` 表示 K线健康，`unhealthy` 表示发现 K线质量问题，`unknown` 表示任务异常、无法确认健康，`skipped` 表示任务跳过、未完成复核。
 9. 复核任务本身不修复、不回补、不覆盖、不删除正式 K线。
 
 本阶段是 K线一致性检查，不是 K线采集，也不是 K线回补。
@@ -32,12 +33,12 @@
 6. 自动修复不连续 K线。
 7. 人工输入 K线字段。
 8. `manual_repair`、`human_edit`、`manual_input`、`system_repair`。
-9. 调用 DeepSeek 或其他大模型解释基础报警。
+9. 调用 DeepSeek 或其他大模型解释基础通知。
 10. 生成策略建议。
 11. 自动交易。
 12. Binance 账户、订单、持仓、杠杆、保证金相关接口。
 
-如果发现 K线异常，本阶段只报警，不修复。
+如果发现 K线异常，本阶段只发送每日结果通知，不修复。
 
 ---
 
@@ -68,7 +69,7 @@ Codex 开始本阶段前必须阅读：
 4. K线字段校验能力
 5. MySQL repository 查询能力
 6. `data_quality_check` 记录能力
-7. `app/alerting` Hermes 固定模板报警能力
+7. `app/alerting` Hermes 固定模板通知能力
 8. scheduler 基础能力
 
 ---
@@ -202,12 +203,25 @@ app/market_data/kline_integrity/kline_integrity_service.py
     ↓
 写 data_quality_check 或 kline_integrity_check_log
     ↓
-如果存在异常，调用 app/alerting 发送 Hermes 固定模板报警
+生成每日复核结果状态：healthy / unhealthy / unknown / skipped
+    ↓
+发送一条 Hermes 固定模板每日结果通知
     ↓
 任务结束
 ```
 
+scheduler / `daily_integrity_check` 每次最终只发送一条 Hermes 固定模板结果通知。
+
+结果状态含义：
+
+1. `healthy`：检查完成且 K线健康。
+2. `unhealthy`：检查完成但发现 K线问题。
+3. `unknown`：任务异常，无法确认 K线健康。
+4. `skipped`：任务被跳过，无法确认本次 K线健康。
+
 每日自动复核不得写入、修改、删除 `market_kline_4h`。
+
+`DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS` 只影响 manual CLI 成功健康通知，不得关闭 scheduler / `daily_integrity_check` 的每日结果通知。
 
 ---
 
@@ -314,43 +328,52 @@ kline_integrity_check_log
 13. status。
 14. alert_sent。
 
-如果 MySQL 不可用，必须写本地 emergency 日志，并尽量直接通过 Hermes 发送“复核结果无法完整记录”的系统报警。
+如果 MySQL 不可用，必须写本地 emergency 日志；scheduler / `daily_integrity_check` 场景必须尽量通过 Hermes 发送 `report_status=unknown` 的每日结果通知，说明本次无法确认 K线健康。
 
 ---
 
-## 13. Hermes 报警要求
+## 13. Hermes 每日结果通知要求
 
-复核发现异常时，必须通过 `app/alerting` 发送 Hermes 固定模板报警。
+scheduler / `daily_integrity_check` 每次最终只发送一条 Hermes 固定模板每日结果通知，不得拆成“成功通知 + 失败报警”两套 Hermes 通知。
 
-建议 alert type：
+每日结果通知状态：
 
-```text
-kline_integrity_check_failed
-```
+1. `healthy`：检查完成，K线健康。
+2. `unhealthy`：检查完成，发现 K线质量问题。
+3. `unknown`：任务异常，无法确认 K线是否健康。
+4. `skipped`：任务被跳过，未完成复核，无法确认本次 K线健康。
 
-报警内容必须包含：
+每日结果通知内容必须包含：
 
-1. trace_id。
-2. symbol。
-3. interval。
-4. check_mode。
-5. check_trigger。
-6. compare_source。
-7. checked_range。
-8. issue_count。
-9. issue_summary。
-10. 是否已写入复核结果。
-11. 明确说明系统没有自动修复。
-12. 明确说明系统没有自动回补。
-13. 明确说明系统没有自动交易。
-14. 建议用户检查采集代码、调度器、数据库写入逻辑或 Binance REST 访问状态。
+1. `trace_id`。
+2. `report_status`。
+3. `symbol`。
+4. `interval`。
+5. `check_mode`。
+6. `check_trigger`。
+7. `compare_source`。
+8. `lookback_count` 或 `limit`。
+9. `checked_range`，如可用。
+10. `checked_count`，如可用。
+11. `issue_count`，如可用。
+12. `first_issue_type`，如可用。
+13. `first_issue_message`，如可用。
+14. 是否已写入复核结果。
+15. `no_repair_performed=true`。
+16. 明确说明系统没有自动修复。
+17. 明确说明系统没有自动回补。
+18. 明确说明系统没有自动交易。
+
+manual CLI 场景下，参数错误、复核锁占用等可以只返回错误或 `skipped`，不强制发送 Hermes。
+
+每日结果通知不是交易建议，不调用 DeepSeek，不自动修复、不自动回补、不写入 `market_kline_4h`。
 
 禁止：
 
-1. 调用 DeepSeek 生成复核报警。
-2. 把复核报警写成交易建议。
-3. 报警后自动触发回补。
-4. 报警后自动修改 K线。
+1. 调用 DeepSeek 生成复核通知。
+2. 把复核通知写成交易建议。
+3. 通知后自动触发回补。
+4. 通知后自动修改 K线。
 5. 静默吞掉复核异常。
 
 ---
@@ -359,7 +382,7 @@ kline_integrity_check_failed
 
 复核任务不写正式 K线表，因此不需要持有 K线写入锁。
 
-但为了避免重复报警和重复消耗资源，仍应具备复核任务防重入能力。
+但为了避免重复通知和重复消耗资源，仍应具备复核任务防重入能力。
 
 规则：
 
@@ -400,7 +423,7 @@ kline_integrity_check_failed
 1. 复核失败不得假装成功。
 2. 复核失败不得写入或修改正式 K线表。
 3. 复核失败应记录日志。
-4. 复核失败应尽量 Hermes 报警。
+4. scheduler / `daily_integrity_check` 复核失败、异常或跳过时，应尽量发送 Hermes 每日结果通知。
 5. 异常信息不得包含密钥、token、webhook。
 
 ---
@@ -427,13 +450,17 @@ tests/test_daily_kline_integrity_check.py
 8. open_time_ms 不连续能识别。
 9. 非法 `data_source` 能识别。
 10. 禁止来源字段能识别。
-11. 发现异常时调用 alerting mock。
-12. 无异常时不报警。
-13. 复核任务不写 `market_kline_4h`。
-14. 复核任务不调用回补 service。
-15. 复核任务不调用 DeepSeek。
-16. 复核任务不涉及交易接口。
-17. 复核任务锁获取失败时跳过或拒绝。
+11. scheduler 检查成功时只发送一次 `healthy` 每日结果通知。
+12. scheduler 发现异常 K线时只发送一次 `unhealthy` 每日结果通知。
+13. scheduler 参数错误或外部依赖异常时只发送一次 `unknown` 每日结果通知。
+14. scheduler 任务跳过时只发送一次 `skipped` 每日结果通知。
+15. manual CLI 参数错误时不强制发送 Hermes。
+16. manual CLI 锁占用时不强制发送 Hermes。
+17. 复核任务不写 `market_kline_4h`。
+18. 复核任务不调用回补 service。
+19. 复核任务不调用 DeepSeek。
+20. 复核任务不涉及交易接口。
+21. 复核任务锁获取失败时跳过或拒绝。
 
 真实集成测试必须使用显式开关，例如：
 
@@ -463,7 +490,7 @@ docs/implementation/11_daily_kline_integrity_check.md
 8. REST 与 DB 对齐比较流程。
 9. 问题分类。
 10. data_quality_check 写入流程。
-11. Hermes 报警流程。
+11. Hermes 每日结果通知流程。
 12. 复核任务锁流程。
 13. 异常处理流程。
 14. 本模块不修复、不回补、不覆盖、不删除 K线的边界。
@@ -483,15 +510,17 @@ docs/implementation/11_daily_kline_integrity_check.md
 6. 复核使用 Binance REST 官方 K线作为对比源。
 7. 复核按 `open_time_ms` 对齐比较。
 8. 能识别缺失、不连续、字段不一致、非法来源等问题。
-9. 发现异常时通过 `app/alerting` 发送 Hermes 固定模板报警。
-10. 不写入、修改、删除 `market_kline_4h`。
-11. 不自动回补。
-12. 不自动修复。
-13. 不调用 DeepSeek。
-14. 不生成交易建议。
-15. 不涉及交易接口。
-16. 默认测试不访问真实外部服务。
-17. `docs/implementation/11_daily_kline_integrity_check.md` 已创建或补齐。
+9. scheduler / `daily_integrity_check` 每次最终只通过 `app/alerting` 发送一条 Hermes 固定模板每日结果通知。
+10. scheduler 每日复核无论结果是 `healthy`、`unhealthy`、`unknown` 还是 `skipped`，都必须产生一次最终结果通知。
+11. 失败报警和每日健康结果通知不是两套机制，而是同一套每日结果通知机制。
+12. 不写入、修改、删除 `market_kline_4h`。
+13. 不自动回补。
+14. 不自动修复。
+15. 不调用 DeepSeek。
+16. 不生成交易建议。
+17. 不涉及交易接口。
+18. 默认测试不访问真实外部服务。
+19. `docs/implementation/11_daily_kline_integrity_check.md` 已创建或补齐。
 
 ---
 
@@ -504,7 +533,7 @@ docs/implementation/11_daily_kline_integrity_check.md
 3. 查看是否出现 `manual_repair`、`human_edit`、`manual_input`、`system_repair` 的正向使用。
 4. 查看是否调用 DeepSeek。
 5. 查看是否调用交易接口。
-6. 查看是否通过 `app/alerting` 发送固定模板报警。
+6. 查看 scheduler 每日复核是否最终发送一条固定模板结果通知。
 7. 查看是否默认检查最近 100 根已收盘 4h K线。
 8. 查看是否使用 Binance REST 官方 K线作为对比源。
 9. 查看 implementation 是否写清楚完整流程。
@@ -544,3 +573,8 @@ python -m scripts.check_kline_integrity --check-trigger cli --lookback-count 100
 6. 本分支只提供 `app/scheduler/jobs/daily_kline_integrity_check.py::run_daily_kline_integrity_check_job` 作为 scheduler 可调用 job 入口；不新增常驻 scheduler runner，也不自动启动每日调度进程。
 7. 正式调度接入时必须直接调用该 job 或 app service，不得调用 `scripts/check_kline_integrity.py`。
 8. 触发来源由入口硬编码：CLI 构造 `check_trigger=cli`，scheduler job 构造 `check_trigger=scheduler`；不再通过环境变量配置触发来源。
+9. scheduler / `daily_integrity_check` 每次最终只发送一条 Hermes 固定模板结果通知，`report_status` 只能是 `healthy`、`unhealthy`、`unknown`、`skipped` 之一。
+10. scheduler 复核成功发送 `healthy`，发现 K线问题发送 `unhealthy`，参数配置或外部依赖异常发送 `unknown`，复核锁占用发送 `skipped` 并说明本次无法确认 K线健康。
+11. manual CLI 参数错误可以只返回错误，复核锁占用可以只返回 `skipped`，不强制发送 Hermes；该规则不影响 scheduler 每日结果通知。
+12. 结果通知不是交易建议，不调用 DeepSeek，不自动修复、不自动回补、不写入 `market_kline_4h`。
+13. `DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS` 只影响 manual CLI 成功健康通知，不得关闭 scheduler / `daily_integrity_check` 的每日结果通知。
