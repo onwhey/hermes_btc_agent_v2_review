@@ -1,6 +1,7 @@
-"""定时任务包边界。
+"""Scheduler package boundary.
 
-本包后续承载受控 scheduler job。01 阶段只保留包结构，不定义任务，
-不调用脚本，不触发采集，不写数据库。
+This package contains the phase-12 runner and thin job wrappers. Scheduler code
+calls app services directly and does not call scripts, request Binance directly,
+write business tables directly, send Hermes directly, call DeepSeek, generate
+advice, or perform trading.
 """
-

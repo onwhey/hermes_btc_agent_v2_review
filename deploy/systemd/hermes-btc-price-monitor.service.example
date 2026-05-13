@@ -1,0 +1,17 @@
+[Unit]
+Description=Hermes BTC WebSocket price monitor service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/hermes_btc_agent_v2
+EnvironmentFile=/opt/hermes_btc_agent_v2/.env
+ExecStart=/opt/hermes_btc_agent_v2/.venv/bin/python -m scripts.run_price_monitor_10s --trigger-source systemd
+Restart=always
+RestartSec=10
+User=hermes
+Group=hermes
+
+[Install]
+WantedBy=multi-user.target

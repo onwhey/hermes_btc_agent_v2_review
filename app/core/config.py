@@ -60,6 +60,15 @@ from app.core.constants import (
     DEFAULT_PRICE_MONITOR_WS_RECONNECT_MAX_SECONDS,
     DEFAULT_PRICE_MONITOR_WS_RECONNECT_MIN_SECONDS,
     DEFAULT_PRICE_MONITOR_WS_STREAM,
+    DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_ENABLED,
+    DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_INTERVAL,
+    DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_LIMIT,
+    DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_SYMBOL,
+    DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_UTC_MINUTES_AFTER_CLOSE,
+    DEFAULT_SCHEDULER_ENABLED,
+    DEFAULT_SCHEDULER_JOB_SLOT_TTL_SECONDS,
+    DEFAULT_SCHEDULER_POLL_INTERVAL_SECONDS,
+    DEFAULT_DAILY_KLINE_INTEGRITY_UTC_TIME,
     DEFAULT_SYMBOL,
     DEFAULT_TIMEZONE,
     SENSITIVE_FIELD_NAMES,
@@ -128,6 +137,16 @@ class AppSettings:
     price_monitor_ws_reconnect_min_seconds: float = DEFAULT_PRICE_MONITOR_WS_RECONNECT_MIN_SECONDS
     price_monitor_ws_reconnect_max_seconds: float = DEFAULT_PRICE_MONITOR_WS_RECONNECT_MAX_SECONDS
     price_monitor_no_event_timeout_seconds: int = DEFAULT_PRICE_MONITOR_NO_EVENT_TIMEOUT_SECONDS
+    scheduler_enabled: bool = DEFAULT_SCHEDULER_ENABLED
+    scheduler_poll_interval_seconds: int = DEFAULT_SCHEDULER_POLL_INTERVAL_SECONDS
+    scheduler_job_slot_ttl_seconds: int = DEFAULT_SCHEDULER_JOB_SLOT_TTL_SECONDS
+    kline_4h_incremental_collect_enabled: bool = DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_ENABLED
+    kline_4h_incremental_collect_symbol: str = DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_SYMBOL
+    kline_4h_incremental_collect_interval: str = DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_INTERVAL
+    kline_4h_incremental_collect_limit: int = DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_LIMIT
+    kline_4h_incremental_collect_utc_minutes_after_close: int = (
+        DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_UTC_MINUTES_AFTER_CLOSE
+    )
     daily_kline_integrity_enabled: bool = DEFAULT_DAILY_KLINE_INTEGRITY_ENABLED
     daily_kline_integrity_symbol: str = DEFAULT_DAILY_KLINE_INTEGRITY_SYMBOL
     daily_kline_integrity_interval: str = DEFAULT_DAILY_KLINE_INTEGRITY_INTERVAL
@@ -136,6 +155,7 @@ class AppSettings:
     daily_kline_integrity_lock_ttl_seconds: int = DEFAULT_DAILY_KLINE_INTEGRITY_LOCK_TTL_SECONDS
     daily_kline_integrity_schedule_hour_utc: int = DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC
     daily_kline_integrity_schedule_minute_utc: int = DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC
+    daily_kline_integrity_utc_time: str = DEFAULT_DAILY_KLINE_INTEGRITY_UTC_TIME
     hermes_webhook_url: str = ""
     hermes_secret: str = ""
     hermes_timeout_seconds: float = DEFAULT_HERMES_TIMEOUT_SECONDS
@@ -533,6 +553,70 @@ def load_settings(
             "PRICE_MONITOR_NO_EVENT_TIMEOUT_SECONDS",
             DEFAULT_PRICE_MONITOR_NO_EVENT_TIMEOUT_SECONDS,
         ),
+        scheduler_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "SCHEDULER_ENABLED",
+                str(DEFAULT_SCHEDULER_ENABLED).lower(),
+            ),
+            "SCHEDULER_ENABLED",
+            DEFAULT_SCHEDULER_ENABLED,
+        ),
+        scheduler_poll_interval_seconds=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "SCHEDULER_POLL_INTERVAL_SECONDS",
+                str(DEFAULT_SCHEDULER_POLL_INTERVAL_SECONDS),
+            ),
+            "SCHEDULER_POLL_INTERVAL_SECONDS",
+            DEFAULT_SCHEDULER_POLL_INTERVAL_SECONDS,
+        ),
+        scheduler_job_slot_ttl_seconds=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "SCHEDULER_JOB_SLOT_TTL_SECONDS",
+                str(DEFAULT_SCHEDULER_JOB_SLOT_TTL_SECONDS),
+            ),
+            "SCHEDULER_JOB_SLOT_TTL_SECONDS",
+            DEFAULT_SCHEDULER_JOB_SLOT_TTL_SECONDS,
+        ),
+        kline_4h_incremental_collect_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "KLINE_4H_INCREMENTAL_COLLECT_ENABLED",
+                str(DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_ENABLED).lower(),
+            ),
+            "KLINE_4H_INCREMENTAL_COLLECT_ENABLED",
+            DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_ENABLED,
+        ),
+        kline_4h_incremental_collect_symbol=_get_config_value(
+            merged_values,
+            "KLINE_4H_INCREMENTAL_COLLECT_SYMBOL",
+            DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_SYMBOL,
+        ),
+        kline_4h_incremental_collect_interval=_get_config_value(
+            merged_values,
+            "KLINE_4H_INCREMENTAL_COLLECT_INTERVAL",
+            DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_INTERVAL,
+        ),
+        kline_4h_incremental_collect_limit=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "KLINE_4H_INCREMENTAL_COLLECT_LIMIT",
+                str(DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_LIMIT),
+            ),
+            "KLINE_4H_INCREMENTAL_COLLECT_LIMIT",
+            DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_LIMIT,
+        ),
+        kline_4h_incremental_collect_utc_minutes_after_close=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "KLINE_4H_INCREMENTAL_COLLECT_UTC_MINUTES_AFTER_CLOSE",
+                str(DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_UTC_MINUTES_AFTER_CLOSE),
+            ),
+            "KLINE_4H_INCREMENTAL_COLLECT_UTC_MINUTES_AFTER_CLOSE",
+            DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_UTC_MINUTES_AFTER_CLOSE,
+        ),
         daily_kline_integrity_enabled=_parse_optional_bool_config(
             _get_config_value(
                 merged_values,
@@ -597,6 +681,11 @@ def load_settings(
             "DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC",
             DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC,
         ),
+        daily_kline_integrity_utc_time=_get_config_value(
+            merged_values,
+            "DAILY_KLINE_INTEGRITY_UTC_TIME",
+            DEFAULT_DAILY_KLINE_INTEGRITY_UTC_TIME,
+        ),
         hermes_webhook_url=_get_config_value(merged_values, "HERMES_WEBHOOK_URL"),
         hermes_secret=_get_config_value(merged_values, "HERMES_SECRET"),
         hermes_timeout_seconds=_parse_float_config(
@@ -653,4 +742,3 @@ def get_settings(*, reload: bool = False) -> AppSettings:
     if _SETTINGS is None or reload:
         _SETTINGS = load_settings()
     return _SETTINGS
-
