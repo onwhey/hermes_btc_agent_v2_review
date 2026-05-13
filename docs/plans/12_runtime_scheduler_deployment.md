@@ -727,6 +727,11 @@ DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS=true
 DAILY_KLINE_INTEGRITY_UTC_TIME=00:30
 ```
 
+12 scheduler 每日复核调度时间只读取 `DAILY_KLINE_INTEGRITY_UTC_TIME`。
+旧的 `DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC` /
+`DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC` 不作为 scheduler 调度依据。
+如果旧配置仍存在于某个部署环境中，12 scheduler 也不得读取它们来决定每日复核时间。
+
 必须保持：
 
 ```text
@@ -739,10 +744,13 @@ DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS
 
 12 不应重写 10 配置，只应在 systemd 和部署文档中引用现有配置。
 
+10 是否运行由独立的 `hermes-btc-price-monitor.service` 启动、停止、重启控制，
+不通过 `PRICE_MONITOR_ENABLED` 控制。12 不新增 `PRICE_MONITOR_ENABLED`，
+也不让该配置影响 scheduler、09、11 或 10 的系统异常通知。
+
 必须保持：
 
 ```env
-PRICE_MONITOR_ENABLED=true
 PRICE_MONITOR_SYMBOL=BTCUSDT
 PRICE_MONITOR_WS_STREAM=aggTrade
 PRICE_MONITOR_REDIS_KEY=bitcoin_price
@@ -825,6 +833,13 @@ scheduler 层只处理运行器自身异常，例如：
 3. 配置解析异常。
 4. 调度循环异常退出。
 5. Redis 执行槽无法判断，导致 scheduler 无法安全决定是否执行任务。
+
+如果 `scripts/run_scheduler.py` 启动阶段发生配置解析异常，且 alerting 配置已经可以正常初始化，
+scheduler 应尽力通过 `app/alerting` 发送固定模板系统异常通知。通知必须说明 scheduler 未启动、
+原因是配置错误，并明确不自动修复、不自动回补、不自动交易；不得调用 DeepSeek，不得生成交易建议。
+
+如果配置错误导致 alerting 本身也无法初始化，scheduler 不应强行发送通知，只记录清晰错误日志并返回非 0 退出码。
+为了避免 systemd 反复重启导致 Hermes 刷屏，启动配置异常通知应使用已有固定模板，并采用轻量冷却或复用既有冷却能力。
 
 如果 09 / 11 service 已经产生了业务结果通知，scheduler 不应再重复发送同一业务事件通知。
 

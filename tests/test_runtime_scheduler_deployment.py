@@ -6,8 +6,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.alerting.types import AlertType
-from app.core.config import AppSettings
-from app.core.exceptions import RedisError
+from app.core.config import AppSettings, load_settings
+from app.core.exceptions import ConfigError, RedisError
 from app.market_data.collector.types import (
     EXIT_SUCCESS as COLLECT_EXIT_SUCCESS,
     IncrementalKlineCollectRequest,
@@ -30,6 +30,7 @@ from app.scheduler.execution_slot import (
 from app.scheduler.jobs.daily_kline_integrity_check import run_daily_kline_integrity_check_job
 from app.scheduler.jobs.kline_4h_incremental_collect import run_kline_4h_incremental_collect_job
 from app.scheduler.runner import SchedulerRunner
+from scripts import run_scheduler as run_scheduler_script
 
 
 class FakeSlotStore:
@@ -109,6 +110,80 @@ def test_scheduler_runtime_config_loads_from_settings() -> None:
     assert config.kline_4h_incremental_collect_limit == 7
     assert config.daily_kline_integrity_enabled is False
     assert config.daily_kline_integrity_utc_time == time(hour=1, minute=15)
+
+
+def test_price_monitor_enabled_is_not_a_phase_12_required_config() -> None:
+    sources = read_files(
+        [
+            Path(".env.example"),
+            Path("docs/plans/12_runtime_scheduler_deployment.md"),
+            Path("docs/implementation/12_runtime_scheduler_deployment.md"),
+        ]
+    )
+    settings = load_settings(env_file=None, environ={"PRICE_MONITOR_ENABLED": "false"})
+
+    assert "PRICE_MONITOR_ENABLED=true" not in sources
+    assert "PRICE_MONITOR_ENABLED=" not in Path(".env.example").read_text(encoding="utf-8")
+    assert not hasattr(settings, "price_monitor_enabled")
+
+
+def test_daily_scheduler_time_uses_only_daily_kline_integrity_utc_time() -> None:
+    calls: list[str] = []
+    settings = load_settings(
+        env_file=None,
+        environ={
+            "DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC": "5",
+            "DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC": "45",
+            "DAILY_KLINE_INTEGRITY_UTC_TIME": "01:15",
+        },
+    )
+    config = build_scheduler_runtime_config(settings)
+    runner = SchedulerRunner(
+        config=runtime_config(
+            kline_4h_incremental_collect_enabled=False,
+            daily_kline_integrity_utc_time=config.daily_kline_integrity_utc_time,
+        ),
+        slot_store=FakeSlotStore(),
+        settings=AppSettings(),
+        daily_integrity_job=lambda: calls.append("11"),
+        alert_sender=FakeAlertSender(),
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(1, 15))
+
+    assert config.daily_kline_integrity_utc_time == time(hour=1, minute=15)
+    assert not hasattr(settings, "daily_kline_integrity_schedule_hour_utc")
+    assert not hasattr(settings, "daily_kline_integrity_schedule_minute_utc")
+    assert calls == ["11"]
+    assert records[0].slot_key == "scheduler:job:daily_kline_integrity:2026-05-13"
+
+
+def test_legacy_daily_hour_minute_config_does_not_trigger_scheduler() -> None:
+    calls: list[str] = []
+    settings = load_settings(
+        env_file=None,
+        environ={
+            "DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC": "5",
+            "DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC": "45",
+            "DAILY_KLINE_INTEGRITY_UTC_TIME": "01:15",
+        },
+    )
+    config = build_scheduler_runtime_config(settings)
+    runner = SchedulerRunner(
+        config=runtime_config(
+            kline_4h_incremental_collect_enabled=False,
+            daily_kline_integrity_utc_time=config.daily_kline_integrity_utc_time,
+        ),
+        slot_store=FakeSlotStore(),
+        settings=AppSettings(),
+        daily_integrity_job=lambda: calls.append("11"),
+        alert_sender=FakeAlertSender(),
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(5, 45))
+
+    assert records == []
+    assert calls == []
 
 
 def test_scheduler_disabled_does_not_run_09_or_11() -> None:
@@ -443,6 +518,86 @@ def test_scheduler_job_wrapper_exception_sends_system_alert() -> None:
     assert alert_sender.calls[0]["event"].alert_type == AlertType.SYSTEM_ERROR
 
 
+def test_run_scheduler_config_error_invokes_startup_system_alert_when_settings_loaded(
+    monkeypatch: Any,
+    capsys: Any,
+) -> None:
+    settings = AppSettings()
+    calls: list[dict[str, Any]] = []
+
+    def fail_config(_: AppSettings) -> None:
+        raise ConfigError("DAILY_KLINE_INTEGRITY_UTC_TIME 必须使用 HH:MM 格式")
+
+    def fake_startup_alert(*, settings: AppSettings | None, error: ConfigError) -> bool:
+        calls.append({"settings": settings, "error": error})
+        return True
+
+    monkeypatch.setattr(run_scheduler_script, "get_settings", lambda: settings)
+    monkeypatch.setattr(run_scheduler_script, "configure_logging", lambda _: None)
+    monkeypatch.setattr(run_scheduler_script, "build_scheduler_runtime_config", fail_config)
+    monkeypatch.setattr(run_scheduler_script, "_send_scheduler_startup_config_error_alert", fake_startup_alert)
+
+    exit_code = run_scheduler_script.main([])
+
+    assert exit_code == run_scheduler_script.EXIT_PARAMETER_ERROR
+    assert calls[0]["settings"] is settings
+    assert "DAILY_KLINE_INTEGRITY_UTC_TIME" in str(calls[0]["error"])
+    assert "scheduler config error" in capsys.readouterr().out
+
+
+def test_scheduler_startup_config_error_alert_uses_fixed_template_and_local_cooldown(tmp_path: Path) -> None:
+    calls: list[dict[str, Any]] = []
+    cooldown_file = tmp_path / "scheduler_startup_config_error_alert.cooldown"
+
+    def fake_alert_sender(event: Any, **kwargs: Any) -> SimpleNamespace:
+        calls.append({"event": event, "kwargs": kwargs})
+        return SimpleNamespace(status="sent")
+
+    first_attempt = run_scheduler_script._send_scheduler_startup_config_error_alert(
+        settings=AppSettings(),
+        error=ConfigError("invalid scheduler config"),
+        alert_sender=fake_alert_sender,
+        cooldown_file=cooldown_file,
+    )
+    second_attempt = run_scheduler_script._send_scheduler_startup_config_error_alert(
+        settings=AppSettings(),
+        error=ConfigError("invalid scheduler config"),
+        alert_sender=fake_alert_sender,
+        cooldown_file=cooldown_file,
+    )
+
+    assert first_attempt is True
+    assert second_attempt is False
+    assert len(calls) == 1
+    event = calls[0]["event"]
+    assert event.alert_type == AlertType.SYSTEM_ERROR
+    assert event.details["scheduler_stage"] == "startup"
+    assert event.details["scheduler_started"] is False
+    assert event.details["no_auto_repair"] is True
+    assert event.details["no_auto_backfill"] is True
+    assert event.details["no_trading"] is True
+    assert calls[0]["kwargs"]["send_real_alert"] is True
+
+
+def test_run_scheduler_config_error_without_settings_does_not_force_alert(
+    monkeypatch: Any,
+    capsys: Any,
+) -> None:
+    def fail_settings() -> None:
+        raise ConfigError("APP_DEBUG 必须是布尔值")
+
+    def fail_if_alerting_is_called(*_: Any, **__: Any) -> None:
+        raise AssertionError("alerting must not initialize when settings cannot load")
+
+    monkeypatch.setattr(run_scheduler_script, "get_settings", fail_settings)
+    monkeypatch.setattr(run_scheduler_script, "_default_alert_sender", fail_if_alerting_is_called)
+
+    exit_code = run_scheduler_script.main([])
+
+    assert exit_code == run_scheduler_script.EXIT_PARAMETER_ERROR
+    assert "APP_DEBUG 必须是布尔值" in capsys.readouterr().out
+
+
 def test_scheduler_sources_do_not_call_scripts_or_start_price_monitor() -> None:
     scheduler_source = read_files(sorted(Path("app/scheduler").rglob("*.py")))
     run_scheduler_source = Path("scripts/run_scheduler.py").read_text(encoding="utf-8")
@@ -488,6 +643,7 @@ def test_phase_12_does_not_restore_forbidden_alert_switches_or_private_capabilit
     )
     forbidden_terms = [
         "--send" "-alert",
+        "PRICE_MONITOR_ENABLED",
         "PRICE_MONITOR_SEND_ALERT",
         "KLINE_4H_COLLECT_SEND_ALERT",
         "deepseek_client",

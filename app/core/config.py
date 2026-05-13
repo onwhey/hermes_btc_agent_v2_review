@@ -30,8 +30,6 @@ from app.core.constants import (
     DEFAULT_DAILY_KLINE_INTEGRITY_LIMIT,
     DEFAULT_DAILY_KLINE_INTEGRITY_LOCK_TTL_SECONDS,
     DEFAULT_DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS,
-    DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC,
-    DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC,
     DEFAULT_DAILY_KLINE_INTEGRITY_SYMBOL,
     DEFAULT_INTERVAL,
     DEFAULT_HERMES_DRY_RUN,
@@ -153,8 +151,6 @@ class AppSettings:
     daily_kline_integrity_limit: int = DEFAULT_DAILY_KLINE_INTEGRITY_LIMIT
     daily_kline_integrity_notify_success: bool = DEFAULT_DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS
     daily_kline_integrity_lock_ttl_seconds: int = DEFAULT_DAILY_KLINE_INTEGRITY_LOCK_TTL_SECONDS
-    daily_kline_integrity_schedule_hour_utc: int = DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC
-    daily_kline_integrity_schedule_minute_utc: int = DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC
     daily_kline_integrity_utc_time: str = DEFAULT_DAILY_KLINE_INTEGRITY_UTC_TIME
     hermes_webhook_url: str = ""
     hermes_secret: str = ""
@@ -662,24 +658,6 @@ def load_settings(
             ),
             "DAILY_KLINE_INTEGRITY_LOCK_TTL_SECONDS",
             DEFAULT_DAILY_KLINE_INTEGRITY_LOCK_TTL_SECONDS,
-        ),
-        daily_kline_integrity_schedule_hour_utc=_parse_int_config(
-            _get_config_value(
-                merged_values,
-                "DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC",
-                str(DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC),
-            ),
-            "DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC",
-            DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC,
-        ),
-        daily_kline_integrity_schedule_minute_utc=_parse_int_config(
-            _get_config_value(
-                merged_values,
-                "DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC",
-                str(DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC),
-            ),
-            "DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC",
-            DEFAULT_DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC,
         ),
         daily_kline_integrity_utc_time=_get_config_value(
             merged_values,

@@ -63,6 +63,15 @@ DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS=true
 
 `DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS` 只影响 manual CLI 成功健康通知，不关闭 scheduler 每日结果通知。
 
+12 scheduler 每日复核时间只读取：
+
+```env
+DAILY_KLINE_INTEGRITY_UTC_TIME=00:30
+```
+
+旧的 `DAILY_KLINE_INTEGRITY_SCHEDULE_HOUR_UTC` 和
+`DAILY_KLINE_INTEGRITY_SCHEDULE_MINUTE_UTC` 不再作为配置字段存在，也不作为 scheduler 调度依据。
+
 ### 1.5 调度循环
 
 `SchedulerRunner.run_forever()` 使用 UTC sleep 循环：
@@ -207,6 +216,9 @@ lookback_count=DAILY_KLINE_INTEGRITY_LIMIT
 python -m scripts.run_price_monitor_10s --trigger-source systemd
 ```
 
+10 是否运行由 `hermes-btc-price-monitor.service` 启动、停止、重启控制，不通过
+`PRICE_MONITOR_ENABLED` 控制。当前代码没有使用 `PRICE_MONITOR_ENABLED`，12 不新增该配置。
+
 scheduler 不启动、停止、重启 10，不每 10 秒拉起 10，不读取 `bitcoin_price`，不实现 10 的 WebSocket 逻辑。10 仍由 WebSocket `btcusdt@aggTrade` 写 Redis `bitcoin_price`。
 
 未来 detector 只能作为后续阶段扩展边界，12 不实现策略检测、买卖点提醒、DeepSeek 分析或交易建议。
@@ -255,11 +267,34 @@ journalctl -u hermes-btc-price-monitor -f
 scheduler 层只处理自身无法安全调度的问题：
 
 ```text
+启动阶段配置解析失败
 Redis 执行槽无法判断
 job 包装层抛出异常
 ```
 
-这些异常由 `app/scheduler/runner.py::SchedulerRunner._send_scheduler_system_alert()` 通过 `app/alerting/service.py::send_alert` 发送固定模板系统异常通知。
+Redis 执行槽无法判断和 job 包装层抛出异常，由
+`app/scheduler/runner.py::SchedulerRunner._send_scheduler_system_alert()` 通过
+`app/alerting/service.py::send_alert` 发送固定模板系统异常通知。
+
+启动阶段配置解析失败时，入口为：
+
+```text
+scripts/run_scheduler.py::main
+    ↓
+scripts/run_scheduler.py::_send_scheduler_startup_config_error_alert
+    ↓
+app/alerting/service.py::send_alert
+```
+
+如果 `get_settings()` 已经成功、alerting 可初始化，脚本会尽力发送 `AlertType.SYSTEM_ERROR`
+固定模板通知，说明 scheduler 未启动、原因是配置错误，并在 `details` 中记录
+`no_auto_repair=true`、`no_auto_backfill=true`、`no_trading=true`、`scheduler_started=false`。
+该通知不调用 DeepSeek，不包含交易建议，不自动修复，不自动回补，不自动交易。
+
+如果配置错误发生在 `get_settings()` 阶段，或 alerting 初始化 / 发送本身失败，脚本只记录清晰错误日志并返回非 0 退出码，不强行发送，也不切换到其他通知通道。
+
+为避免 systemd 反复重启导致 Hermes 刷屏，启动配置异常通知使用轻量本地冷却标记；
+冷却命中时只记录日志，不重复发送 Hermes。
 
 如果 09 或 11 service 已经返回业务结果或业务通知，scheduler 不重复发送同一业务事件通知。
 
@@ -291,6 +326,8 @@ tests/test_runtime_scheduler_deployment.py
 测试覆盖：
 
 - scheduler 配置加载。
+- `PRICE_MONITOR_ENABLED` 不作为 12 必需配置出现。
+- `DAILY_KLINE_INTEGRITY_UTC_TIME` 是 12 scheduler 每日复核时间的唯一生效来源。
 - scheduler disabled 时不运行 09 / 11。
 - 09 enabled / disabled 边界。
 - 11 enabled / disabled 边界。
@@ -302,6 +339,7 @@ tests/test_runtime_scheduler_deployment.py
 - scheduler 不调用 scripts，不使用内部任务进程包装，不拉起 10。
 - Redis 执行槽已存在时，准点窗口和补跑窗口都不重复执行。
 - Redis 执行槽写入失败时不执行任务并发送固定模板系统异常通知。
+- `scripts/run_scheduler.py` 启动配置错误时，alerting 可初始化则发送固定模板系统异常通知；无法初始化则记录并非 0 退出。
 - systemd example 不包含真实密钥，且 scheduler 与 price monitor 独立。
 
 默认 pytest 不访问真实 Binance、MySQL、Redis、Hermes、DeepSeek 或交易接口。
