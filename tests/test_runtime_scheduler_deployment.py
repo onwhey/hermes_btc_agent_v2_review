@@ -154,6 +154,61 @@ def test_09_enabled_runner_calls_09_job_after_slot_reservation() -> None:
     assert slot_store.calls[0]["key"] == "scheduler:job:kline_4h_incremental:2026-05-13T04:05Z"
 
 
+def test_09_late_scheduler_start_catches_up_before_next_4h_slot() -> None:
+    calls: list[str] = []
+    slot_store = FakeSlotStore()
+    runner = SchedulerRunner(
+        config=runtime_config(daily_kline_integrity_enabled=False),
+        slot_store=slot_store,
+        settings=AppSettings(),
+        kline_4h_job=lambda: calls.append("09"),
+        daily_integrity_job=lambda: calls.append("11"),
+        alert_sender=FakeAlertSender(),
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(0, 6))
+
+    assert calls == ["09"]
+    assert records[0].status == "executed"
+    assert slot_store.calls[0]["key"] == "scheduler:job:kline_4h_incremental:2026-05-13T00:05Z"
+
+
+def test_09_late_slot_existing_still_skips_without_duplicate_execution() -> None:
+    calls: list[str] = []
+    slot_store = FakeSlotStore(reserved=False)
+    runner = SchedulerRunner(
+        config=runtime_config(daily_kline_integrity_enabled=False),
+        slot_store=slot_store,
+        settings=AppSettings(),
+        kline_4h_job=lambda: calls.append("09"),
+        alert_sender=FakeAlertSender(),
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(0, 6))
+
+    assert calls == []
+    assert records[0].status == "skipped"
+    assert slot_store.calls[0]["key"] == "scheduler:job:kline_4h_incremental:2026-05-13T00:05Z"
+
+
+def test_09_scheduler_uses_next_4h_slot_after_next_slot_arrives() -> None:
+    calls: list[str] = []
+    slot_store = FakeSlotStore()
+    runner = SchedulerRunner(
+        config=runtime_config(daily_kline_integrity_enabled=False),
+        slot_store=slot_store,
+        settings=AppSettings(),
+        kline_4h_job=lambda: calls.append("09"),
+        alert_sender=FakeAlertSender(),
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(4, 5))
+
+    assert calls == ["09"]
+    assert records[0].status == "executed"
+    assert slot_store.calls[0]["key"] == "scheduler:job:kline_4h_incremental:2026-05-13T04:05Z"
+
+
 def test_09_disabled_runner_does_not_run_09_job() -> None:
     calls: list[str] = []
     runner = SchedulerRunner(
@@ -189,6 +244,63 @@ def test_11_enabled_runner_calls_11_job_after_slot_reservation() -> None:
     assert calls == ["11"]
     assert records[0].job_name == DAILY_KLINE_INTEGRITY_JOB_NAME
     assert records[0].status == "executed"
+    assert slot_store.calls[0]["key"] == "scheduler:job:daily_kline_integrity:2026-05-13"
+
+
+def test_11_late_scheduler_start_catches_up_within_daily_window() -> None:
+    calls: list[str] = []
+    slot_store = FakeSlotStore()
+    runner = SchedulerRunner(
+        config=runtime_config(kline_4h_incremental_collect_enabled=False),
+        slot_store=slot_store,
+        settings=AppSettings(),
+        kline_4h_job=lambda: calls.append("09"),
+        daily_integrity_job=lambda: calls.append("11"),
+        alert_sender=FakeAlertSender(),
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(0, 31))
+
+    assert calls == ["11"]
+    assert records[0].status == "executed"
+    assert slot_store.calls[0]["key"] == "scheduler:job:daily_kline_integrity:2026-05-13"
+
+
+def test_11_daily_catch_up_window_expires_without_running_job() -> None:
+    calls: list[str] = []
+    slot_store = FakeSlotStore()
+    runner = SchedulerRunner(
+        config=runtime_config(kline_4h_incremental_collect_enabled=False),
+        slot_store=slot_store,
+        settings=AppSettings(),
+        kline_4h_job=lambda: calls.append("09"),
+        daily_integrity_job=lambda: calls.append("11"),
+        alert_sender=FakeAlertSender(),
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(2, 31))
+
+    assert records == []
+    assert calls == []
+    assert slot_store.calls == []
+
+
+def test_11_late_daily_slot_existing_skips_without_duplicate_execution() -> None:
+    calls: list[str] = []
+    slot_store = FakeSlotStore(reserved=False)
+    runner = SchedulerRunner(
+        config=runtime_config(kline_4h_incremental_collect_enabled=False),
+        slot_store=slot_store,
+        settings=AppSettings(),
+        kline_4h_job=lambda: calls.append("09"),
+        daily_integrity_job=lambda: calls.append("11"),
+        alert_sender=FakeAlertSender(),
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(0, 31))
+
+    assert calls == []
+    assert records[0].status == "skipped"
     assert slot_store.calls[0]["key"] == "scheduler:job:daily_kline_integrity:2026-05-13"
 
 

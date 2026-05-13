@@ -37,7 +37,8 @@ from app.scheduler.execution_slot import (
 )
 
 LOGGER = get_logger("scheduler.runner")
-FOUR_HOUR_SCHEDULE_HOURS = (0, 4, 8, 12, 16, 20)
+FOUR_HOUR_SLOT_INTERVAL = timedelta(hours=4)
+DAILY_INTEGRITY_CATCH_UP_WINDOW = timedelta(hours=2)
 
 JobCallable = Callable[[], Any]
 AlertSender = Callable[..., Any]
@@ -293,14 +294,11 @@ def _due_kline_4h_slot_time(
     current_time_utc: datetime,
     config: SchedulerRuntimeConfig,
 ) -> datetime | None:
-    scheduled = current_time_utc.replace(
-        minute=config.kline_4h_incremental_collect_utc_minutes_after_close,
-        second=0,
-        microsecond=0,
+    scheduled = _latest_kline_4h_scheduled_slot_time(
+        current_time_utc,
+        minutes_after_close=config.kline_4h_incremental_collect_utc_minutes_after_close,
     )
-    if scheduled.hour not in FOUR_HOUR_SCHEDULE_HOURS:
-        return None
-    if _is_inside_polling_window(current_time_utc, scheduled, config.poll_interval_seconds):
+    if scheduled <= current_time_utc < scheduled + FOUR_HOUR_SLOT_INTERVAL:
         return scheduled
     return None
 
@@ -315,19 +313,51 @@ def _due_daily_integrity_slot_time(
         second=0,
         microsecond=0,
     )
-    if _is_inside_polling_window(current_time_utc, scheduled, config.poll_interval_seconds):
+    if current_time_utc < scheduled:
+        scheduled -= timedelta(days=1)
+    if _is_inside_catch_up_window(
+        current_time_utc,
+        scheduled,
+        catch_up_window=DAILY_INTEGRITY_CATCH_UP_WINDOW,
+    ):
         return scheduled
     return None
 
 
-def _is_inside_polling_window(
+def _latest_kline_4h_scheduled_slot_time(
+    current_time_utc: datetime,
+    *,
+    minutes_after_close: int,
+) -> datetime:
+    """Return the latest 4h scheduler slot whose catch-up period is active.
+
+    The 09 business service already fetches a recent REST overlap window and
+    performs all Kline quality checks. This scheduler helper only decides which
+    UTC execution slot should be attempted: after the configured minute arrives,
+    the same slot remains eligible until the next 4h slot arrives. Redis
+    execution-slot reservation still decides whether that slot already ran.
+    """
+
+    bucket_hour = (current_time_utc.hour // 4) * 4
+    scheduled = current_time_utc.replace(
+        hour=bucket_hour,
+        minute=minutes_after_close,
+        second=0,
+        microsecond=0,
+    )
+    if current_time_utc < scheduled:
+        scheduled -= FOUR_HOUR_SLOT_INTERVAL
+    return scheduled
+
+
+def _is_inside_catch_up_window(
     current_time_utc: datetime,
     scheduled_time_utc: datetime,
-    poll_interval_seconds: int,
+    *,
+    catch_up_window: timedelta,
 ) -> bool:
-    window_seconds = max(60, poll_interval_seconds)
     delta = current_time_utc - scheduled_time_utc
-    return timedelta(seconds=0) <= delta < timedelta(seconds=window_seconds)
+    return timedelta(seconds=0) <= delta < catch_up_window
 
 
 def _ensure_utc_aware(value: datetime) -> datetime:
