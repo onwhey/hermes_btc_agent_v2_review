@@ -25,6 +25,15 @@ from scripts.check_alerting import collect_alerting_errors
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _iter_python_files(*roots: Path) -> list[Path]:
+    return [
+        path
+        for root in roots
+        for path in root.rglob("*.py")
+        if "__pycache__" not in path.parts
+    ]
+
+
 def _build_event(alert_type: AlertType = AlertType.SYSTEM_CHECK) -> AlertEvent:
     return AlertEvent(
         alert_type=alert_type,
@@ -401,3 +410,29 @@ def test_check_alerting_rejects_real_send_when_config_is_not_explicit() -> None:
     )
 
     assert errors
+
+
+def test_alerting_code_has_no_legacy_sent_or_failed_status_calls() -> None:
+    forbidden_status_calls = [
+        ("AlertSendStatus", "SENT"),
+        ("AlertSendStatus", "FAILED"),
+    ]
+
+    for path in _iter_python_files(ROOT / "app", ROOT / "scripts", ROOT / "tests"):
+        text = path.read_text(encoding="utf-8")
+        for enum_name, member_name in forbidden_status_calls:
+            assert f"{enum_name}.{member_name}" not in text, str(path.relative_to(ROOT))
+
+
+def test_user_visible_alert_submission_text_uses_submission_language() -> None:
+    forbidden_phrases = (
+        "alert " + "delivery " + "failed",
+        "delivery " + "failed",
+        "alert" + "_delivery",
+        "delivery" + "_failure",
+    )
+
+    for path in _iter_python_files(ROOT / "app", ROOT / "scripts"):
+        text = path.read_text(encoding="utf-8").lower()
+        for phrase in forbidden_phrases:
+            assert phrase not in text, str(path.relative_to(ROOT))

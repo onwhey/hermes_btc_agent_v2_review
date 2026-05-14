@@ -650,7 +650,7 @@ def test_dry_run_notify_success_alert_clearly_marks_no_formal_write() -> None:
     assert event.details["formal_write_performed"] is False
 
 
-def test_hermes_delivery_failure_returns_alert_failed_exit_code() -> None:
+def test_hermes_submission_failure_returns_alert_failed_exit_code() -> None:
     failed_alert = FakeAlertSender(
         AlertSendResult(status=AlertSendStatus.SUBMIT_FAILED, error_message="Hermes unavailable")
     )

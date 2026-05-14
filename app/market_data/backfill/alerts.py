@@ -46,9 +46,9 @@ def send_failure_alert_and_adjust_exit_code(
         success=False,
     )
     _commit_if_possible(db_session)
-    if _alert_delivery_failed(alert_result):
+    if _alert_submission_failed(alert_result):
         LOGGER.error(
-            "Manual backfill failure alert delivery failed trace_id=%s status=%s error=%s",
+            "Manual backfill failure alert submission to Hermes failed trace_id=%s status=%s error=%s",
             request.trace_id,
             alert_result.status.value,
             alert_result.error_message,
@@ -77,7 +77,7 @@ def send_success_alert_and_adjust_exit_code(
         success=True,
     )
     _commit_if_possible(db_session)
-    if _alert_delivery_failed(alert_result):
+    if _alert_submission_failed(alert_result):
         return _replace_result_alert(result, alert_result, exit_code=EXIT_ALERT_FAILED)
     return _replace_result_alert(result, alert_result)
 
@@ -178,7 +178,7 @@ def _alert_details(
     }
 
 
-def _alert_delivery_failed(result: AlertSendResult) -> bool:
+def _alert_submission_failed(result: AlertSendResult) -> bool:
     return result.status != AlertSendStatus.SUBMITTED_TO_HERMES
 
 

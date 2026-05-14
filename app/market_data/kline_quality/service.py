@@ -177,15 +177,15 @@ def run_recent_kline_integrity_check(
             db_session=db_session,
             alert_repository=alert_repository,
         )
-        if _alert_delivery_failed(alert_result):
+        if _alert_submission_failed(alert_result):
             LOGGER.error(
-                "Kline quality alert delivery failed: check_type=%s symbol=%s interval=%s status=%s",
+                "Kline quality alert submission to Hermes failed: check_type=%s symbol=%s interval=%s status=%s",
                 report.check_type,
                 report.symbol,
                 report.interval_value,
                 alert_result.status.value if alert_result else "not_sent",
             )
-            raise RuntimeError("Kline quality alert delivery failed")
+            raise RuntimeError("Kline quality alert submission to Hermes failed")
     return report
 
 
@@ -343,5 +343,5 @@ def _build_quality_alert_event(report: KlineQualityReport) -> AlertEvent:
     )
 
 
-def _alert_delivery_failed(result: AlertSendResult | None) -> bool:
+def _alert_submission_failed(result: AlertSendResult | None) -> bool:
     return result is not None and result.status != AlertSendStatus.SUBMITTED_TO_HERMES

@@ -291,7 +291,7 @@ def test_incremental_success_notify_success_flag_controls_success_alert() -> Non
     assert alert_sender.calls[0]["event"].severity.value == "info"
 
 
-def test_incremental_hermes_delivery_failure_returns_alert_failed_exit_code() -> None:
+def test_incremental_hermes_submission_failure_returns_alert_failed_exit_code() -> None:
     failed_alert = FakeAlertSender(
         AlertSendResult(status=AlertSendStatus.SUBMIT_FAILED, error_message="Hermes unavailable")
     )

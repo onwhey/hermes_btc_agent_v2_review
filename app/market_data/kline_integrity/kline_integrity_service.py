@@ -434,7 +434,7 @@ def _send_report_alert_and_adjust_result(
         alert_sender=alert_sender,
         alert_repository=alert_repository,
     )
-    alert_failed = _alert_delivery_failed(alert_result)
+    alert_failed = _alert_submission_failed(alert_result)
     if alert_result and alert_result.status == AlertSendStatus.SUBMITTED_TO_HERMES:
         _mark_quality_alert_sent_if_supported(
             data_quality_repository,
@@ -497,7 +497,7 @@ def _send_daily_result_notification_and_adjust_result(
         alert_sender=alert_sender,
         alert_repository=alert_repository,
     )
-    alert_failed = _alert_delivery_failed(alert_result)
+    alert_failed = _alert_submission_failed(alert_result)
     if (
         alert_result
         and alert_result.status == AlertSendStatus.SUBMITTED_TO_HERMES
@@ -601,7 +601,7 @@ def _send_report_alert_safely(
             alert_repository=alert_repository,
         )
     except Exception as exc:  # noqa: BLE001 - expose Hermes failure without changing Kline data.
-        LOGGER.exception("Daily Kline integrity alert delivery raised")
+        LOGGER.exception("Daily Kline integrity alert submission to Hermes raised")
         return AlertSendResult(
             status=AlertSendStatus.SUBMIT_FAILED,
             error_message=str(exc),
@@ -714,11 +714,11 @@ def _mark_quality_alert_sent_if_supported(
         return
     try:
         repository.mark_quality_check_alert_sent(db_session, quality_record)
-    except Exception:  # noqa: BLE001 - alert delivery already happened; preserve task result.
+    except Exception:  # noqa: BLE001 - alert submission already happened; preserve task result.
         LOGGER.exception("Failed to mark daily Kline integrity quality record alert_sent")
 
 
-def _alert_delivery_failed(result: AlertSendResult | None) -> bool:
+def _alert_submission_failed(result: AlertSendResult | None) -> bool:
     return result is not None and result.status != AlertSendStatus.SUBMITTED_TO_HERMES
 
 
