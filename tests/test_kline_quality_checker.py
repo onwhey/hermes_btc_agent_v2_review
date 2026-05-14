@@ -585,7 +585,7 @@ def test_send_success_alert_sends_success_alert_for_healthy_recent_klines(monkey
     def fake_send_alert(report_arg: Any, **kwargs: Any) -> AlertSendResult:
         called["alert_report"] = report_arg
         called["alert_kwargs"] = kwargs
-        return AlertSendResult(status=AlertSendStatus.SENT, attempted_real_send=True)
+        return AlertSendResult(status=AlertSendStatus.SUBMITTED_TO_HERMES, attempted_real_send=True)
 
     monkeypatch.setattr(mysql_session, "session_scope", fake_session_scope)
     monkeypatch.setattr(quality_script, "run_recent_kline_integrity_check", fake_real_check)
@@ -617,7 +617,7 @@ def test_daily_health_report_sends_success_alert_for_healthy_recent_klines(monke
     def fake_send_alert(report_arg: Any, **kwargs: Any) -> AlertSendResult:
         called["alert_report"] = report_arg
         called["alert_kwargs"] = kwargs
-        return AlertSendResult(status=AlertSendStatus.SENT, attempted_real_send=True)
+        return AlertSendResult(status=AlertSendStatus.SUBMITTED_TO_HERMES, attempted_real_send=True)
 
     monkeypatch.setattr(mysql_session, "session_scope", fake_session_scope)
     monkeypatch.setattr(quality_script, "run_recent_kline_integrity_check", fake_real_check)
@@ -666,7 +666,7 @@ def test_hermes_failure_makes_real_check_exit_nonzero(monkeypatch: Any) -> None:
 
     def fake_send_alert(report_arg: Any, **kwargs: Any) -> AlertSendResult:
         return AlertSendResult(
-            status=AlertSendStatus.FAILED,
+            status=AlertSendStatus.SUBMIT_FAILED,
             error_message="Hermes unavailable",
             attempted_real_send=True,
         )
@@ -715,7 +715,7 @@ def _assert_real_check_failure_sends_alert(
     def fake_send_alert(report_arg: Any, **kwargs: Any) -> AlertSendResult:
         called["alert_report"] = report_arg
         called["alert_kwargs"] = kwargs
-        return AlertSendResult(status=AlertSendStatus.SENT, attempted_real_send=True)
+        return AlertSendResult(status=AlertSendStatus.SUBMITTED_TO_HERMES, attempted_real_send=True)
 
     monkeypatch.setattr(mysql_session, "session_scope", fake_session_scope)
     monkeypatch.setattr(quality_script, "run_recent_kline_integrity_check", fake_real_check)

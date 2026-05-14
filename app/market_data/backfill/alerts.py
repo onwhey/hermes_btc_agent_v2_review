@@ -179,7 +179,7 @@ def _alert_details(
 
 
 def _alert_delivery_failed(result: AlertSendResult) -> bool:
-    return result.status != AlertSendStatus.SENT
+    return result.status != AlertSendStatus.SUBMITTED_TO_HERMES
 
 
 def _replace_result_alert(

@@ -7,7 +7,15 @@ from app.alerting.hermes_client import HermesClient, HermesTransportResponse, bu
 from app.alerting.sanitizer import sanitize_mapping
 from app.alerting.service import format_alert_message, send_alert
 from app.alerting.templates import supported_alert_type_values
-from app.alerting.types import AlertEvent, AlertSendResult, AlertSendStatus, AlertSeverity, AlertType
+from app.alerting.types import (
+    AlertEvent,
+    AlertFinalDeliveryStatus,
+    AlertGatewayStatus,
+    AlertSendResult,
+    AlertSendStatus,
+    AlertSeverity,
+    AlertType,
+)
 from app.core.config import AppSettings, load_settings
 from app.core.time_utils import now_utc
 from app.storage.mysql.models.alert_message import AlertMessage
@@ -165,16 +173,33 @@ def test_hermes_client_success_is_mocked_and_channel_response_is_sanitized() -> 
         )
 
     client = HermesClient(settings, http_post=fake_post)
+    log_messages: list[str] = []
+
+    class FakeLogger:
+        def info(self, message: str, *args: object) -> None:
+            log_messages.append(message % args)
+
+        def warning(self, message: str, *args: object) -> None:
+            log_messages.append(message % args)
+
+    client._logger = FakeLogger()  # type: ignore[assignment]
 
     result = client.send_alert_message(_build_event(), "message", send_real_alert=True)
 
-    assert result.status == AlertSendStatus.SENT
+    assert result.status == AlertSendStatus.SUBMITTED_TO_HERMES
+    assert result.gateway_status == AlertGatewayStatus.GATEWAY_ACCEPTED
+    assert result.final_delivery_status == AlertFinalDeliveryStatus.UNKNOWN
+    assert result.channel_response["gateway_status"] == AlertGatewayStatus.GATEWAY_ACCEPTED.value
+    assert result.channel_response["final_delivery_status"] == AlertFinalDeliveryStatus.UNKNOWN.value
     assert result.attempted_real_send is True
     assert captured["url"] == settings.hermes_webhook_url
     assert captured["payload"]["not_trading_advice"] is True
     assert "X-Webhook-Signature" in captured["headers"]
+    assert any("final_delivery_status=unknown" in message for message in log_messages)
+    assert "微信发送成功" not in " ".join(log_messages)
 
     rendered_response = str(result.channel_response)
+    assert "weixin_success" not in rendered_response
     assert "hermes-secret" not in rendered_response
     assert "https://example.invalid/hook" not in rendered_response
     assert "raw-signature" not in rendered_response
@@ -226,7 +251,8 @@ def test_hermes_payload_redacts_sensitive_values_before_send() -> None:
 
     payload_text = str(captured["payload_text"])
 
-    assert result.status == AlertSendStatus.SENT
+    assert result.status == AlertSendStatus.SUBMITTED_TO_HERMES
+    assert result.final_delivery_status == AlertFinalDeliveryStatus.UNKNOWN
     assert "hermes-secret" not in payload_text
     assert "https://example.invalid/hook" not in payload_text
     assert "password=abc" not in payload_text
@@ -255,12 +281,40 @@ def test_hermes_client_failure_returns_failed_without_real_network() -> None:
 
     result = client.send_alert_message(_build_event(), "message", send_real_alert=True)
 
-    assert result.status == AlertSendStatus.FAILED
+    assert result.status == AlertSendStatus.GATEWAY_REJECTED
+    assert result.gateway_status == AlertGatewayStatus.GATEWAY_REJECTED
+    assert result.final_delivery_status == AlertFinalDeliveryStatus.UNKNOWN
     assert result.http_status_code == 500
+    assert "HTTP 500" in result.error_message
     rendered_result = str(result)
     assert "hermes-secret" not in rendered_result
     assert "https://example.invalid/hook" not in rendered_result
     assert "raw-auth" not in rendered_result
+
+
+def test_hermes_client_connection_exception_returns_submit_failed_without_success() -> None:
+    settings = AppSettings(
+        hermes_enabled=True,
+        hermes_dry_run=False,
+        hermes_webhook_url="https://example.invalid/hook",
+        hermes_secret="hermes-secret",
+        hermes_max_retries=0,
+    )
+
+    def fake_post(*_: object) -> HermesTransportResponse:
+        raise TimeoutError("timeout secret=hermes-secret webhook=https://example.invalid/hook")
+
+    client = HermesClient(settings, http_post=fake_post)
+
+    result = client.send_alert_message(_build_event(), "message", send_real_alert=True)
+
+    assert result.status == AlertSendStatus.SUBMIT_FAILED
+    assert result.gateway_status == AlertGatewayStatus.SUBMIT_FAILED
+    assert result.final_delivery_status == AlertFinalDeliveryStatus.UNKNOWN
+    assert result.http_status_code is None
+    assert "hermes-secret" not in result.error_message
+    assert "https://example.invalid/hook" not in result.error_message
+    assert result.status != AlertSendStatus.SUBMITTED_TO_HERMES
 
 
 def test_hmac_header_does_not_contain_plain_secret() -> None:
@@ -283,9 +337,11 @@ def test_service_can_use_mock_repository_without_real_mysql() -> None:
             assert "不是交易建议" in message
             assert send_real_alert is False
             return AlertSendResult(
-                status=AlertSendStatus.SENT,
+                status=AlertSendStatus.SUBMITTED_TO_HERMES,
+                gateway_status=AlertGatewayStatus.GATEWAY_ACCEPTED,
+                final_delivery_status=AlertFinalDeliveryStatus.UNKNOWN,
                 message="mocked",
-                sent_at_utc=now_utc(),
+                submitted_at_utc=now_utc(),
             )
 
     class FakeSession:
@@ -310,10 +366,11 @@ def test_service_can_use_mock_repository_without_real_mysql() -> None:
         db_session=fake_session,
     )
 
-    assert result.status == AlertSendStatus.SENT
+    assert result.status == AlertSendStatus.SUBMITTED_TO_HERMES
     assert len(fake_session.added) == 1
     assert fake_session.flush_count == 2
-    assert fake_session.added[0].status == AlertSendStatus.SENT.value
+    assert fake_session.added[0].status == AlertSendStatus.SUBMITTED_TO_HERMES.value
+    assert fake_session.added[0].sent_at_utc == result.submitted_at_utc
 
 
 def test_alert_message_model_and_migration_are_scoped_to_alert_table() -> None:

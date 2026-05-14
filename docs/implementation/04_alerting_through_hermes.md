@@ -168,22 +168,40 @@ Hermes 配置统一由 `app/core/config.py::load_settings()` 读取。
 4. `HERMES_WEBHOOK_URL` 非空。
 5. `HERMES_TIMEOUT_SECONDS > 0`。
 
-不满足时返回 `AlertSendStatus.SKIPPED` 或 `AlertSendStatus.FAILED`，不会访问网络。
+不满足时返回 `AlertSendStatus.SKIPPED` 或 `AlertSendStatus.SUBMIT_FAILED`，不会访问网络。
 
 ### 3.3 响应处理
 
 Hermes 返回 2xx 时：
 
-- 返回 `AlertSendStatus.SENT`
+- 返回 `AlertSendStatus.SUBMITTED_TO_HERMES`
+- `gateway_status = gateway_accepted`
+- `final_delivery_status = unknown`
 - 保存脱敏后的 `channel_response`
-- 记录 `sent_at_utc`
+- 记录 `submitted_at_utc`
+- 入库时复用既有物理字段 `sent_at_utc` 保存提交 Hermes 的时间
 
-Hermes 返回非 2xx 或网络异常时：
+这个状态只表示 BTC Agent 已经把固定模板报警提交给 Hermes gateway，
+不能表示微信、iLink 或任何目标通道最终送达成功。
+
+Hermes 返回非 2xx 时：
 
 - 在 `HERMES_MAX_RETRIES` 范围内重试
-- 最终返回 `AlertSendStatus.FAILED`
-- 错误原因脱敏
-- `channel_response` 脱敏
+- 最终返回 `AlertSendStatus.GATEWAY_REJECTED`
+- `gateway_status = gateway_rejected`
+- `final_delivery_status = unknown`
+- 错误原因、HTTP 状态码和响应摘要脱敏记录
+
+Hermes 连接异常、超时或请求构造失败时：
+
+- 在 `HERMES_MAX_RETRIES` 范围内重试
+- 最终返回 `AlertSendStatus.SUBMIT_FAILED`
+- `gateway_status = submit_failed`
+- `final_delivery_status = unknown`
+- 错误原因脱敏记录
+
+当前 BTC Agent 没有 Hermes 目标通道回执，因此不会写入 `delivered`、
+`weixin_success` 或“微信发送成功”。
 
 本 client 不写数据库。
 本 client 不读写 Redis。
@@ -283,17 +301,29 @@ Migration 文件：
 - `retry_count`
 - `http_status_code`
 - `occurred_at_utc`
-- `sent_at_utc`
+- `sent_at_utc`（既有物理字段，语义为提交 Hermes gateway 的时间，不是微信送达时间）
 - `created_at_utc`
 - `updated_at_utc`
 
 写入规则：
 
 1. `AlertMessageRepository.create_pending_alert_message()` 只创建 `pending` 记录。
-2. `AlertMessageRepository.update_alert_message_result()` 只更新同一条记录的发送结果。
-3. `channel_response` 入库前通过 `sanitize_mapping()` 脱敏。
-4. repository 不 commit，事务边界由调用方控制。
-5. repository 不直接发送 Hermes。
+2. `AlertMessageRepository.update_alert_message_result()` 只更新同一条记录的提交结果。
+3. `status` 只表达 BTC Agent 到 Hermes gateway 的提交状态。
+4. `channel_response.gateway_status` 保存 Hermes gateway 边界状态。
+5. `channel_response.final_delivery_status` 当前固定为 `unknown`。
+6. `channel_response` 入库前通过 `sanitize_mapping()` 脱敏。
+7. repository 不 commit，事务边界由调用方控制。
+8. repository 不直接发送 Hermes。
+
+状态语义：
+
+| 旧状态 | 新状态 | gateway_status | final_delivery_status | 含义 |
+| --- | --- | --- | --- | --- |
+| `sent` | `submitted_to_hermes` | `gateway_accepted` | `unknown` | Hermes webhook HTTP 2xx，只说明 gateway 已接收。 |
+| `failed`（HTTP 非 2xx） | `gateway_rejected` | `gateway_rejected` | `unknown` | Hermes gateway 返回拒绝或错误响应。 |
+| `failed`（连接异常/超时） | `submit_failed` | `submit_failed` | `unknown` | BTC Agent 未能把请求成功提交到 Hermes gateway。 |
+| `skipped` | `skipped` | `not_attempted` | `unknown` | dry-run、未启用或未显式要求真实发送。 |
 
 数据库边界：
 
@@ -424,10 +454,11 @@ Hermes client 和 service 不打印完整 webhook，不打印 secret，不打印
 2. 模板缺失时，`render_alert_message()` 抛出 `ValidationError`。
 3. payload 无法序列化时，`build_hermes_request()` 抛出 `HermesError`。
 4. Hermes 配置未启用或 dry-run 时，client 返回 `skipped`，不访问外部服务。
-5. Hermes 网络失败或非 2xx 时，client 返回 `failed`，错误与响应均脱敏。
-6. repository 创建记录失败时，service 写脱敏日志并继续调用 Hermes client。
-7. repository 更新结果失败时，service 写脱敏日志，不改写 Hermes 发送结果。
-8. 检查脚本汇总错误并返回非 0 状态码。
+5. Hermes 网络失败或超时时，client 返回 `submit_failed`，错误脱敏。
+6. Hermes HTTP 非 2xx 时，client 返回 `gateway_rejected`，错误与响应均脱敏。
+7. repository 创建记录失败时，service 写脱敏日志并继续调用 Hermes client。
+8. repository 更新结果失败时，service 写脱敏日志，不改写 Hermes 提交结果。
+9. 检查脚本汇总错误并返回非 0 状态码。
 
 本阶段不写 collector event log。
 本阶段不发送补偿报警队列。
@@ -449,9 +480,11 @@ Hermes client 和 service 不打印完整 webhook，不打印 secret，不打印
 - 脱敏工具隐藏 password、secret、token、webhook、Authorization。
 - Hermes disabled 时不会调用 transport。
 - Hermes dry-run 时不会调用 transport。
-- Hermes client 成功发送可被 mock。
+- Hermes webhook HTTP 2xx 时返回 `submitted_to_hermes`，且最终送达状态为 `unknown`。
 - Hermes client 发出的 payload 会在网络发送前脱敏。
-- Hermes client 失败返回 failed。
+- Hermes HTTP 非 2xx 时返回 `gateway_rejected`。
+- Hermes 连接异常或超时时返回 `submit_failed`。
+- 日志与结果文案不声明“微信发送成功”。
 - HMAC header 不包含明文 secret。
 - service 可使用 mock repository，不连接真实 MySQL。
 - `alert_message` model 可导入。

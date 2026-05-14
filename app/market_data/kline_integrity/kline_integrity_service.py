@@ -435,7 +435,7 @@ def _send_report_alert_and_adjust_result(
         alert_repository=alert_repository,
     )
     alert_failed = _alert_delivery_failed(alert_result)
-    if alert_result and alert_result.status == AlertSendStatus.SENT:
+    if alert_result and alert_result.status == AlertSendStatus.SUBMITTED_TO_HERMES:
         _mark_quality_alert_sent_if_supported(
             data_quality_repository,
             db_session=db_session,
@@ -498,7 +498,11 @@ def _send_daily_result_notification_and_adjust_result(
         alert_repository=alert_repository,
     )
     alert_failed = _alert_delivery_failed(alert_result)
-    if alert_result and alert_result.status == AlertSendStatus.SENT and data_quality_repository is not None:
+    if (
+        alert_result
+        and alert_result.status == AlertSendStatus.SUBMITTED_TO_HERMES
+        and data_quality_repository is not None
+    ):
         _mark_quality_alert_sent_if_supported(
             data_quality_repository,
             db_session=db_session,
@@ -541,7 +545,7 @@ def _send_daily_result_notification_safely(
     except Exception as exc:  # noqa: BLE001 - expose Hermes failure without changing Kline data.
         LOGGER.exception("Daily Kline integrity result notification raised")
         return AlertSendResult(
-            status=AlertSendStatus.FAILED,
+            status=AlertSendStatus.SUBMIT_FAILED,
             error_message=str(exc),
             attempted_real_send=True,
         )
@@ -599,7 +603,7 @@ def _send_report_alert_safely(
     except Exception as exc:  # noqa: BLE001 - expose Hermes failure without changing Kline data.
         LOGGER.exception("Daily Kline integrity alert delivery raised")
         return AlertSendResult(
-            status=AlertSendStatus.FAILED,
+            status=AlertSendStatus.SUBMIT_FAILED,
             error_message=str(exc),
             attempted_real_send=True,
         )
@@ -627,7 +631,7 @@ def _send_task_failure_alert_safely(
     except Exception as exc:  # noqa: BLE001 - task result must still report alert failure.
         LOGGER.exception("Daily Kline integrity task failure alert raised")
         return AlertSendResult(
-            status=AlertSendStatus.FAILED,
+            status=AlertSendStatus.SUBMIT_FAILED,
             error_message=str(exc),
             attempted_real_send=True,
         )
@@ -715,7 +719,7 @@ def _mark_quality_alert_sent_if_supported(
 
 
 def _alert_delivery_failed(result: AlertSendResult | None) -> bool:
-    return result is not None and result.status != AlertSendStatus.SENT
+    return result is not None and result.status != AlertSendStatus.SUBMITTED_TO_HERMES
 
 
 def _alert_status_text(result: AlertSendResult | None) -> str | None:

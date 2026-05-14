@@ -207,7 +207,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _alert_delivery_failed(result: AlertSendResult | None) -> bool:
-    return result is not None and result.status != AlertSendStatus.SENT
+    return result is not None and result.status != AlertSendStatus.SUBMITTED_TO_HERMES
 
 
 if __name__ == "__main__":

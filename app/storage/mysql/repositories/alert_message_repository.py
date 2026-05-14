@@ -91,7 +91,9 @@ class AlertMessageRepository:
         alert_message.error_message = sanitize_text(result.error_message) if result.error_message else None
         alert_message.retry_count = result.retry_count
         alert_message.http_status_code = result.http_status_code
-        alert_message.sent_at_utc = result.sent_at_utc
+        # Physical column name is kept for the existing schema; it now stores
+        # the Hermes gateway submission timestamp, not final Weixin delivery.
+        alert_message.sent_at_utc = result.submitted_at_utc
         alert_message.updated_at_utc = now_utc()
         if hasattr(db_session, "flush"):
             db_session.flush()
@@ -110,4 +112,3 @@ def create_default_alert_message_repository() -> AlertMessageRepository:
     """
 
     return AlertMessageRepository()
-

@@ -344,4 +344,4 @@ def _build_quality_alert_event(report: KlineQualityReport) -> AlertEvent:
 
 
 def _alert_delivery_failed(result: AlertSendResult | None) -> bool:
-    return result is not None and result.status != AlertSendStatus.SENT
+    return result is not None and result.status != AlertSendStatus.SUBMITTED_TO_HERMES

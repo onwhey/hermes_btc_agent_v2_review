@@ -279,7 +279,10 @@ class FakeCollectorEventRepository:
 
 class FakeAlertSender:
     def __init__(self, result: AlertSendResult | None = None) -> None:
-        self.result = result or AlertSendResult(status=AlertSendStatus.SENT, attempted_real_send=True)
+        self.result = result or AlertSendResult(
+            status=AlertSendStatus.SUBMITTED_TO_HERMES,
+            attempted_real_send=True,
+        )
         self.calls: list[dict[str, Any]] = []
 
     def __call__(self, event: Any, **kwargs: Any) -> AlertSendResult:
@@ -649,7 +652,7 @@ def test_dry_run_notify_success_alert_clearly_marks_no_formal_write() -> None:
 
 def test_hermes_delivery_failure_returns_alert_failed_exit_code() -> None:
     failed_alert = FakeAlertSender(
-        AlertSendResult(status=AlertSendStatus.FAILED, error_message="Hermes unavailable")
+        AlertSendResult(status=AlertSendStatus.SUBMIT_FAILED, error_message="Hermes unavailable")
     )
 
     result, _repo, _lock, _alert, _quality_repo, _session, _client = run_backfill_with_fakes(
@@ -660,7 +663,7 @@ def test_hermes_delivery_failure_returns_alert_failed_exit_code() -> None:
 
     assert result.status == KlineBackfillStatus.BLOCKED
     assert result.exit_code == EXIT_ALERT_FAILED
-    assert result.alert_status == AlertSendStatus.FAILED.value
+    assert result.alert_status == AlertSendStatus.SUBMIT_FAILED.value
 
 
 def test_backfill_sources_do_not_use_deepseek_trading_or_private_binance_interfaces() -> None:

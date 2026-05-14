@@ -432,7 +432,7 @@ class PriceMonitorService:
             alert_status=alert_result.status.value,
             details=details,
         )
-        if alert_result.status != AlertSendStatus.SENT:
+        if alert_result.status != AlertSendStatus.SUBMITTED_TO_HERMES:
             LOGGER.error(
                 "Price movement alert delivery failed trace_id=%s status=%s error=%s",
                 config.trace_id,
@@ -462,7 +462,7 @@ class PriceMonitorService:
         )
         alert_status = alert_result.status.value
         details["alert_suppressed_by_cooldown"] = suppressed
-        if not suppressed and alert_result.status != AlertSendStatus.SENT:
+        if not suppressed and alert_result.status != AlertSendStatus.SUBMITTED_TO_HERMES:
             exit_code = EXIT_ALERT_FAILED
         return PriceMonitorResult(
             status=PriceMonitorStatus.NO_RECENT_PRICE,
@@ -491,7 +491,7 @@ class PriceMonitorService:
         )
         exit_code = (
             EXIT_ALERT_FAILED
-            if not suppressed and alert_result.status != AlertSendStatus.SENT
+            if not suppressed and alert_result.status != AlertSendStatus.SUBMITTED_TO_HERMES
             else EXIT_RUNTIME_ERROR
         )
         return PriceMonitorResult(

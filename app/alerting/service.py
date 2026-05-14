@@ -148,7 +148,7 @@ def send_test_alert(
     参数：`settings` 是可选配置；`client` 可注入 mock；
     `send_real_alert` 必须显式为 True 才允许真实 Hermes 发送。
     返回值：`AlertSendResult`。
-    失败场景：配置禁止真实发送时返回 skipped，Hermes 失败时返回 failed。
+    失败场景：配置禁止真实发送时返回 skipped，Hermes 提交失败时返回 submit_failed 或 gateway_rejected。
     外部服务：默认不访问外部服务；只有显式真实发送且配置允许才访问 Hermes。
     数据影响：不写 MySQL，不读写 Redis，不发送 DeepSeek。
     本函数只用于人工检查脚本，不涉及 scheduler 或自动交易。

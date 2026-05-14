@@ -53,6 +53,8 @@ if mapped_column is not None:
         retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
         http_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
         occurred_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+        # Existing physical column retained for schema compatibility. It stores
+        # BTC Agent submission time to Hermes, not final Weixin/iLink delivery.
         sent_at_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
         created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
         updated_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -85,7 +87,8 @@ else:
         retry_count: int = 0
         http_status_code: int | None = None
         occurred_at_utc: datetime | None = None
+        # Existing physical column retained for schema compatibility. It stores
+        # BTC Agent submission time to Hermes, not final Weixin/iLink delivery.
         sent_at_utc: datetime | None = None
         created_at_utc: datetime | None = None
         updated_at_utc: datetime | None = None
-
