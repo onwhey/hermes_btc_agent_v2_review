@@ -29,7 +29,7 @@ app/scheduler/runner.py::run_scheduler_forever
     ↓
 app/scheduler/runner.py::SchedulerRunner.run_once
     ↓
-app/scheduler/execution_slot.py::SchedulerExecutionSlotStore.reserve_execution_slot
+app/scheduler/slot_state.py::RedisSchedulerSlotStore.acquire_slot_for_run
     ↓
 app/scheduler/jobs/kline_4h_incremental_collect.py::run_kline_4h_incremental_collect_job
 app/scheduler/jobs/daily_kline_integrity_check.py::run_daily_kline_integrity_check_job
@@ -42,7 +42,10 @@ app/scheduler/jobs/daily_kline_integrity_check.py::run_daily_kline_integrity_che
 ```env
 SCHEDULER_ENABLED=true
 SCHEDULER_POLL_INTERVAL_SECONDS=30
-SCHEDULER_JOB_SLOT_TTL_SECONDS=90000
+SCHEDULER_RUNNING_LOCK_TTL_SECONDS=1800
+SCHEDULER_COMPLETED_MARKER_TTL_SECONDS=259200
+SCHEDULER_STATUS_MARKER_TTL_SECONDS=86400
+SCHEDULER_SLOT_LOG_COOLDOWN_SECONDS=300
 KLINE_4H_INCREMENTAL_COLLECT_ENABLED=true
 KLINE_4H_INCREMENTAL_COLLECT_SYMBOL=BTCUSDT
 KLINE_4H_INCREMENTAL_COLLECT_INTERVAL=4h
@@ -80,64 +83,165 @@ DAILY_KLINE_INTEGRITY_UTC_TIME=00:30
 读取当前 UTC 时间
 判断 09 是否已到达最近一个 4h slot，且尚未到下一个 4h slot
 判断 11 是否已到达当天 DAILY_KLINE_INTEGRITY_UTC_TIME，且仍在 2 小时补跑窗口内
-进入窗口后先写 Redis 执行槽
-执行槽成功时调用对应 app job
-执行槽已存在时跳过
-执行槽异常时不执行任务并发送 scheduler 系统异常通知
+进入窗口后先检查 Redis completed marker
+completed marker 存在时记录 skipped/completed，不执行 app job
+completed marker 不存在时尝试写 running lock
+running lock 成功时调用对应 app job
+running lock 正常存在时跳过并做日志冷却
+running lock 异常或超出允许运行时间时标记 stale/expired，并安全重试一次
+Redis 状态无法判断时不执行任务并发送 scheduler 系统异常通知
 sleep SCHEDULER_POLL_INTERVAL_SECONDS
 ```
 
 09 的调度窗口不再只依赖 `max(60, SCHEDULER_POLL_INTERVAL_SECONDS)`。例如 00:05 slot 到达后，
-如果 scheduler 在 00:06 才启动，且 Redis 执行槽
-`scheduler:job:kline_4h_incremental:2026-05-13T00:05Z` 尚不存在，runner 会补跑该 slot；如果已经存在，则跳过。
+如果 scheduler 在 00:06 才启动，且 Redis completed marker
+`scheduler:completed:kline_4h_incremental:2026-05-13T00:05Z` 尚不存在，runner 会尝试补跑该 slot；如果已经存在，则跳过。
 该 slot 最晚只允许在下一个 4h slot 到来前补跑，例如 04:05 到达后不再补跑 00:05。
 
 11 的每日复核在当天 `DAILY_KLINE_INTEGRITY_UTC_TIME` 到达后有有限补跑窗口，当前为 2 小时。
-例如 00:30 slot 到达后，scheduler 在 00:31 启动且当天 Redis 执行槽
-`scheduler:job:daily_kline_integrity:2026-05-13` 尚不存在时会执行一次；超过 02:30 后不再补跑当天每日检查。
+例如 00:30 slot 到达后，scheduler 在 00:31 启动且当天 Redis completed marker
+`scheduler:completed:daily_kline_integrity:2026-05-13` 尚不存在时会执行一次；超过 02:30 后不再补跑当天每日检查。
 
 这里的“补跑”只表示 scheduler 对错过短调度窗口的同一个时间槽进行一次延迟触发。
 它不自动修复 K线，不自动执行 08 回补，不自动覆盖正式 K线，不自动交易。
-是否执行仍由 Redis execution slot 去重控制，确保同一 09 slot 或同一天 11 slot 只执行一次。
+是否执行仍由 Redis slot state 去重控制，确保同一 09 slot 或同一天 11 slot 不并发执行，且已完成 slot 不重复执行。
 
 PRC 时间不参与调度判断。
 
-## 2. 功能：Redis 执行槽去重
+## 2. 功能：Redis slot 状态去重
 
 ### 2.1 入口文件
 
-`app/scheduler/execution_slot.py`
+`app/scheduler/slot_state.py`
 
 入口方法：
 
-`SchedulerExecutionSlotStore.reserve_execution_slot()`
+`RedisSchedulerSlotStore.acquire_slot_for_run()`
+
+`app/scheduler/execution_slot.py` 只保留兼容导出，不再承载 Redis 写入逻辑。
 
 ### 2.2 Redis key
 
-09 增量采集执行槽：
+09 增量采集 slot id 使用 UTC：
 
 ```text
-scheduler:job:kline_4h_incremental:2026-05-13T04:05Z
+2026-05-13T04:05Z
 ```
 
-11 每日复核执行槽：
+11 每日复核 slot id 使用 UTC 日期：
 
 ```text
-scheduler:job:daily_kline_integrity:2026-05-13
+2026-05-13
 ```
 
-### 2.3 去重规则
-
-执行前使用 Redis `SET key owner NX EX ttl`：
+Redis key 分为三类：
 
 ```text
-写入成功：允许执行 job
-key 已存在：跳过本时间窗口
-Redis 异常：不执行 job，记录日志并发送固定模板系统异常通知
+scheduler:running:<job>:<slot>
+scheduler:completed:<job>:<slot>
+scheduler:status:<job>:<slot>
 ```
 
-执行槽只负责 scheduler 时间窗口去重，不替代 09 的写入锁，也不替代 11 的复核锁。
-有限补跑窗口内重复扫描或多实例误启动时，仍先写同一个 Redis slot key；slot 已存在时不重复调用 09/11 job。
+示例：
+
+```text
+scheduler:running:kline_4h_incremental:2026-05-13T04:05Z
+scheduler:completed:kline_4h_incremental:2026-05-13T04:05Z
+scheduler:status:kline_4h_incremental:2026-05-13T04:05Z
+
+scheduler:running:daily_kline_integrity:2026-05-13
+scheduler:completed:daily_kline_integrity:2026-05-13
+scheduler:status:daily_kline_integrity:2026-05-13
+```
+
+### 2.3 value 与 TTL
+
+running lock 使用 Redis `SET NX EX`，只表示当前 slot 正在运行。默认 TTL：
+
+```text
+SCHEDULER_RUNNING_LOCK_TTL_SECONDS=1800
+```
+
+running lock value 是 JSON，至少包含：
+
+```json
+{
+  "job": "kline_4h_incremental",
+  "slot": "2026-05-13T04:05Z",
+  "status": "running",
+  "owner": "<hostname>:<pid>:<trace>",
+  "token": "<uuid>",
+  "created_at_utc": "2026-05-13T04:05:00Z",
+  "updated_at_utc": "2026-05-13T04:05:00Z",
+  "ttl_seconds": 1800
+}
+```
+
+这里的 `token` 不是密钥，只用于 compare-and-release，防止释放其他进程的 running lock。
+
+completed marker 只表示该 slot 已成功处理。默认 TTL：
+
+```text
+SCHEDULER_COMPLETED_MARKER_TTL_SECONDS=259200
+```
+
+completed marker value 是 JSON，至少包含：
+
+```json
+{
+  "job": "kline_4h_incremental",
+  "slot": "2026-05-13T04:05Z",
+  "status": "completed",
+  "owner": "<hostname>:<pid>:<trace>",
+  "completed_at_utc": "2026-05-13T04:06:00Z",
+  "source": "scheduler"
+}
+```
+
+failed / skipped / blocked / stale / expired 使用 status marker 记录诊断结果。默认 TTL：
+
+```text
+SCHEDULER_STATUS_MARKER_TTL_SECONDS=86400
+```
+
+重复 skip 日志使用内存冷却，默认：
+
+```text
+SCHEDULER_SLOT_LOG_COOLDOWN_SECONDS=300
+```
+
+### 2.4 状态流程
+
+执行一个 slot 时，runner 的状态流程如下：
+
+```text
+1. 检查 completed marker。
+   存在：返回 skipped，lock_status=completed，不调用 09/11 job。
+
+2. 检查 failed / skipped / blocked status marker。
+   存在：返回 skipped，不在冷却窗口内重复刷屏。
+
+3. 尝试写 scheduler:running:<job>:<slot>。
+   成功：执行 job。
+
+4. running lock 已存在。
+   value 与 TTL 正常：返回 skipped，lock_status=running。
+   value 非 JSON、TTL 不存在、TTL=-1、TTL<=0、TTL 大于当前 running TTL 配置、或 created_at_utc 超过允许运行时间：
+   写 stale/expired status marker，原 running lock value 匹配时删除，并安全重试一次。
+
+5. job 成功。
+   删除 running lock，写 completed marker，返回 completed。
+
+6. job 失败。
+   写 failed status marker，删除 running lock，不写 completed marker。
+
+7. job 被数据质量或业务规则阻断。
+   写 blocked status marker，删除 running lock，不写 completed marker，不写正式 K线表。
+```
+
+slot state 只负责 scheduler 时间窗口去重，不替代 09 的 K线写入锁，也不替代 11 的复核锁。
+有限补跑窗口内重复扫描或多实例误启动时，先检查同一个 Redis slot state；completed 时不重复调用 09/11 job，running 时不并发调用。
+如果旧 slot 卡住，超过下一个 4h slot 后 runner 会根据 UTC 当前时间判断新的 slot，不会无限盯住旧 slot。
 
 ## 3. 功能：09 scheduler job
 
@@ -174,6 +278,10 @@ notify_success=false
 
 09 job 不调用 `scripts.collect_4h_klines`，不直接请求 Binance，不直接写 `market_kline_4h`，不直接发送 Hermes，不绕过质量检查、冲突检查、all-or-nothing 写入和 Redis 写入锁。
 
+09 service 仍负责写 `collector_event_log`，并在 `success`、`failed`、`blocked`、`skipped` 中记录采集业务结果。
+scheduler 根据 09 返回值写自己的 Redis slot 状态：`success` 写 completed marker；`blocked` / `failed` / `skipped` 写 status marker。
+scheduler 不把 blocked 视为 completed，不自动修复 K线，不自动回补，不覆盖正式 K线。
+
 ## 4. 功能：11 scheduler job
 
 ### 4.1 入口文件
@@ -207,6 +315,9 @@ lookback_count=DAILY_KLINE_INTEGRITY_LIMIT
 11 job 不调用 `scripts.check_kline_integrity`，不直接请求 Binance，不直接读写 repository，不拆分 11 的每日结果通知机制。
 
 11 service 负责写 `data_quality_check`，并保证 scheduler / `daily_integrity_check` 每次最终只发送一条 Hermes 固定模板结果通知：`healthy`、`unhealthy`、`unknown` 或 `skipped`。
+
+scheduler 根据 11 返回值写自己的 Redis slot 状态：健康或已完成的不健康复核写 completed marker；`skipped`、通知失败或 wrapper 异常写 status marker。
+scheduler 不直接写 `data_quality_check`，不替代 11 的每日复核结果通知。
 
 ## 5. 功能：10 price monitor 独立运行
 
@@ -268,11 +379,13 @@ scheduler 层只处理自身无法安全调度的问题：
 
 ```text
 启动阶段配置解析失败
-Redis 执行槽无法判断
+Redis slot 状态无法判断
 job 包装层抛出异常
+completed / status marker 写入失败
+running lock 释放失败
 ```
 
-Redis 执行槽无法判断和 job 包装层抛出异常，由
+Redis slot 状态无法判断、job 包装层抛出异常、marker 写入失败和 running lock 释放失败，由
 `app/scheduler/runner.py::SchedulerRunner._send_scheduler_system_alert()` 通过
 `app/alerting/service.py::send_alert` 发送固定模板系统异常通知。
 
@@ -296,6 +409,23 @@ app/alerting/service.py::send_alert
 为避免 systemd 反复重启导致 Hermes 刷屏，启动配置异常通知使用轻量本地冷却标记；
 冷却命中时只记录日志，不重复发送 Hermes。
 
+为避免 scheduler slot running/completed/status 重复扫描导致日志刷屏，同一个 `job + slot + reason`
+在 `SCHEDULER_SLOT_LOG_COOLDOWN_SECONDS` 内最多输出一次诊断日志。日志包含：
+
+```text
+job
+slot
+lock_key
+completed_key
+status_key
+lock_status
+ttl
+owner
+created_at_utc
+action
+reason
+```
+
 如果 09 或 11 service 已经返回业务结果或业务通知，scheduler 不重复发送同一业务事件通知。
 
 ## 8. 本阶段不负责
@@ -314,6 +444,7 @@ app/alerting/service.py::send_alert
 - 不读取账户、订单、仓位、杠杆。
 - 不调用 Binance 私有接口。
 - 不实现自动下单、平仓、调仓或调杠杆。
+- 不新增数据库迁移。本次只新增 Redis scheduler 状态 key、配置和测试；正式 K线表、`collector_event_log`、`data_quality_check` 表结构不变。
 
 ## 9. 测试
 
@@ -337,9 +468,27 @@ tests/test_runtime_scheduler_deployment.py
 - 09 job 传 `trigger_source=scheduler`。
 - 11 job 传 `check_trigger=scheduler` 和 `check_mode=daily_integrity_check`。
 - scheduler 不调用 scripts，不使用内部任务进程包装，不拉起 10。
-- Redis 执行槽已存在时，准点窗口和补跑窗口都不重复执行。
-- Redis 执行槽写入失败时不执行任务并发送固定模板系统异常通知。
+- completed marker 存在时不重复执行 slot，返回 skipped/completed，不输出 `already reserved`。
+- running lock 未过期时不并发执行，返回 skipped/running。
+- token-only 或 TTL 异常的 running lock 会识别为 stale/expired，写 status marker，并安全重试一次。
+- job 成功后删除 running lock，并写 completed marker。
+- job failed / blocked 后删除 running lock，不写 completed marker，写 status marker。
+- 补跑扫描不重复执行 completed slot，不无限撞同一个 running slot，也不因为旧 slot 卡住而阻塞下一 4h slot 判断。
+- 同一个 `job + slot + reason` 在日志冷却窗口内不会每 30 秒重复刷屏。
+- Redis slot 状态无法判断时不执行任务并发送固定模板系统异常通知。
 - `scripts/run_scheduler.py` 启动配置错误时，alerting 可初始化则发送固定模板系统异常通知；无法初始化则记录并非 0 退出。
 - systemd example 不包含真实密钥，且 scheduler 与 price monitor 独立。
 
 默认 pytest 不访问真实 Binance、MySQL、Redis、Hermes、DeepSeek 或交易接口。
+
+本次人工检查命令：
+
+```bash
+.\.venv\Scripts\python.exe -m pytest
+```
+
+结果：
+
+```text
+224 passed
+```

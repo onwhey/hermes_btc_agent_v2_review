@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, time, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,27 +24,103 @@ from app.market_data.kline_integrity.types import (
 )
 from app.market_data.kline_quality.types import CHECK_TRIGGER_SOURCE_SCHEDULER
 from app.scheduler.config import SchedulerRuntimeConfig, build_scheduler_runtime_config
-from app.scheduler.execution_slot import (
+from app.scheduler.slot_state import (
     DAILY_KLINE_INTEGRITY_JOB_NAME,
     KLINE_4H_INCREMENTAL_JOB_NAME,
+    RedisSchedulerSlotStore,
+    SchedulerSlotAction,
+    SchedulerSlotDecision,
+    SchedulerSlotStatus,
+    build_scheduler_completed_key,
+    build_scheduler_running_key,
+    build_scheduler_status_key,
 )
 from app.scheduler.jobs.daily_kline_integrity_check import run_daily_kline_integrity_check_job
 from app.scheduler.jobs.kline_4h_incremental_collect import run_kline_4h_incremental_collect_job
-from app.scheduler.runner import SchedulerRunner
+from app.scheduler.runner import SchedulerRunner, SchedulerSlotLogThrottle
 from scripts import run_scheduler as run_scheduler_script
 
 
 class FakeSlotStore:
-    def __init__(self, *, reserved: bool = True, fail: bool = False) -> None:
-        self.reserved = reserved
+    def __init__(
+        self,
+        *,
+        acquired: bool = True,
+        fail: bool = False,
+        skip_status: SchedulerSlotStatus = SchedulerSlotStatus.RUNNING,
+        skip_reason: str = "running_lock_active",
+    ) -> None:
+        self.acquired = acquired
         self.fail = fail
+        self.skip_status = skip_status
+        self.skip_reason = skip_reason
         self.calls: list[dict[str, Any]] = []
+        self.completed_calls: list[dict[str, Any]] = []
+        self.status_calls: list[dict[str, Any]] = []
+        self.release_calls: list[dict[str, Any]] = []
 
-    def reserve_execution_slot(self, *, key: str, owner: str, ttl_seconds: int) -> bool:
-        self.calls.append({"key": key, "owner": owner, "ttl_seconds": ttl_seconds})
+    def acquire_slot_for_run(
+        self,
+        *,
+        job: str,
+        slot: str,
+        owner: str,
+        running_ttl_seconds: int,
+        status_marker_ttl_seconds: int,
+        current_time_utc: datetime,
+    ) -> SchedulerSlotDecision:
+        self.calls.append(
+            {
+                "job": job,
+                "slot": slot,
+                "owner": owner,
+                "running_ttl_seconds": running_ttl_seconds,
+                "status_marker_ttl_seconds": status_marker_ttl_seconds,
+                "current_time_utc": current_time_utc,
+            }
+        )
         if self.fail:
             raise RedisError("execution slot unavailable")
-        return self.reserved
+        running_key = build_scheduler_running_key(job=job, slot=slot)
+        completed_key = build_scheduler_completed_key(job=job, slot=slot)
+        status_key = build_scheduler_status_key(job=job, slot=slot)
+        if self.acquired:
+            return SchedulerSlotDecision(
+                job=job,
+                slot=slot,
+                action=SchedulerSlotAction.ACQUIRED,
+                status=SchedulerSlotStatus.RUNNING,
+                running_key=running_key,
+                completed_key=completed_key,
+                status_key=status_key,
+                owner=owner,
+                reason="running_lock_acquired",
+                ttl_seconds=running_ttl_seconds,
+                running_value=json.dumps({"job": job, "slot": slot, "owner": owner}),
+            )
+        return SchedulerSlotDecision(
+            job=job,
+            slot=slot,
+            action=SchedulerSlotAction.SKIP,
+            status=self.skip_status,
+            running_key=running_key,
+            completed_key=completed_key,
+            status_key=status_key,
+            owner=owner,
+            reason=self.skip_reason,
+            ttl_seconds=running_ttl_seconds,
+            details={"owner": "other-owner", "created_at_utc": "2026-05-13T04:05:00Z"},
+        )
+
+    def mark_slot_completed(self, **kwargs: Any) -> None:
+        self.completed_calls.append(kwargs)
+
+    def mark_slot_status(self, **kwargs: Any) -> None:
+        self.status_calls.append(kwargs)
+
+    def release_running_lock(self, **kwargs: Any) -> bool:
+        self.release_calls.append(kwargs)
+        return True
 
 
 class FakeAlertSender:
@@ -55,11 +132,42 @@ class FakeAlertSender:
         return SimpleNamespace(status="sent")
 
 
+class FakeRedis:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.ttls: dict[str, int] = {}
+
+    def set(self, key: str, value: str, *, nx: bool = False, ex: int | None = None) -> bool:
+        if nx and key in self.values:
+            return False
+        self.values[key] = value
+        self.ttls[key] = int(ex) if ex is not None else -1
+        return True
+
+    def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    def ttl(self, key: str) -> int:
+        if key not in self.values:
+            return -2
+        return self.ttls.get(key, -1)
+
+    def eval(self, _: str, __: int, key: str, expected_value: str) -> int:
+        if self.values.get(key) != expected_value:
+            return 0
+        self.values.pop(key, None)
+        self.ttls.pop(key, None)
+        return 1
+
+
 def runtime_config(**overrides: Any) -> SchedulerRuntimeConfig:
     data = {
         "enabled": True,
         "poll_interval_seconds": 30,
-        "job_slot_ttl_seconds": 90000,
+        "running_lock_ttl_seconds": 1800,
+        "completed_marker_ttl_seconds": 259200,
+        "status_marker_ttl_seconds": 86400,
+        "slot_log_cooldown_seconds": 300,
         "kline_4h_incremental_collect_enabled": True,
         "kline_4h_incremental_collect_symbol": "BTCUSDT",
         "kline_4h_incremental_collect_interval": "4h",
@@ -79,6 +187,33 @@ def utc_at(hour: int, minute: int, second: int = 0) -> datetime:
     return datetime(2026, 5, 13, hour, minute, second, tzinfo=timezone.utc)
 
 
+def kline_success_job(calls: list[str]) -> Any:
+    def _job() -> IncrementalKlineCollectResult:
+        calls.append("09")
+        return IncrementalKlineCollectResult(
+            status=KlineCollectStatus.SUCCESS,
+            exit_code=COLLECT_EXIT_SUCCESS,
+            trace_id="collect-trace",
+            message="ok",
+        )
+
+    return _job
+
+
+def daily_healthy_job(calls: list[str]) -> Any:
+    def _job() -> DailyKlineIntegrityCheckResult:
+        calls.append("11")
+        return DailyKlineIntegrityCheckResult(
+            status=DailyKlineIntegrityStatus.HEALTHY,
+            exit_code=0,
+            trace_id="daily-trace",
+            message="ok",
+            details={"report_status": "healthy"},
+        )
+
+    return _job
+
+
 def read_files(paths: list[Path]) -> str:
     return "\n".join(path.read_text(encoding="utf-8") for path in paths)
 
@@ -87,7 +222,10 @@ def test_scheduler_runtime_config_loads_from_settings() -> None:
     settings = AppSettings(
         scheduler_enabled=False,
         scheduler_poll_interval_seconds=45,
-        scheduler_job_slot_ttl_seconds=12345,
+        scheduler_running_lock_ttl_seconds=1200,
+        scheduler_completed_marker_ttl_seconds=172800,
+        scheduler_status_marker_ttl_seconds=43200,
+        scheduler_slot_log_cooldown_seconds=600,
         kline_4h_incremental_collect_enabled=False,
         kline_4h_incremental_collect_symbol="btcusdt",
         kline_4h_incremental_collect_interval="4h",
@@ -104,7 +242,10 @@ def test_scheduler_runtime_config_loads_from_settings() -> None:
 
     assert config.enabled is False
     assert config.poll_interval_seconds == 45
-    assert config.job_slot_ttl_seconds == 12345
+    assert config.running_lock_ttl_seconds == 1200
+    assert config.completed_marker_ttl_seconds == 172800
+    assert config.status_marker_ttl_seconds == 43200
+    assert config.slot_log_cooldown_seconds == 600
     assert config.kline_4h_incremental_collect_enabled is False
     assert config.kline_4h_incremental_collect_symbol == "BTCUSDT"
     assert config.kline_4h_incremental_collect_limit == 7
@@ -145,7 +286,7 @@ def test_daily_scheduler_time_uses_only_daily_kline_integrity_utc_time() -> None
         ),
         slot_store=FakeSlotStore(),
         settings=AppSettings(),
-        daily_integrity_job=lambda: calls.append("11"),
+        daily_integrity_job=daily_healthy_job(calls),
         alert_sender=FakeAlertSender(),
     )
 
@@ -155,7 +296,7 @@ def test_daily_scheduler_time_uses_only_daily_kline_integrity_utc_time() -> None
     assert not hasattr(settings, "daily_kline_integrity_schedule_hour_utc")
     assert not hasattr(settings, "daily_kline_integrity_schedule_minute_utc")
     assert calls == ["11"]
-    assert records[0].slot_key == "scheduler:job:daily_kline_integrity:2026-05-13"
+    assert records[0].slot_key == "scheduler:running:daily_kline_integrity:2026-05-13"
 
 
 def test_legacy_daily_hour_minute_config_does_not_trigger_scheduler() -> None:
@@ -176,7 +317,7 @@ def test_legacy_daily_hour_minute_config_does_not_trigger_scheduler() -> None:
         ),
         slot_store=FakeSlotStore(),
         settings=AppSettings(),
-        daily_integrity_job=lambda: calls.append("11"),
+        daily_integrity_job=daily_healthy_job(calls),
         alert_sender=FakeAlertSender(),
     )
 
@@ -216,8 +357,8 @@ def test_09_enabled_runner_calls_09_job_after_slot_reservation() -> None:
         config=runtime_config(daily_kline_integrity_enabled=False),
         slot_store=slot_store,
         settings=AppSettings(),
-        kline_4h_job=lambda: calls.append("09"),
-        daily_integrity_job=lambda: calls.append("11"),
+        kline_4h_job=kline_success_job(calls),
+        daily_integrity_job=daily_healthy_job(calls),
         alert_sender=FakeAlertSender(),
     )
 
@@ -225,8 +366,10 @@ def test_09_enabled_runner_calls_09_job_after_slot_reservation() -> None:
 
     assert calls == ["09"]
     assert records[0].job_name == KLINE_4H_INCREMENTAL_JOB_NAME
-    assert records[0].status == "executed"
-    assert slot_store.calls[0]["key"] == "scheduler:job:kline_4h_incremental:2026-05-13T04:05Z"
+    assert records[0].status == "completed"
+    assert slot_store.calls[0]["slot"] == "2026-05-13T04:05Z"
+    assert slot_store.completed_calls[0]["completed_ttl_seconds"] == 259200
+    assert slot_store.release_calls
 
 
 def test_09_late_scheduler_start_catches_up_before_next_4h_slot() -> None:
@@ -236,26 +379,26 @@ def test_09_late_scheduler_start_catches_up_before_next_4h_slot() -> None:
         config=runtime_config(daily_kline_integrity_enabled=False),
         slot_store=slot_store,
         settings=AppSettings(),
-        kline_4h_job=lambda: calls.append("09"),
-        daily_integrity_job=lambda: calls.append("11"),
+        kline_4h_job=kline_success_job(calls),
+        daily_integrity_job=daily_healthy_job(calls),
         alert_sender=FakeAlertSender(),
     )
 
     records = runner.run_once(current_time_utc=utc_at(0, 6))
 
     assert calls == ["09"]
-    assert records[0].status == "executed"
-    assert slot_store.calls[0]["key"] == "scheduler:job:kline_4h_incremental:2026-05-13T00:05Z"
+    assert records[0].status == "completed"
+    assert slot_store.calls[0]["slot"] == "2026-05-13T00:05Z"
 
 
 def test_09_late_slot_existing_still_skips_without_duplicate_execution() -> None:
     calls: list[str] = []
-    slot_store = FakeSlotStore(reserved=False)
+    slot_store = FakeSlotStore(acquired=False)
     runner = SchedulerRunner(
         config=runtime_config(daily_kline_integrity_enabled=False),
         slot_store=slot_store,
         settings=AppSettings(),
-        kline_4h_job=lambda: calls.append("09"),
+        kline_4h_job=kline_success_job(calls),
         alert_sender=FakeAlertSender(),
     )
 
@@ -263,7 +406,8 @@ def test_09_late_slot_existing_still_skips_without_duplicate_execution() -> None
 
     assert calls == []
     assert records[0].status == "skipped"
-    assert slot_store.calls[0]["key"] == "scheduler:job:kline_4h_incremental:2026-05-13T00:05Z"
+    assert records[0].details["lock_status"] == "running"
+    assert slot_store.calls[0]["slot"] == "2026-05-13T00:05Z"
 
 
 def test_09_scheduler_uses_next_4h_slot_after_next_slot_arrives() -> None:
@@ -273,15 +417,15 @@ def test_09_scheduler_uses_next_4h_slot_after_next_slot_arrives() -> None:
         config=runtime_config(daily_kline_integrity_enabled=False),
         slot_store=slot_store,
         settings=AppSettings(),
-        kline_4h_job=lambda: calls.append("09"),
+        kline_4h_job=kline_success_job(calls),
         alert_sender=FakeAlertSender(),
     )
 
     records = runner.run_once(current_time_utc=utc_at(4, 5))
 
     assert calls == ["09"]
-    assert records[0].status == "executed"
-    assert slot_store.calls[0]["key"] == "scheduler:job:kline_4h_incremental:2026-05-13T04:05Z"
+    assert records[0].status == "completed"
+    assert slot_store.calls[0]["slot"] == "2026-05-13T04:05Z"
 
 
 def test_09_disabled_runner_does_not_run_09_job() -> None:
@@ -293,8 +437,8 @@ def test_09_disabled_runner_does_not_run_09_job() -> None:
         ),
         slot_store=FakeSlotStore(),
         settings=AppSettings(),
-        kline_4h_job=lambda: calls.append("09"),
-        daily_integrity_job=lambda: calls.append("11"),
+        kline_4h_job=kline_success_job(calls),
+        daily_integrity_job=daily_healthy_job(calls),
         alert_sender=FakeAlertSender(),
     )
 
@@ -309,8 +453,8 @@ def test_11_enabled_runner_calls_11_job_after_slot_reservation() -> None:
         config=runtime_config(kline_4h_incremental_collect_enabled=False),
         slot_store=slot_store,
         settings=AppSettings(),
-        kline_4h_job=lambda: calls.append("09"),
-        daily_integrity_job=lambda: calls.append("11"),
+        kline_4h_job=kline_success_job(calls),
+        daily_integrity_job=daily_healthy_job(calls),
         alert_sender=FakeAlertSender(),
     )
 
@@ -318,8 +462,8 @@ def test_11_enabled_runner_calls_11_job_after_slot_reservation() -> None:
 
     assert calls == ["11"]
     assert records[0].job_name == DAILY_KLINE_INTEGRITY_JOB_NAME
-    assert records[0].status == "executed"
-    assert slot_store.calls[0]["key"] == "scheduler:job:daily_kline_integrity:2026-05-13"
+    assert records[0].status == "completed"
+    assert slot_store.calls[0]["slot"] == "2026-05-13"
 
 
 def test_11_late_scheduler_start_catches_up_within_daily_window() -> None:
@@ -329,16 +473,16 @@ def test_11_late_scheduler_start_catches_up_within_daily_window() -> None:
         config=runtime_config(kline_4h_incremental_collect_enabled=False),
         slot_store=slot_store,
         settings=AppSettings(),
-        kline_4h_job=lambda: calls.append("09"),
-        daily_integrity_job=lambda: calls.append("11"),
+        kline_4h_job=kline_success_job(calls),
+        daily_integrity_job=daily_healthy_job(calls),
         alert_sender=FakeAlertSender(),
     )
 
     records = runner.run_once(current_time_utc=utc_at(0, 31))
 
     assert calls == ["11"]
-    assert records[0].status == "executed"
-    assert slot_store.calls[0]["key"] == "scheduler:job:daily_kline_integrity:2026-05-13"
+    assert records[0].status == "completed"
+    assert slot_store.calls[0]["slot"] == "2026-05-13"
 
 
 def test_11_daily_catch_up_window_expires_without_running_job() -> None:
@@ -348,8 +492,8 @@ def test_11_daily_catch_up_window_expires_without_running_job() -> None:
         config=runtime_config(kline_4h_incremental_collect_enabled=False),
         slot_store=slot_store,
         settings=AppSettings(),
-        kline_4h_job=lambda: calls.append("09"),
-        daily_integrity_job=lambda: calls.append("11"),
+        kline_4h_job=kline_success_job(calls),
+        daily_integrity_job=daily_healthy_job(calls),
         alert_sender=FakeAlertSender(),
     )
 
@@ -362,13 +506,13 @@ def test_11_daily_catch_up_window_expires_without_running_job() -> None:
 
 def test_11_late_daily_slot_existing_skips_without_duplicate_execution() -> None:
     calls: list[str] = []
-    slot_store = FakeSlotStore(reserved=False)
+    slot_store = FakeSlotStore(acquired=False, skip_status=SchedulerSlotStatus.COMPLETED, skip_reason="completed_marker_exists")
     runner = SchedulerRunner(
         config=runtime_config(kline_4h_incremental_collect_enabled=False),
         slot_store=slot_store,
         settings=AppSettings(),
-        kline_4h_job=lambda: calls.append("09"),
-        daily_integrity_job=lambda: calls.append("11"),
+        kline_4h_job=kline_success_job(calls),
+        daily_integrity_job=daily_healthy_job(calls),
         alert_sender=FakeAlertSender(),
     )
 
@@ -376,7 +520,8 @@ def test_11_late_daily_slot_existing_skips_without_duplicate_execution() -> None
 
     assert calls == []
     assert records[0].status == "skipped"
-    assert slot_store.calls[0]["key"] == "scheduler:job:daily_kline_integrity:2026-05-13"
+    assert records[0].details["lock_status"] == "completed"
+    assert slot_store.calls[0]["slot"] == "2026-05-13"
 
 
 def test_11_disabled_runner_does_not_run_11_job() -> None:
@@ -388,8 +533,8 @@ def test_11_disabled_runner_does_not_run_11_job() -> None:
         ),
         slot_store=FakeSlotStore(),
         settings=AppSettings(),
-        kline_4h_job=lambda: calls.append("09"),
-        daily_integrity_job=lambda: calls.append("11"),
+        kline_4h_job=kline_success_job(calls),
+        daily_integrity_job=daily_healthy_job(calls),
         alert_sender=FakeAlertSender(),
     )
 
@@ -454,12 +599,12 @@ def test_11_scheduler_job_passes_scheduler_trigger_and_daily_mode_to_app_service
 
 def test_redis_execution_slot_existing_skips_without_running_job() -> None:
     calls: list[str] = []
-    slot_store = FakeSlotStore(reserved=False)
+    slot_store = FakeSlotStore(acquired=False)
     runner = SchedulerRunner(
         config=runtime_config(daily_kline_integrity_enabled=False),
         slot_store=slot_store,
         settings=AppSettings(),
-        kline_4h_job=lambda: calls.append("09"),
+        kline_4h_job=kline_success_job(calls),
         alert_sender=FakeAlertSender(),
     )
 
@@ -477,13 +622,13 @@ def test_redis_execution_slot_failure_blocks_job_and_sends_system_alert() -> Non
         config=runtime_config(daily_kline_integrity_enabled=False),
         slot_store=FakeSlotStore(fail=True),
         settings=AppSettings(),
-        kline_4h_job=lambda: calls.append("09"),
+        kline_4h_job=kline_success_job(calls),
         alert_sender=alert_sender,
     )
 
     records = runner.run_once(current_time_utc=utc_at(4, 5))
 
-    assert records[0].status == "error"
+    assert records[0].status == "failed"
     assert records[0].details["slot_error"] is True
     assert calls == []
     assert len(alert_sender.calls) == 1
@@ -496,15 +641,215 @@ def test_redis_execution_slot_failure_blocks_job_and_sends_system_alert() -> Non
     assert alert_sender.calls[0]["kwargs"]["send_real_alert"] is True
 
 
+def test_completed_marker_existing_skips_without_running_job_or_reserved_log() -> None:
+    calls: list[str] = []
+    fake_redis = FakeRedis()
+    slot_store = RedisSchedulerSlotStore(redis_client=fake_redis)
+    slot_store.mark_slot_completed(
+        job=KLINE_4H_INCREMENTAL_JOB_NAME,
+        slot="2026-05-13T04:05Z",
+        owner="previous-owner",
+        completed_ttl_seconds=259200,
+        current_time_utc=utc_at(4, 6),
+    )
+    runner = SchedulerRunner(
+        config=runtime_config(daily_kline_integrity_enabled=False),
+        slot_store=slot_store,
+        settings=AppSettings(),
+        kline_4h_job=kline_success_job(calls),
+        alert_sender=FakeAlertSender(),
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(4, 7))
+
+    assert calls == []
+    assert records[0].status == "skipped"
+    assert records[0].message == "scheduler slot skipped: completed_marker_exists"
+    assert records[0].details["lock_status"] == "completed"
+    assert records[0].details["reason"] == "completed_marker_exists"
+    assert build_scheduler_running_key(job=KLINE_4H_INCREMENTAL_JOB_NAME, slot="2026-05-13T04:05Z") not in fake_redis.values
+    assert "already reserved" not in Path("app/scheduler/runner.py").read_text(encoding="utf-8")
+
+
+def test_running_lock_existing_skips_without_parallel_execution() -> None:
+    fake_redis = FakeRedis()
+    slot_store = RedisSchedulerSlotStore(redis_client=fake_redis)
+    first = slot_store.acquire_slot_for_run(
+        job=KLINE_4H_INCREMENTAL_JOB_NAME,
+        slot="2026-05-13T04:05Z",
+        owner="owner-a",
+        running_ttl_seconds=1800,
+        status_marker_ttl_seconds=86400,
+        current_time_utc=utc_at(4, 5),
+    )
+
+    second = slot_store.acquire_slot_for_run(
+        job=KLINE_4H_INCREMENTAL_JOB_NAME,
+        slot="2026-05-13T04:05Z",
+        owner="owner-b",
+        running_ttl_seconds=1800,
+        status_marker_ttl_seconds=86400,
+        current_time_utc=utc_at(4, 5, 30),
+    )
+
+    assert first.acquired is True
+    assert second.acquired is False
+    assert second.status == SchedulerSlotStatus.RUNNING
+    assert second.reason == "running_lock_active"
+    assert second.existing_lock is not None
+    assert second.existing_lock.owner == "owner-a"
+    assert build_scheduler_status_key(job=KLINE_4H_INCREMENTAL_JOB_NAME, slot="2026-05-13T04:05Z") not in fake_redis.values
+
+
+def test_stale_running_lock_is_marked_and_retried_with_json_value() -> None:
+    fake_redis = FakeRedis()
+    slot_store = RedisSchedulerSlotStore(redis_client=fake_redis)
+    running_key = build_scheduler_running_key(job=KLINE_4H_INCREMENTAL_JOB_NAME, slot="2026-05-13T04:05Z")
+    fake_redis.set(running_key, "68923051fe8c415ca387f5d8fa967150", ex=79220)
+
+    decision = slot_store.acquire_slot_for_run(
+        job=KLINE_4H_INCREMENTAL_JOB_NAME,
+        slot="2026-05-13T04:05Z",
+        owner="owner-b",
+        running_ttl_seconds=1800,
+        status_marker_ttl_seconds=86400,
+        current_time_utc=utc_at(4, 6),
+    )
+
+    status_key = build_scheduler_status_key(job=KLINE_4H_INCREMENTAL_JOB_NAME, slot="2026-05-13T04:05Z")
+    status_marker = json.loads(fake_redis.values[status_key])
+    running_value = json.loads(fake_redis.values[running_key])
+    assert decision.acquired is True
+    assert decision.action == SchedulerSlotAction.ACQUIRED_AFTER_STALE
+    assert decision.reason == "retry_after_stale_running_lock"
+    assert status_marker["status"] == "stale"
+    assert status_marker["reason"] == "running_lock_value_invalid"
+    assert running_value["job"] == KLINE_4H_INCREMENTAL_JOB_NAME
+    assert running_value["slot"] == "2026-05-13T04:05Z"
+    assert running_value["status"] == "running"
+    assert running_value["owner"] == "owner-b"
+    assert running_value["ttl_seconds"] == 1800
+    assert "token" in running_value
+    assert fake_redis.ttls[running_key] == 1800
+
+
+def test_successful_job_releases_running_lock_and_writes_completed_marker() -> None:
+    calls: list[str] = []
+    fake_redis = FakeRedis()
+    runner = SchedulerRunner(
+        config=runtime_config(daily_kline_integrity_enabled=False),
+        slot_store=RedisSchedulerSlotStore(redis_client=fake_redis),
+        settings=AppSettings(),
+        kline_4h_job=kline_success_job(calls),
+        alert_sender=FakeAlertSender(),
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(4, 5))
+
+    running_key = build_scheduler_running_key(job=KLINE_4H_INCREMENTAL_JOB_NAME, slot="2026-05-13T04:05Z")
+    completed_key = build_scheduler_completed_key(job=KLINE_4H_INCREMENTAL_JOB_NAME, slot="2026-05-13T04:05Z")
+    completed_marker = json.loads(fake_redis.values[completed_key])
+    assert calls == ["09"]
+    assert records[0].status == "completed"
+    assert records[0].details["running_lock_released"] is True
+    assert running_key not in fake_redis.values
+    assert completed_marker["status"] == "completed"
+    assert completed_marker["source"] == "scheduler"
+    assert fake_redis.ttls[completed_key] == 259200
+
+
+def test_blocked_job_releases_running_lock_and_writes_no_completed_marker() -> None:
+    def blocked_job() -> IncrementalKlineCollectResult:
+        return IncrementalKlineCollectResult(
+            status=KlineCollectStatus.BLOCKED,
+            exit_code=2,
+            trace_id="blocked-trace",
+            message="quality blocked",
+        )
+
+    fake_redis = FakeRedis()
+    runner = SchedulerRunner(
+        config=runtime_config(daily_kline_integrity_enabled=False),
+        slot_store=RedisSchedulerSlotStore(redis_client=fake_redis),
+        settings=AppSettings(),
+        kline_4h_job=blocked_job,
+        alert_sender=FakeAlertSender(),
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(4, 5))
+
+    running_key = build_scheduler_running_key(job=KLINE_4H_INCREMENTAL_JOB_NAME, slot="2026-05-13T04:05Z")
+    completed_key = build_scheduler_completed_key(job=KLINE_4H_INCREMENTAL_JOB_NAME, slot="2026-05-13T04:05Z")
+    status_key = build_scheduler_status_key(job=KLINE_4H_INCREMENTAL_JOB_NAME, slot="2026-05-13T04:05Z")
+    status_marker = json.loads(fake_redis.values[status_key])
+    assert records[0].status == "blocked"
+    assert running_key not in fake_redis.values
+    assert completed_key not in fake_redis.values
+    assert status_marker["status"] == "blocked"
+    assert status_marker["reason"] == "kline_incremental_blocked"
+    assert fake_redis.ttls[status_key] == 86400
+
+
+def test_running_slot_does_not_block_next_4h_slot_when_window_advances() -> None:
+    calls: list[str] = []
+    slot_store = FakeSlotStore(acquired=False)
+    runner = SchedulerRunner(
+        config=runtime_config(daily_kline_integrity_enabled=False),
+        slot_store=slot_store,
+        settings=AppSettings(),
+        kline_4h_job=kline_success_job(calls),
+        alert_sender=FakeAlertSender(),
+    )
+
+    first_records = runner.run_once(current_time_utc=utc_at(4, 6))
+    slot_store.acquired = True
+    second_records = runner.run_once(current_time_utc=utc_at(8, 5))
+
+    assert first_records[0].status == "skipped"
+    assert second_records[0].status == "completed"
+    assert calls == ["09"]
+    assert [call["slot"] for call in slot_store.calls] == ["2026-05-13T04:05Z", "2026-05-13T08:05Z"]
+
+
+def test_scheduler_slot_log_throttle_suppresses_repeated_reason_inside_cooldown() -> None:
+    throttle = SchedulerSlotLogThrottle(cooldown_seconds=300)
+
+    assert throttle.should_emit(
+        job=KLINE_4H_INCREMENTAL_JOB_NAME,
+        slot="2026-05-13T04:05Z",
+        reason="running_lock_active",
+        current_time_utc=utc_at(4, 5),
+    )
+    assert not throttle.should_emit(
+        job=KLINE_4H_INCREMENTAL_JOB_NAME,
+        slot="2026-05-13T04:05Z",
+        reason="running_lock_active",
+        current_time_utc=utc_at(4, 5, 30),
+    )
+    assert throttle.should_emit(
+        job=KLINE_4H_INCREMENTAL_JOB_NAME,
+        slot="2026-05-13T04:05Z",
+        reason="running_lock_active",
+        current_time_utc=utc_at(4, 10),
+    )
+    assert throttle.should_emit(
+        job=KLINE_4H_INCREMENTAL_JOB_NAME,
+        slot="2026-05-13T04:05Z",
+        reason="completed_marker_exists",
+        current_time_utc=utc_at(4, 10),
+    )
+
+
 def test_scheduler_job_wrapper_exception_sends_system_alert() -> None:
     alert_sender = FakeAlertSender()
+    slot_store = FakeSlotStore()
 
     def failing_job() -> None:
         raise RuntimeError("wrapper failed")
 
     runner = SchedulerRunner(
         config=runtime_config(daily_kline_integrity_enabled=False),
-        slot_store=FakeSlotStore(),
+        slot_store=slot_store,
         settings=AppSettings(),
         kline_4h_job=failing_job,
         alert_sender=alert_sender,
@@ -512,10 +857,13 @@ def test_scheduler_job_wrapper_exception_sends_system_alert() -> None:
 
     records = runner.run_once(current_time_utc=utc_at(4, 5))
 
-    assert records[0].status == "error"
+    assert records[0].status == "failed"
     assert records[0].details["job_wrapper_error"] is True
     assert len(alert_sender.calls) == 1
     assert alert_sender.calls[0]["event"].alert_type == AlertType.SYSTEM_ERROR
+    assert slot_store.status_calls[0]["status"] == SchedulerSlotStatus.FAILED
+    assert slot_store.completed_calls == []
+    assert slot_store.release_calls
 
 
 def test_run_scheduler_config_error_invokes_startup_system_alert_when_settings_loaded(

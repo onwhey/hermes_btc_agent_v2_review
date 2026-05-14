@@ -64,8 +64,11 @@ from app.core.constants import (
     DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_SYMBOL,
     DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_UTC_MINUTES_AFTER_CLOSE,
     DEFAULT_SCHEDULER_ENABLED,
-    DEFAULT_SCHEDULER_JOB_SLOT_TTL_SECONDS,
+    DEFAULT_SCHEDULER_COMPLETED_MARKER_TTL_SECONDS,
     DEFAULT_SCHEDULER_POLL_INTERVAL_SECONDS,
+    DEFAULT_SCHEDULER_RUNNING_LOCK_TTL_SECONDS,
+    DEFAULT_SCHEDULER_SLOT_LOG_COOLDOWN_SECONDS,
+    DEFAULT_SCHEDULER_STATUS_MARKER_TTL_SECONDS,
     DEFAULT_DAILY_KLINE_INTEGRITY_UTC_TIME,
     DEFAULT_SYMBOL,
     DEFAULT_TIMEZONE,
@@ -137,7 +140,10 @@ class AppSettings:
     price_monitor_no_event_timeout_seconds: int = DEFAULT_PRICE_MONITOR_NO_EVENT_TIMEOUT_SECONDS
     scheduler_enabled: bool = DEFAULT_SCHEDULER_ENABLED
     scheduler_poll_interval_seconds: int = DEFAULT_SCHEDULER_POLL_INTERVAL_SECONDS
-    scheduler_job_slot_ttl_seconds: int = DEFAULT_SCHEDULER_JOB_SLOT_TTL_SECONDS
+    scheduler_running_lock_ttl_seconds: int = DEFAULT_SCHEDULER_RUNNING_LOCK_TTL_SECONDS
+    scheduler_completed_marker_ttl_seconds: int = DEFAULT_SCHEDULER_COMPLETED_MARKER_TTL_SECONDS
+    scheduler_status_marker_ttl_seconds: int = DEFAULT_SCHEDULER_STATUS_MARKER_TTL_SECONDS
+    scheduler_slot_log_cooldown_seconds: int = DEFAULT_SCHEDULER_SLOT_LOG_COOLDOWN_SECONDS
     kline_4h_incremental_collect_enabled: bool = DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_ENABLED
     kline_4h_incremental_collect_symbol: str = DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_SYMBOL
     kline_4h_incremental_collect_interval: str = DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_INTERVAL
@@ -567,14 +573,41 @@ def load_settings(
             "SCHEDULER_POLL_INTERVAL_SECONDS",
             DEFAULT_SCHEDULER_POLL_INTERVAL_SECONDS,
         ),
-        scheduler_job_slot_ttl_seconds=_parse_int_config(
+        scheduler_running_lock_ttl_seconds=_parse_int_config(
             _get_config_value(
                 merged_values,
-                "SCHEDULER_JOB_SLOT_TTL_SECONDS",
-                str(DEFAULT_SCHEDULER_JOB_SLOT_TTL_SECONDS),
+                "SCHEDULER_RUNNING_LOCK_TTL_SECONDS",
+                str(DEFAULT_SCHEDULER_RUNNING_LOCK_TTL_SECONDS),
             ),
-            "SCHEDULER_JOB_SLOT_TTL_SECONDS",
-            DEFAULT_SCHEDULER_JOB_SLOT_TTL_SECONDS,
+            "SCHEDULER_RUNNING_LOCK_TTL_SECONDS",
+            DEFAULT_SCHEDULER_RUNNING_LOCK_TTL_SECONDS,
+        ),
+        scheduler_completed_marker_ttl_seconds=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "SCHEDULER_COMPLETED_MARKER_TTL_SECONDS",
+                str(DEFAULT_SCHEDULER_COMPLETED_MARKER_TTL_SECONDS),
+            ),
+            "SCHEDULER_COMPLETED_MARKER_TTL_SECONDS",
+            DEFAULT_SCHEDULER_COMPLETED_MARKER_TTL_SECONDS,
+        ),
+        scheduler_status_marker_ttl_seconds=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "SCHEDULER_STATUS_MARKER_TTL_SECONDS",
+                str(DEFAULT_SCHEDULER_STATUS_MARKER_TTL_SECONDS),
+            ),
+            "SCHEDULER_STATUS_MARKER_TTL_SECONDS",
+            DEFAULT_SCHEDULER_STATUS_MARKER_TTL_SECONDS,
+        ),
+        scheduler_slot_log_cooldown_seconds=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "SCHEDULER_SLOT_LOG_COOLDOWN_SECONDS",
+                str(DEFAULT_SCHEDULER_SLOT_LOG_COOLDOWN_SECONDS),
+            ),
+            "SCHEDULER_SLOT_LOG_COOLDOWN_SECONDS",
+            DEFAULT_SCHEDULER_SLOT_LOG_COOLDOWN_SECONDS,
         ),
         kline_4h_incremental_collect_enabled=_parse_optional_bool_config(
             _get_config_value(
