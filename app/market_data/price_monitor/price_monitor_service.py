@@ -432,14 +432,14 @@ class PriceMonitorService:
             alert_status=alert_result.status.value,
             details=details,
         )
-        if alert_result.status != AlertSendStatus.SENT:
+        if alert_result.status != AlertSendStatus.SUBMITTED_TO_HERMES:
             LOGGER.error(
-                "Price movement alert delivery failed trace_id=%s status=%s error=%s",
+                "Price movement alert submission to Hermes failed trace_id=%s status=%s error=%s",
                 config.trace_id,
                 alert_result.status.value,
                 alert_result.error_message,
             )
-            return replace(result, exit_code=EXIT_ALERT_FAILED, message="price movement alert delivery failed")
+            return replace(result, exit_code=EXIT_ALERT_FAILED, message="price movement alert submission failed")
         return result
 
     def _handle_no_recent_price(self, config: PriceMonitorConfig, reason: str) -> PriceMonitorResult:
@@ -462,7 +462,7 @@ class PriceMonitorService:
         )
         alert_status = alert_result.status.value
         details["alert_suppressed_by_cooldown"] = suppressed
-        if not suppressed and alert_result.status != AlertSendStatus.SENT:
+        if not suppressed and alert_result.status != AlertSendStatus.SUBMITTED_TO_HERMES:
             exit_code = EXIT_ALERT_FAILED
         return PriceMonitorResult(
             status=PriceMonitorStatus.NO_RECENT_PRICE,
@@ -491,7 +491,7 @@ class PriceMonitorService:
         )
         exit_code = (
             EXIT_ALERT_FAILED
-            if not suppressed and alert_result.status != AlertSendStatus.SENT
+            if not suppressed and alert_result.status != AlertSendStatus.SUBMITTED_TO_HERMES
             else EXIT_RUNTIME_ERROR
         )
         return PriceMonitorResult(
@@ -525,7 +525,7 @@ class PriceMonitorService:
         runtime, no-recent-price, and price-change alerts do not suppress each
         other.
         Return value: `(AlertSendResult, suppressed_by_cooldown)`.
-        Failure scenarios: alert delivery failures are represented by
+        Failure scenarios: alert submission failures are represented by
         `AlertSendResult`; cooldown suppression is explicit and not treated as a
         Hermes failure.
         External service access: calls Hermes only when cooldown allows it.

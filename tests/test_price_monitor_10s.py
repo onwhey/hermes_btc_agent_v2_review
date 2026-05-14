@@ -61,7 +61,7 @@ class FakeRedis:
 
 class FakeAlertSender:
     def __init__(self, result: AlertSendResult | None = None) -> None:
-        self.result = result or AlertSendResult(status=AlertSendStatus.SENT)
+        self.result = result or AlertSendResult(status=AlertSendStatus.SUBMITTED_TO_HERMES)
         self.calls: list[dict[str, Any]] = []
 
     def __call__(self, event: Any, **kwargs: Any) -> AlertSendResult:

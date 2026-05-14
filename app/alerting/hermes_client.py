@@ -21,6 +21,8 @@ from typing import Callable, Mapping, Sequence
 from app.alerting.sanitizer import REDACTED_TEXT, sanitize_mapping, sanitize_text
 from app.alerting.types import (
     AlertEvent,
+    AlertFinalDeliveryStatus,
+    AlertGatewayStatus,
     AlertSendResult,
     AlertSendStatus,
     HermesRequest,
@@ -33,6 +35,10 @@ from app.core.time_utils import now_utc
 
 HERMES_SIGNATURE_HEADER = "X-Webhook-Signature"
 HERMES_EVENT_TYPE = "hermes_btc_agent.alert"
+FINAL_DELIVERY_UNKNOWN_NOTE = (
+    "Hermes webhook status only describes BTC Agent submission to the Hermes gateway; "
+    "BTC Agent does not know final Weixin/iLink delivery."
+)
 
 
 @dataclass(frozen=True)
@@ -168,7 +174,7 @@ class HermesClient:
 
     参数：`settings` 提供 Hermes 配置；`http_post` 可注入 mock 传输函数。
     返回值：client 实例。
-    失败场景：真实发送时可能因配置缺失、超时、网络失败或 HTTP 非 2xx 返回 failed。
+    失败场景：真实发送时可能因配置缺失、超时、网络失败或 HTTP 非 2xx 返回 submit_failed 或 gateway_rejected。
     外部服务：只有 `send_alert_message(..., send_real_alert=True)` 且配置允许时才访问 Hermes。
     数据影响：不读写 MySQL，不读写 Redis，不保存 channel_response。
     本类不负责模板生成、报警入库、DeepSeek 调用或自动交易。
@@ -208,13 +214,22 @@ class HermesClient:
         return AlertSendResult(
             status=AlertSendStatus.SKIPPED,
             message=reason,
-            channel_response={"reason": sanitize_text(reason)},
+            gateway_status=AlertGatewayStatus.NOT_ATTEMPTED,
+            final_delivery_status=AlertFinalDeliveryStatus.UNKNOWN,
+            channel_response={
+                "gateway_status": AlertGatewayStatus.NOT_ATTEMPTED.value,
+                "final_delivery_status": AlertFinalDeliveryStatus.UNKNOWN.value,
+                "delivery_note": FINAL_DELIVERY_UNKNOWN_NOTE,
+                "reason": sanitize_text(reason),
+            },
             attempted_real_send=False,
         )
 
     def _failed_result(
         self,
         *,
+        status: AlertSendStatus = AlertSendStatus.SUBMIT_FAILED,
+        gateway_status: AlertGatewayStatus = AlertGatewayStatus.SUBMIT_FAILED,
         error_message: str,
         retry_count: int,
         http_status_code: int | None = None,
@@ -225,17 +240,29 @@ class HermesClient:
             error_message,
             (self._settings.hermes_webhook_url, self._settings.hermes_secret),
         )
-        response_payload = {}
+        response_payload: dict[str, object] = {
+            "gateway_status": gateway_status.value,
+            "final_delivery_status": AlertFinalDeliveryStatus.UNKNOWN.value,
+            "delivery_note": FINAL_DELIVERY_UNKNOWN_NOTE,
+        }
         if response is not None:
-            response_payload = {
-                "status_code": response.status_code,
-                "body": response.body,
-                "headers": response.headers,
-            }
+            response_payload.update(
+                {
+                    "status_code": response.status_code,
+                    "body": response.body,
+                    "headers": response.headers,
+                }
+            )
         return AlertSendResult(
-            status=AlertSendStatus.FAILED,
-            message="Hermes 发送失败",
+            status=status,
+            message=(
+                "Hermes gateway rejected alert submission; final delivery unknown"
+                if status == AlertSendStatus.GATEWAY_REJECTED
+                else "Hermes alert submission failed; final delivery unknown"
+            ),
             http_status_code=http_status_code,
+            gateway_status=gateway_status,
+            final_delivery_status=AlertFinalDeliveryStatus.UNKNOWN,
             channel_response=sanitize_mapping(
                 response_payload,
                 (self._settings.hermes_webhook_url, self._settings.hermes_secret),
@@ -256,7 +283,7 @@ class HermesClient:
 
         参数：`event` 是报警事件；`message` 是固定模板文案；
         `send_real_alert` 必须显式为 True 才允许真实发送。
-        返回值：`AlertSendResult`，包含 sent/failed/skipped 状态和脱敏响应。
+        返回值：`AlertSendResult`，包含提交 Hermes 的状态、最终送达 unknown 和脱敏响应。
         失败场景：配置未启用、dry-run、webhook 缺失、网络失败或 HTTP 非 2xx。
         外部服务：只有真实发送条件全部满足时才访问 Hermes。
         数据影响：不读写 MySQL，不读写 Redis，不保存 channel_response。
@@ -320,18 +347,31 @@ class HermesClient:
                 )
                 last_response = sanitized_response
                 if 200 <= response.status_code < 300:
+                    submitted_at_utc = now_utc()
+                    self._logger.info(
+                        "Hermes gateway accepted alert submission; final_delivery_status=unknown "
+                        "trace_id=%s alert_type=%s http_status=%s",
+                        event.trace_id,
+                        event.alert_type.value,
+                        response.status_code,
+                    )
                     return AlertSendResult(
-                        status=AlertSendStatus.SENT,
-                        message="Hermes 发送成功",
+                        status=AlertSendStatus.SUBMITTED_TO_HERMES,
+                        message="Submitted to Hermes gateway; final Weixin/iLink delivery unknown",
                         http_status_code=response.status_code,
+                        gateway_status=AlertGatewayStatus.GATEWAY_ACCEPTED,
+                        final_delivery_status=AlertFinalDeliveryStatus.UNKNOWN,
                         channel_response={
+                            "gateway_status": AlertGatewayStatus.GATEWAY_ACCEPTED.value,
+                            "final_delivery_status": AlertFinalDeliveryStatus.UNKNOWN.value,
+                            "delivery_note": FINAL_DELIVERY_UNKNOWN_NOTE,
                             "status_code": sanitized_response.status_code,
                             "body": sanitized_response.body,
                             "headers": sanitized_response.headers,
                         },
                         retry_count=attempt_index,
                         attempted_real_send=True,
-                        sent_at_utc=now_utc(),
+                        submitted_at_utc=submitted_at_utc,
                     )
             except Exception as exc:  # noqa: BLE001 - 需要把底层网络异常转换为脱敏失败结果。
                 error_message = sanitize_text(
@@ -339,15 +379,36 @@ class HermesClient:
                     (self._settings.hermes_webhook_url, self._settings.hermes_secret),
                 )
                 if attempt_index >= max_retries:
+                    self._logger.warning(
+                        "Hermes alert submission failed; final_delivery_status=unknown "
+                        "trace_id=%s alert_type=%s error=%s",
+                        event.trace_id,
+                        event.alert_type.value,
+                        error_message,
+                    )
                     return self._failed_result(
+                        status=AlertSendStatus.SUBMIT_FAILED,
+                        gateway_status=AlertGatewayStatus.SUBMIT_FAILED,
                         error_message=error_message,
                         retry_count=attempt_index,
                     )
             if attempt_index < max_retries:
                 time.sleep(0)
 
+        self._logger.warning(
+            "Hermes gateway rejected alert submission; final_delivery_status=unknown "
+            "trace_id=%s alert_type=%s http_status=%s",
+            event.trace_id,
+            event.alert_type.value,
+            last_response.status_code if last_response else REDACTED_TEXT,
+        )
         return self._failed_result(
-            error_message=f"Hermes 返回非 2xx 状态：{last_response.status_code if last_response else REDACTED_TEXT}",
+            status=AlertSendStatus.GATEWAY_REJECTED,
+            gateway_status=AlertGatewayStatus.GATEWAY_REJECTED,
+            error_message=(
+                "Hermes gateway rejected alert submission with HTTP "
+                f"{last_response.status_code if last_response else REDACTED_TEXT}"
+            ),
             retry_count=max_retries,
             http_status_code=last_response.status_code if last_response else None,
             response=last_response,

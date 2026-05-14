@@ -176,9 +176,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     send_real_alert=True,
                     db_session=db_session,
                 )
-                if _alert_delivery_failed(alert_result):
+                if _alert_submission_failed(alert_result):
                     LOGGER.error(
-                        "Kline quality task failure alert delivery failed: status=%s error=%s",
+                        "Kline quality task failure alert submission to Hermes failed: status=%s error=%s",
                         alert_result.status.value,
                         alert_result.error_message,
                     )
@@ -192,22 +192,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     for line in format_quality_report_lines(report):
         print(line)
-    if _alert_delivery_failed(alert_result):
+    if _alert_submission_failed(alert_result):
         LOGGER.error(
-            "Kline quality alert delivery failed: status=%s error=%s",
+            "Kline quality alert submission to Hermes failed: status=%s error=%s",
             alert_result.status.value,
             alert_result.error_message,
         )
         print(
-            "quality_alert_delivery=failed "
+            "quality_alert_submission=failed "
             f"status={alert_result.status.value} error={alert_result.error_message}"
         )
         return 3
     return 0 if report.passed else 2
 
 
-def _alert_delivery_failed(result: AlertSendResult | None) -> bool:
-    return result is not None and result.status != AlertSendStatus.SENT
+def _alert_submission_failed(result: AlertSendResult | None) -> bool:
+    return result is not None and result.status != AlertSendStatus.SUBMITTED_TO_HERMES
 
 
 if __name__ == "__main__":

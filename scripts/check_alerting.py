@@ -99,7 +99,7 @@ def collect_alerting_errors(
         send_real_alert=send_real_alert,
     )
 
-    if send_real_alert and result.status != AlertSendStatus.SENT:
+    if send_real_alert and result.status != AlertSendStatus.SUBMITTED_TO_HERMES:
         errors.append(f"真实 Hermes 测试报警失败：{result.error_message or result.message}")
     if not send_real_alert and result.attempted_real_send:
         errors.append("dry-run 模式不应尝试真实 Hermes 发送")
@@ -161,4 +161,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

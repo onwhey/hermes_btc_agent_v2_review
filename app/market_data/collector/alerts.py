@@ -48,9 +48,9 @@ def send_collect_failure_alert_and_adjust_exit_code(
         success=False,
     )
     _commit_if_possible(db_session)
-    if alert_result.status != AlertSendStatus.SENT:
+    if alert_result.status != AlertSendStatus.SUBMITTED_TO_HERMES:
         LOGGER.error(
-            "Incremental collector failure alert delivery failed trace_id=%s status=%s error=%s",
+            "Incremental collector failure alert submission to Hermes failed trace_id=%s status=%s error=%s",
             request.trace_id,
             alert_result.status.value,
             alert_result.error_message,
@@ -79,7 +79,7 @@ def send_collect_success_alert_and_adjust_exit_code(
         success=True,
     )
     _commit_if_possible(db_session)
-    if alert_result.status != AlertSendStatus.SENT:
+    if alert_result.status != AlertSendStatus.SUBMITTED_TO_HERMES:
         return _replace_result_alert(result, alert_result, exit_code=EXIT_ALERT_FAILED)
     return _replace_result_alert(result, alert_result)
 
@@ -197,4 +197,3 @@ def _default_alert_sender() -> Any:
     from app.alerting.service import send_alert
 
     return send_alert
-

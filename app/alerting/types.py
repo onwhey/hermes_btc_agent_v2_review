@@ -73,9 +73,38 @@ class AlertSendStatus(str, Enum):
     """
 
     PENDING = "pending"
-    SENT = "sent"
-    FAILED = "failed"
+    SUBMITTED_TO_HERMES = "submitted_to_hermes"
+    GATEWAY_REJECTED = "gateway_rejected"
+    SUBMIT_FAILED = "submit_failed"
     SKIPPED = "skipped"
+
+
+class AlertGatewayStatus(str, Enum):
+    """Hermes gateway submission status.
+
+    This status describes only the BTC Agent -> Hermes gateway boundary.
+    It never claims that Weixin/iLink or any other target channel delivered
+    the alert to the final recipient.
+    """
+
+    NOT_ATTEMPTED = "not_attempted"
+    GATEWAY_ACCEPTED = "gateway_accepted"
+    GATEWAY_REJECTED = "gateway_rejected"
+    SUBMIT_FAILED = "submit_failed"
+
+
+class AlertFinalDeliveryStatus(str, Enum):
+    """Final target-channel delivery status as known by BTC Agent.
+
+    The current Hermes webhook integration does not synchronously return the
+    final Weixin/iLink delivery outcome, so production code must use UNKNOWN.
+    DELIVERED and DELIVERY_FAILED are reserved for a future explicit Hermes
+    delivery-result contract.
+    """
+
+    UNKNOWN = "unknown"
+    DELIVERED = "delivered"
+    DELIVERY_FAILED = "delivery_failed"
 
 
 def coerce_alert_type(value: AlertType | str) -> AlertType:
@@ -183,10 +212,11 @@ class HermesResponse:
 class AlertSendResult:
     """报警发送结果。
 
-    参数：`status` 是 sent/failed/skipped；`channel_response` 是脱敏后的响应摘要；
+    参数：`status` 是提交 Hermes 的状态，不表示微信/iLink 最终送达；
+    `channel_response` 是脱敏后的响应摘要；
     `attempted_real_send` 标识是否真的尝试访问 Hermes。
     返回值：不可变结果对象。
-    失败场景：由 service 或 client 根据失败原因构造 failed 结果。
+    失败场景：由 service 或 client 根据失败原因构造 submit_failed 或 gateway_rejected 结果。
     外部服务：本对象不访问外部服务。
     数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
     本对象不表示交易建议或交易执行结果。
@@ -196,9 +226,21 @@ class AlertSendResult:
     channel: str = "hermes"
     message: str = ""
     http_status_code: int | None = None
+    gateway_status: AlertGatewayStatus = AlertGatewayStatus.NOT_ATTEMPTED
+    final_delivery_status: AlertFinalDeliveryStatus = AlertFinalDeliveryStatus.UNKNOWN
     channel_response: Mapping[str, object] = field(default_factory=dict)
     error_message: str = ""
     retry_count: int = 0
     attempted_real_send: bool = False
-    sent_at_utc: datetime | None = None
+    submitted_at_utc: datetime | None = None
 
+    def __post_init__(self) -> None:
+        if self.gateway_status != AlertGatewayStatus.NOT_ATTEMPTED:
+            return
+        inferred_gateway_status = {
+            AlertSendStatus.SUBMITTED_TO_HERMES: AlertGatewayStatus.GATEWAY_ACCEPTED,
+            AlertSendStatus.GATEWAY_REJECTED: AlertGatewayStatus.GATEWAY_REJECTED,
+            AlertSendStatus.SUBMIT_FAILED: AlertGatewayStatus.SUBMIT_FAILED,
+        }.get(self.status)
+        if inferred_gateway_status is not None:
+            object.__setattr__(self, "gateway_status", inferred_gateway_status)

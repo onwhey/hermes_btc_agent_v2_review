@@ -475,7 +475,7 @@ def test_daily_data_quality_check_write_failure_is_not_silent_and_alerts() -> No
 
 def test_daily_success_hermes_failure_keeps_check_fact_but_returns_alert_failed() -> None:
     failed_alert = FakeAlertSender(
-        AlertSendResult(status=AlertSendStatus.FAILED, error_message="Hermes unavailable")
+        AlertSendResult(status=AlertSendStatus.SUBMIT_FAILED, error_message="Hermes unavailable")
     )
 
     result, _repository, quality_repository, alert_sender, _session, _client = run_daily_with_fakes(
@@ -486,7 +486,7 @@ def test_daily_success_hermes_failure_keeps_check_fact_but_returns_alert_failed(
 
     assert result.status == DailyKlineIntegrityStatus.HEALTHY
     assert result.exit_code == EXIT_ALERT_FAILED
-    assert result.alert_status == AlertSendStatus.FAILED.value
+    assert result.alert_status == AlertSendStatus.SUBMIT_FAILED.value
     assert quality_repository.records[0].report.status.value == "passed"
     assert_single_daily_notification(alert_sender, "healthy")
 

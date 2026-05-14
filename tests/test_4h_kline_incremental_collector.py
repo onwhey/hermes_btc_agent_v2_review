@@ -291,9 +291,9 @@ def test_incremental_success_notify_success_flag_controls_success_alert() -> Non
     assert alert_sender.calls[0]["event"].severity.value == "info"
 
 
-def test_incremental_hermes_delivery_failure_returns_alert_failed_exit_code() -> None:
+def test_incremental_hermes_submission_failure_returns_alert_failed_exit_code() -> None:
     failed_alert = FakeAlertSender(
-        AlertSendResult(status=AlertSendStatus.FAILED, error_message="Hermes unavailable")
+        AlertSendResult(status=AlertSendStatus.SUBMIT_FAILED, error_message="Hermes unavailable")
     )
 
     result, _repo, _lock, _alert, _quality_repo, _session, _client = run_collect_with_fakes(
@@ -304,7 +304,7 @@ def test_incremental_hermes_delivery_failure_returns_alert_failed_exit_code() ->
 
     assert result.status == KlineCollectStatus.BLOCKED
     assert result.exit_code == EXIT_ALERT_FAILED
-    assert result.alert_status == AlertSendStatus.FAILED.value
+    assert result.alert_status == AlertSendStatus.SUBMIT_FAILED.value
 
 
 def test_incremental_cli_allows_only_cli_trigger_and_no_send_alert() -> None:
