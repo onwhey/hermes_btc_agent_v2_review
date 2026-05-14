@@ -519,38 +519,51 @@ SCHEDULER_POLL_INTERVAL_SECONDS=30
 
 含义是 scheduler 每 30 秒醒来一次，检查是否有任务到期。
 
-### 9.3 Redis 执行槽去重
+### 9.3 Redis slot 状态去重
 
-为了避免进程重启、多实例误启动、同一分钟重复扫描导致重复执行，scheduler 应使用 Redis 执行槽 key 做任务时间窗口去重。
+为了避免进程重启、多实例误启动、同一分钟重复扫描导致重复执行，scheduler 应使用 Redis slot state 做任务时间窗口去重。
+slot state 必须区分 running lock、completed marker 和 failed / skipped / blocked / stale / expired 状态。
 
-09 执行槽按 4h 收盘后延迟时间生成，例如：
-
-```text
-scheduler:job:kline_4h_incremental:2026-05-13T04:05Z
-```
-
-11 执行槽按 UTC 日期生成，例如：
+09 slot id 按 4h 收盘后延迟时间生成，例如：
 
 ```text
-scheduler:job:daily_kline_integrity:2026-05-13
+2026-05-13T04:05Z
 ```
 
-执行前先尝试写入 Redis 执行槽：
+11 slot id 按 UTC 日期生成，例如：
 
 ```text
-如果 key 不存在：设置成功，执行任务
-如果 key 已存在：说明这个时间槽已执行或正在执行，跳过
+2026-05-13
 ```
 
-执行槽应设置合理 TTL，避免 Redis 长期堆积历史 key。
+Redis key 分为：
+
+```text
+scheduler:running:<job>:<slot>
+scheduler:completed:<job>:<slot>
+scheduler:status:<job>:<slot>
+```
+
+执行前先检查 completed marker，再尝试写入 running lock：
+
+```text
+completed marker 已存在：说明 slot 已成功处理，跳过
+running lock 设置成功：允许执行任务
+running lock 正常存在：说明其他执行者正在运行，本轮跳过
+running lock 异常或过期：标记 stale / expired，并按实现规则安全处理
+failed / skipped / blocked status marker 存在：TTL 内不自动重复执行同一 slot
+```
+
+slot state 应设置合理 TTL，避免 Redis 长期堆积历史 key。
 
 建议：
 
-1. 09 执行槽 TTL 至少覆盖一个 4h 周期以上。
-2. 11 执行槽 TTL 至少覆盖 24 小时以上。
-3. TTL 具体值可配置或由代码按任务类型给出稳定默认值。
+1. running lock 使用短 TTL，避免任务异常退出后长期卡住。
+2. completed marker 可使用较长 TTL，防止补跑机制重复执行已完成 slot。
+3. failed / skipped / blocked status marker 应有 TTL，并明确 TTL 内不自动重复执行。
+4. TTL 具体值可配置或由代码按任务类型给出稳定默认值。
 
-如果 Redis 异常导致无法判断执行槽，scheduler 不应盲目执行任务，应记录日志并发送 Hermes 固定模板系统异常通知。
+如果 Redis 异常导致无法判断 slot state，scheduler 不应盲目执行任务，应记录日志并发送 Hermes 固定模板系统异常通知。
 
 ### 9.4 为什么本阶段不引入复杂调度库
 
@@ -561,7 +574,7 @@ scheduler:job:daily_kline_integrity:2026-05-13
 11：每天一次
 ```
 
-本阶段优先使用简单 sleep 循环 + Redis 执行槽去重 + systemd 自动重启。
+本阶段优先使用简单 sleep 循环 + Redis slot state 去重 + systemd 自动重启。
 
 暂不引入 APScheduler（Python 调度库）等复杂调度库，原因：
 
@@ -767,22 +780,19 @@ PRICE_MONITOR_ENABLE_PRICE_ALERTS=true
 
 但该配置只控制 10 的价格波动提醒，不得控制系统异常通知，不得控制 07 / 08 / 09 / 11 的 K线质量通知。
 
-### 13.5 Redis 执行槽配置
+### 13.5 Redis slot state 配置
 
 允许新增：
 
 ```env
-SCHEDULER_JOB_SLOT_TTL_SECONDS=90000
+SCHEDULER_RUNNING_LOCK_TTL_SECONDS=1800
+SCHEDULER_COMPLETED_MARKER_TTL_SECONDS=259200
+SCHEDULER_STATUS_MARKER_TTL_SECONDS=86400
+SCHEDULER_SLOT_LOG_COOLDOWN_SECONDS=300
 ```
 
-如果需要更细粒度，也可以拆分：
-
-```env
-SCHEDULER_KLINE_4H_JOB_SLOT_TTL_SECONDS=18000
-SCHEDULER_DAILY_INTEGRITY_JOB_SLOT_TTL_SECONDS=90000
-```
-
-但优先保持配置简单。没有明确必要时，不要过度拆分。
+不再使用单一 job slot TTL 表达 running 和 completed 两种含义。
+running lock、completed marker、status marker 和日志冷却应分别配置或使用稳定默认值。
 
 ### 13.6 禁止配置
 

@@ -29,7 +29,10 @@ class SchedulerRuntimeConfig:
 
     enabled: bool
     poll_interval_seconds: int
-    job_slot_ttl_seconds: int
+    running_lock_ttl_seconds: int
+    completed_marker_ttl_seconds: int
+    status_marker_ttl_seconds: int
+    slot_log_cooldown_seconds: int
     kline_4h_incremental_collect_enabled: bool
     kline_4h_incremental_collect_symbol: str
     kline_4h_incremental_collect_interval: str
@@ -57,7 +60,10 @@ def build_scheduler_runtime_config(
     config = SchedulerRuntimeConfig(
         enabled=active_settings.scheduler_enabled,
         poll_interval_seconds=active_settings.scheduler_poll_interval_seconds,
-        job_slot_ttl_seconds=active_settings.scheduler_job_slot_ttl_seconds,
+        running_lock_ttl_seconds=active_settings.scheduler_running_lock_ttl_seconds,
+        completed_marker_ttl_seconds=active_settings.scheduler_completed_marker_ttl_seconds,
+        status_marker_ttl_seconds=active_settings.scheduler_status_marker_ttl_seconds,
+        slot_log_cooldown_seconds=active_settings.scheduler_slot_log_cooldown_seconds,
         kline_4h_incremental_collect_enabled=active_settings.kline_4h_incremental_collect_enabled,
         kline_4h_incremental_collect_symbol=active_settings.kline_4h_incremental_collect_symbol.strip().upper(),
         kline_4h_incremental_collect_interval=active_settings.kline_4h_incremental_collect_interval,
@@ -89,8 +95,14 @@ def validate_scheduler_runtime_config(config: SchedulerRuntimeConfig) -> None:
 
     if config.poll_interval_seconds <= 0:
         raise ConfigError("SCHEDULER_POLL_INTERVAL_SECONDS 必须大于 0")
-    if config.job_slot_ttl_seconds <= 0:
-        raise ConfigError("SCHEDULER_JOB_SLOT_TTL_SECONDS 必须大于 0")
+    if config.running_lock_ttl_seconds <= 0:
+        raise ConfigError("SCHEDULER_RUNNING_LOCK_TTL_SECONDS 必须大于 0")
+    if config.completed_marker_ttl_seconds <= 0:
+        raise ConfigError("SCHEDULER_COMPLETED_MARKER_TTL_SECONDS 必须大于 0")
+    if config.status_marker_ttl_seconds <= 0:
+        raise ConfigError("SCHEDULER_STATUS_MARKER_TTL_SECONDS 必须大于 0")
+    if config.slot_log_cooldown_seconds < 0:
+        raise ConfigError("SCHEDULER_SLOT_LOG_COOLDOWN_SECONDS 必须大于或等于 0")
     if not config.kline_4h_incremental_collect_symbol:
         raise ConfigError("KLINE_4H_INCREMENTAL_COLLECT_SYMBOL 不能为空")
     if config.kline_4h_incremental_collect_interval != KLINE_4H_INTERVAL_VALUE:
