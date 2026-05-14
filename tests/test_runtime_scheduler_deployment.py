@@ -24,6 +24,7 @@ from app.market_data.kline_integrity.types import (
 )
 from app.market_data.kline_quality.types import CHECK_TRIGGER_SOURCE_SCHEDULER
 from app.scheduler.config import SchedulerRuntimeConfig, build_scheduler_runtime_config
+from app.scheduler.execution_slot import SchedulerExecutionSlotStore
 from app.scheduler.slot_state import (
     DAILY_KLINE_INTEGRITY_JOB_NAME,
     KLINE_4H_INCREMENTAL_JOB_NAME,
@@ -47,11 +48,13 @@ class FakeSlotStore:
         *,
         acquired: bool = True,
         fail: bool = False,
+        fail_completed_marker: bool = False,
         skip_status: SchedulerSlotStatus = SchedulerSlotStatus.RUNNING,
         skip_reason: str = "running_lock_active",
     ) -> None:
         self.acquired = acquired
         self.fail = fail
+        self.fail_completed_marker = fail_completed_marker
         self.skip_status = skip_status
         self.skip_reason = skip_reason
         self.calls: list[dict[str, Any]] = []
@@ -113,6 +116,8 @@ class FakeSlotStore:
         )
 
     def mark_slot_completed(self, **kwargs: Any) -> None:
+        if self.fail_completed_marker:
+            raise RedisError("completed marker unavailable")
         self.completed_calls.append(kwargs)
 
     def mark_slot_status(self, **kwargs: Any) -> None:
@@ -790,6 +795,92 @@ def test_blocked_job_releases_running_lock_and_writes_no_completed_marker() -> N
     assert fake_redis.ttls[status_key] == 86400
 
 
+def test_failed_and_skipped_jobs_write_status_marker_and_no_completed_marker() -> None:
+    cases = [
+        (KlineCollectStatus.FAILED, 4, SchedulerSlotStatus.FAILED, "kline_incremental_failed"),
+        (KlineCollectStatus.SKIPPED, 0, SchedulerSlotStatus.SKIPPED, "kline_incremental_skipped"),
+    ]
+    for result_status, exit_code, expected_status, expected_reason in cases:
+        def terminal_job(
+            status: KlineCollectStatus = result_status,
+            code: int = exit_code,
+        ) -> IncrementalKlineCollectResult:
+            return IncrementalKlineCollectResult(
+                status=status,
+                exit_code=code,
+                trace_id=f"{status.value}-trace",
+                message=status.value,
+            )
+
+        fake_redis = FakeRedis()
+        runner = SchedulerRunner(
+            config=runtime_config(daily_kline_integrity_enabled=False),
+            slot_store=RedisSchedulerSlotStore(redis_client=fake_redis),
+            settings=AppSettings(),
+            kline_4h_job=terminal_job,
+            alert_sender=FakeAlertSender(),
+        )
+
+        records = runner.run_once(current_time_utc=utc_at(4, 5))
+
+        completed_key = build_scheduler_completed_key(job=KLINE_4H_INCREMENTAL_JOB_NAME, slot="2026-05-13T04:05Z")
+        status_key = build_scheduler_status_key(job=KLINE_4H_INCREMENTAL_JOB_NAME, slot="2026-05-13T04:05Z")
+        status_marker = json.loads(fake_redis.values[status_key])
+        assert records[0].status == expected_status.value
+        assert completed_key not in fake_redis.values
+        assert status_marker["status"] == expected_status.value
+        assert status_marker["reason"] == expected_reason
+        assert fake_redis.ttls[status_key] == 86400
+
+
+def test_completed_marker_write_failure_returns_failed_and_sends_scheduler_alert() -> None:
+    calls: list[str] = []
+    alert_sender = FakeAlertSender()
+    slot_store = FakeSlotStore(fail_completed_marker=True)
+    runner = SchedulerRunner(
+        config=runtime_config(daily_kline_integrity_enabled=False),
+        slot_store=slot_store,
+        settings=AppSettings(),
+        kline_4h_job=kline_success_job(calls),
+        alert_sender=alert_sender,
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(4, 5))
+
+    assert calls == ["09"]
+    assert records[0].status == "failed"
+    assert records[0].details["terminal_reason"] == "completed_marker_write_failed"
+    assert len(alert_sender.calls) == 1
+    assert alert_sender.calls[0]["event"].alert_type == AlertType.SYSTEM_ERROR
+    assert alert_sender.calls[0]["event"].details["scheduler_job"] == KLINE_4H_INCREMENTAL_JOB_NAME
+    assert slot_store.status_calls[0]["status"] == SchedulerSlotStatus.FAILED
+    assert slot_store.status_calls[0]["reason"] == "completed_marker_write_failed"
+    assert slot_store.release_calls
+
+
+def test_release_running_lock_only_deletes_matching_owned_value() -> None:
+    fake_redis = FakeRedis()
+    slot_store = RedisSchedulerSlotStore(redis_client=fake_redis)
+    decision = slot_store.acquire_slot_for_run(
+        job=KLINE_4H_INCREMENTAL_JOB_NAME,
+        slot="2026-05-13T04:05Z",
+        owner="owner-a",
+        running_ttl_seconds=1800,
+        status_marker_ttl_seconds=86400,
+        current_time_utc=utc_at(4, 5),
+    )
+    other_value = json.dumps({"job": KLINE_4H_INCREMENTAL_JOB_NAME, "slot": "2026-05-13T04:05Z", "owner": "owner-b"})
+    fake_redis.set(decision.running_key, other_value, ex=1800)
+
+    released = slot_store.release_running_lock(
+        running_key=decision.running_key,
+        running_value=decision.running_value or "",
+    )
+
+    assert released is False
+    assert fake_redis.values[decision.running_key] == other_value
+
+
 def test_running_slot_does_not_block_next_4h_slot_when_window_advances() -> None:
     calls: list[str] = []
     slot_store = FakeSlotStore(acquired=False)
@@ -838,6 +929,13 @@ def test_scheduler_slot_log_throttle_suppresses_repeated_reason_inside_cooldown(
         reason="completed_marker_exists",
         current_time_utc=utc_at(4, 10),
     )
+
+
+def test_execution_slot_compatibility_name_has_no_legacy_reserve_method() -> None:
+    source = Path("app/scheduler/execution_slot.py").read_text(encoding="utf-8")
+
+    assert not hasattr(SchedulerExecutionSlotStore(redis_client=FakeRedis()), "reserve_" "execution_slot")
+    assert ".reserve_" "execution_slot(" not in source
 
 
 def test_scheduler_job_wrapper_exception_sends_system_alert() -> None:

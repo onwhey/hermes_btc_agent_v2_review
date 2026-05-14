@@ -3,9 +3,13 @@
 This file belongs to `app/scheduler`. Phase-12 originally exposed execution
 slot helpers here. The active implementation now lives in
 `app/scheduler/slot_state.py`, where running locks, completed markers, and
-terminal status markers are separated. This file only re-exports names for
-existing imports. It does not read or write Redis, request Binance, write MySQL,
-send Hermes, call DeepSeek, repair Klines, or perform trading.
+terminal status markers are separated. The compatibility class below preserves
+the old import name only; it intentionally does not provide the old
+`reserve_execution_slot` method because the old method cannot express separated
+running/completed/status state. Callers must use
+`RedisSchedulerSlotStore.acquire_slot_for_run()`. This file does not request
+Binance, write MySQL, send Hermes, call DeepSeek, repair Klines, or perform
+trading.
 """
 
 from __future__ import annotations
@@ -36,7 +40,14 @@ def build_daily_kline_integrity_slot_key(slot_date_utc: date) -> str:
     return build_scheduler_completed_key(job=DAILY_KLINE_INTEGRITY_JOB_NAME, slot=slot)
 
 
-SchedulerExecutionSlotStore = RedisSchedulerSlotStore
+class SchedulerExecutionSlotStore(RedisSchedulerSlotStore):
+    """Compatibility import name for the new Redis scheduler slot store.
+
+    This class keeps old imports from failing while forcing callers onto
+    `acquire_slot_for_run()`. It deliberately has no old reservation method,
+    because the previous single-key API would collapse running locks and
+    completed markers back into an ambiguous state.
+    """
 
 __all__ = [
     "DAILY_KLINE_INTEGRITY_JOB_NAME",
