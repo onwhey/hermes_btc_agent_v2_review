@@ -104,11 +104,26 @@ class FakeMySqlReader:
 
 
 def _submitted_alert_row() -> SimpleNamespace:
-    return SimpleNamespace(
+    return _alert_row(
         status=AlertSendStatus.SUBMITTED_TO_HERMES.value,
         gateway_status=AlertGatewayStatus.GATEWAY_ACCEPTED.value,
         final_delivery_status=AlertFinalDeliveryStatus.UNKNOWN.value,
         trace_id="trace-ok",
+    )
+
+
+def _alert_row(
+    *,
+    status: str,
+    gateway_status: str = AlertGatewayStatus.NOT_ATTEMPTED.value,
+    final_delivery_status: str = AlertFinalDeliveryStatus.UNKNOWN.value,
+    trace_id: str = "trace-alert",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        status=status,
+        gateway_status=gateway_status,
+        final_delivery_status=final_delivery_status,
+        trace_id=trace_id,
     )
 
 
@@ -146,6 +161,8 @@ def test_runtime_status_default_report_is_chinese_and_read_only(capsys) -> None:
     assert "总体结论：正常" in output
     assert "最新 BTCUSDT 4h K线" in output
     assert "最近 100 根 K线：已读取 100 根，连续性以每日 K线复核为准" in output
+    assert "回看窗口内历史失败：无" in output
+    assert "旧版送达状态记录：无" in output
     assert "最近 100 根 K线：数量正常" not in output
     assert "本检查只读，不修复、不回补、不写正式 K线表，也不执行自动交易" in output
     assert "Binance" not in output
@@ -189,7 +206,9 @@ def test_runtime_status_send_alert_uses_compact_chinese_summary(capsys) -> None:
     assert "最新 BTCUSDT 4h K线" in message
     assert "本次状态摘要已提交 Hermes" not in message
     assert "本摘要将通过 Hermes 通道提交" in message
+    assert "本报告反映发送前的系统状态；本次摘要提交结果见命令行输出" in message
     assert "最终微信送达状态由 Hermes/微信通道决定，BTC Agent 不直接确认" in message
+    assert "本次提交失败" not in message
     assert "微信发送成功" not in message
     assert "微信已送达" not in message
     assert "delivered" not in message
@@ -339,8 +358,109 @@ def test_alert_status_interprets_submission_semantics_and_flags_legacy_status() 
     assert "已提交 Hermes" in console
     assert "Hermes 网关已接收" in console
     assert "最终微信送达状态：未知" in console
+    assert "回看窗口内历史失败：无" in console
+    assert "旧版送达状态记录：无" in console
     assert legacy_report.alert.level == RuntimeStatusLevel.WARNING
+    assert legacy_report.overall_level == RuntimeStatusLevel.WARNING
     assert legacy_report.alert.legacy_status_count == 1
+
+
+def test_latest_alert_failure_marks_runtime_status_error() -> None:
+    report = collect_runtime_status(
+        systemd_checker=FakeSystemdChecker(),
+        redis_client=FakeRedis(),
+        mysql_reader=FakeMySqlReader(
+            alert_rows=[
+                _alert_row(
+                    status=AlertSendStatus.SUBMIT_FAILED.value,
+                    gateway_status=AlertGatewayStatus.SUBMIT_FAILED.value,
+                )
+            ]
+        ),
+        current_time_utc=CURRENT_TIME,
+    )
+    console = render_runtime_status_console(report)
+
+    assert report.alert.level == RuntimeStatusLevel.ERROR
+    assert report.overall_level == RuntimeStatusLevel.ERROR
+    assert report.alert.failed_count == 1
+    assert "最近一次 Hermes 提交：提交 Hermes 失败" in console
+    assert "回看窗口内历史失败：有" in console
+
+
+def test_recovered_alert_history_is_warning_not_error() -> None:
+    report = collect_runtime_status(
+        systemd_checker=FakeSystemdChecker(),
+        redis_client=FakeRedis(),
+        mysql_reader=FakeMySqlReader(
+            alert_rows=[
+                _submitted_alert_row(),
+                _alert_row(
+                    status=AlertSendStatus.GATEWAY_REJECTED.value,
+                    gateway_status=AlertGatewayStatus.GATEWAY_REJECTED.value,
+                ),
+            ]
+        ),
+        current_time_utc=CURRENT_TIME,
+    )
+    console = render_runtime_status_console(report)
+
+    assert report.alert.level == RuntimeStatusLevel.WARNING
+    assert report.overall_level == RuntimeStatusLevel.WARNING
+    assert report.alert.failed_count == 1
+    assert any("最近一次已提交 Hermes" in issue.message for issue in report.issues)
+    assert "最近一次 Hermes 提交：已提交 Hermes" in console
+    assert "回看窗口内历史失败：有" in console
+
+
+def test_historical_legacy_alert_status_with_latest_success_is_notice_not_error() -> None:
+    report = collect_runtime_status(
+        systemd_checker=FakeSystemdChecker(),
+        redis_client=FakeRedis(),
+        mysql_reader=FakeMySqlReader(
+            alert_rows=[
+                _submitted_alert_row(),
+                _alert_row(status="sent", final_delivery_status="weixin_success"),
+            ]
+        ),
+        current_time_utc=CURRENT_TIME,
+    )
+    console = render_runtime_status_console(report)
+
+    assert report.alert.level == RuntimeStatusLevel.NOTICE
+    assert report.overall_level == RuntimeStatusLevel.NOTICE
+    assert report.alert.failed_count == 0
+    assert report.alert.legacy_status_count == 1
+    assert "旧版送达状态记录：有，需后续清理或忽略历史数据" in console
+
+
+def test_consecutive_recent_alert_failures_mark_runtime_status_error() -> None:
+    report = collect_runtime_status(
+        systemd_checker=FakeSystemdChecker(),
+        redis_client=FakeRedis(),
+        mysql_reader=FakeMySqlReader(
+            alert_rows=[
+                _alert_row(
+                    status=AlertSendStatus.SUBMIT_FAILED.value,
+                    gateway_status=AlertGatewayStatus.SUBMIT_FAILED.value,
+                    trace_id="trace-fail-1",
+                ),
+                _alert_row(
+                    status=AlertSendStatus.GATEWAY_REJECTED.value,
+                    gateway_status=AlertGatewayStatus.GATEWAY_REJECTED.value,
+                    trace_id="trace-fail-2",
+                ),
+                _submitted_alert_row(),
+            ]
+        ),
+        current_time_utc=CURRENT_TIME,
+    )
+
+    assert report.alert.level == RuntimeStatusLevel.ERROR
+    assert report.overall_level == RuntimeStatusLevel.ERROR
+    assert report.alert.failed_count == 2
+    assert report.alert.consecutive_failed_count == 2
+    assert any("最近连续 2 次 Hermes 提交失败" in issue.message for issue in report.issues)
 
 
 def test_runtime_status_does_not_import_binance_or_model_clients() -> None:

@@ -23,6 +23,8 @@ from app.core.time_utils import format_datetime_with_timezone, utc_aware_to_prc_
 from app.market_data.kline_constants import DEFAULT_KLINE_SYMBOL, KLINE_4H_INTERVAL_VALUE
 from app.monitoring.runtime_status_types import LEVEL_LABELS, RuntimeStatusLevel, RuntimeStatusReport
 
+LEGACY_ALERT_STATUS_VALUES = {"sent", "failed", "delivered", "weixin_success"}
+
 
 def render_runtime_status_console(report: RuntimeStatusReport) -> str:
     """Render the runtime report for human console reading in Chinese."""
@@ -72,8 +74,9 @@ def render_runtime_status_console(report: RuntimeStatusReport) -> str:
     if report.alert.connection_ok and report.alert.latest_status:
         lines.append(f"- 最近一次 Hermes 提交：{_alert_status_label(report.alert.latest_status)}")
         lines.append(f"- Hermes 网关状态：{gateway_status_label(report.alert.latest_gateway_status)}")
-        lines.append(f"- 最终微信送达状态：{final_delivery_status_label(report.alert.latest_final_delivery_status)}")
-        lines.append(f"- 最近提交失败：{'有' if report.alert.failed_count else '无'}")
+        lines.append(f"- 最终微信送达状态：{_final_delivery_status_label(report.alert.latest_final_delivery_status)}")
+        lines.append(f"- 回看窗口内历史失败：{'有' if report.alert.failed_count else '无'}")
+        lines.append(f"- 旧版送达状态记录：{_legacy_status_record_label(report)}")
     elif report.alert.connection_ok:
         lines.append("- 最近告警记录：无")
     else:
@@ -151,7 +154,9 @@ def _build_runtime_status_alert_body(report: RuntimeStatusReport) -> str:
         _data_summary(report),
         "",
         "告警状态：",
-        "本摘要将通过 Hermes 通道提交；最终微信送达状态由 Hermes/微信通道决定，BTC Agent 不直接确认。",
+        _alert_status_summary(report),
+        "本摘要将通过 Hermes 通道提交。",
+        "本报告反映发送前的系统状态；本次摘要提交结果见命令行输出。最终微信送达状态由 Hermes/微信通道决定，BTC Agent 不直接确认。",
     ]
     if issue_lines:
         body.extend(["", "关键问题：", *issue_lines])
@@ -196,7 +201,31 @@ def _bitcoin_price_label(exists: bool, ttl: int | None) -> str:
 
 
 def _alert_status_label(status: str | None) -> str:
+    if status is None:
+        return "未知"
+    if str(status) in LEGACY_ALERT_STATUS_VALUES:
+        return "旧版状态记录"
     return alert_send_status_label(status) or "未知"
+
+
+def _final_delivery_status_label(status: str | None) -> str:
+    if str(status) in LEGACY_ALERT_STATUS_VALUES:
+        return "旧版送达状态记录，BTC Agent 不按当前语义判定"
+    return final_delivery_status_label(status)
+
+
+def _legacy_status_record_label(report: RuntimeStatusReport) -> str:
+    if report.alert.legacy_status_count:
+        return "有，需后续清理或忽略历史数据"
+    return "无"
+
+
+def _alert_status_summary(report: RuntimeStatusReport) -> str:
+    return (
+        f"最近一次 Hermes 提交：{_alert_status_label(report.alert.latest_status)}；"
+        f"回看窗口内历史失败：{'有' if report.alert.failed_count else '无'}；"
+        f"旧版送达状态记录：{_legacy_status_record_label(report)}。"
+    )
 
 
 def _collector_status_label(status: str | None) -> str:

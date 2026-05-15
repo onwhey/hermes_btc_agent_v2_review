@@ -123,6 +123,7 @@ class AlertRuntimeStatus:
     latest_final_delivery_status: str | None = None
     latest_trace_id: str | None = None
     failed_count: int = 0
+    consecutive_failed_count: int = 0
     legacy_status_count: int = 0
     error_message: str | None = None
     issues: list[RuntimeIssue] = field(default_factory=list)

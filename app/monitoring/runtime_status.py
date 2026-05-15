@@ -40,6 +40,8 @@ SYSTEMD_SERVICES: tuple[tuple[str, str], ...] = (
     ("hermes-gateway.service", "Hermes 网关"),
 )
 
+CURRENT_ALERT_FAILURE_STATUSES = {"submit_failed", "gateway_rejected"}
+CURRENT_ALERT_FAILURE_GATEWAY_STATUSES = {"submit_failed", "gateway_rejected"}
 OLD_ALERT_STATUSES = {"sent", "failed", "delivered", "weixin_success"}
 
 
@@ -312,25 +314,44 @@ def _evaluate_alert_messages(alert_rows: list[Any], issues: list[RuntimeIssue]) 
     latest_gateway_status = _row_value(latest, "gateway_status") or channel_response.get("gateway_status")
     latest_final_status = _row_value(latest, "final_delivery_status") or channel_response.get("final_delivery_status")
     latest_trace_id = _row_value(latest, "trace_id")
+    latest_failed = _is_current_alert_failure(latest_status, latest_gateway_status)
+    latest_legacy = _is_legacy_alert_status(latest_status, latest_final_status)
 
     failed_count = 0
     legacy_count = 0
+    consecutive_failed_count = 0
+    counting_consecutive_failures = True
     for row in alert_rows:
         status = _row_value(row, "status")
         gateway_status = _row_value(row, "gateway_status") or _channel_response_dict(_row_value(row, "channel_response")).get("gateway_status")
         final_status = _row_value(row, "final_delivery_status") or _channel_response_dict(_row_value(row, "channel_response")).get("final_delivery_status")
-        if status in {"submit_failed", "failed"} or gateway_status == "gateway_rejected":
+        row_failed = _is_current_alert_failure(status, gateway_status)
+        if row_failed:
             failed_count += 1
-        if status in OLD_ALERT_STATUSES or final_status in OLD_ALERT_STATUSES:
+            if counting_consecutive_failures:
+                consecutive_failed_count += 1
+        else:
+            counting_consecutive_failures = False
+        if _is_legacy_alert_status(status, final_status):
             legacy_count += 1
 
     level = RuntimeStatusLevel.NORMAL
-    if failed_count:
+    if latest_failed:
         level = RuntimeStatusLevel.ERROR
-        issues.append(RuntimeIssue(RuntimeStatusLevel.ERROR, "alert", "最近存在 Hermes 提交失败或网关拒绝。"))
-    if legacy_count:
+        if consecutive_failed_count > 1:
+            issues.append(RuntimeIssue(RuntimeStatusLevel.ERROR, "alert", f"最近连续 {consecutive_failed_count} 次 Hermes 提交失败或网关拒绝。"))
+        else:
+            issues.append(RuntimeIssue(RuntimeStatusLevel.ERROR, "alert", "最近一次 Hermes 提交失败或网关拒绝。"))
+    elif failed_count:
         level = _max_level(level, RuntimeStatusLevel.WARNING)
-        issues.append(RuntimeIssue(RuntimeStatusLevel.WARNING, "alert", "最近告警记录中存在旧版送达状态，需要按新语义核对。"))
+        issues.append(RuntimeIssue(RuntimeStatusLevel.WARNING, "alert", "回看窗口内曾经出现 Hermes 提交失败，但最近一次已提交 Hermes。"))
+
+    if latest_legacy:
+        level = _max_level(level, RuntimeStatusLevel.WARNING)
+        issues.append(RuntimeIssue(RuntimeStatusLevel.WARNING, "alert", "最近一次告警记录仍使用旧版送达状态，需要按新语义核对。"))
+    elif legacy_count:
+        level = _max_level(level, RuntimeStatusLevel.NOTICE)
+        issues.append(RuntimeIssue(RuntimeStatusLevel.NOTICE, "alert", "回看窗口内存在旧版送达状态记录，可后续清理或忽略历史数据。"))
 
     return AlertRuntimeStatus(
         connection_ok=True,
@@ -340,9 +361,18 @@ def _evaluate_alert_messages(alert_rows: list[Any], issues: list[RuntimeIssue]) 
         latest_final_delivery_status=latest_final_status,
         latest_trace_id=latest_trace_id,
         failed_count=failed_count,
+        consecutive_failed_count=consecutive_failed_count,
         legacy_status_count=legacy_count,
         issues=issues,
     )
+
+
+def _is_current_alert_failure(status: Any, gateway_status: Any) -> bool:
+    return str(status) in CURRENT_ALERT_FAILURE_STATUSES or str(gateway_status) in CURRENT_ALERT_FAILURE_GATEWAY_STATUSES
+
+
+def _is_legacy_alert_status(status: Any, final_status: Any) -> bool:
+    return str(status) in OLD_ALERT_STATUSES or str(final_status) in OLD_ALERT_STATUSES
 
 
 def _determine_overall_level(
