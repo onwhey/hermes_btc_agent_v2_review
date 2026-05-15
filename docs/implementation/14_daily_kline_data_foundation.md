@@ -140,7 +140,7 @@ app/alerting/service.py::send_alert_event
 2025-01-01T00:00:00Z
 ```
 
-当前实现使用 inclusive open-time 边界：`start-utc` 和 `end-utc` 都表示 1d K线开盘时间。按 14-2 验收要求，`start-utc` 必须早于 `end-utc`，`start >= end` 会被拒绝。
+当前实现使用 inclusive open-time 边界：`start-utc` 和 `end-utc` 都表示 1d K线开盘时间。`start-utc == end-utc` 表示只回补这一根日 K，是合法请求；只有 `end-utc` 早于 `start-utc` 才会被拒绝。
 
 未携带 `--confirm-write` 且不是 `--dry-run` 时，service 会拒绝执行，不请求 Binance、不写正式表。
 

@@ -95,8 +95,8 @@ def _resolve_utc_bounds(args: argparse.Namespace, parser: argparse.ArgumentParse
         end_open_time_ms = _parse_utc_midnight_to_ms(args.end_utc, field_name="end-utc")
     except ValueError as exc:
         parser.error(str(exc))
-    if start_open_time_ms >= end_open_time_ms:
-        parser.error("start-utc must be earlier than end-utc")
+    if start_open_time_ms > end_open_time_ms:
+        parser.error("end-utc must be greater than or equal to start-utc")
     return start_open_time_ms, end_open_time_ms
 
 

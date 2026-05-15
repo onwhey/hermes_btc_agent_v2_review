@@ -10,6 +10,10 @@ from app.alerting.service import format_alert_message
 from app.alerting.types import AlertSendResult, AlertSendStatus, AlertType
 from app.core.exceptions import RedisError
 from app.market_data.backfill.kline_1d_backfill_service import run_manual_1d_backfill
+from app.market_data.backfill.kline_1d_pipeline import (
+    build_1d_binance_kline_request_ranges,
+    validate_1d_backfill_request,
+)
 from app.market_data.backfill.kline_1d_types import (
     BACKFILL_1D_EVENT_TYPE,
     EXIT_ALERT_FAILED,
@@ -369,7 +373,7 @@ def run_1d_backfill_with_fakes(
     )
 
 
-def test_cli_rejects_non_1d_scheduler_trigger_misaligned_time_and_empty_range() -> None:
+def test_cli_rejects_non_1d_scheduler_trigger_misaligned_time_and_reversed_range() -> None:
     assert backfill_script.main(
         [
             "--interval",
@@ -408,7 +412,7 @@ def test_cli_rejects_non_1d_scheduler_trigger_misaligned_time_and_empty_range() 
     assert backfill_script.main(
         [
             "--start-utc",
-            "2023-11-15T00:00:00Z",
+            "2023-11-16T00:00:00Z",
             "--end-utc",
             "2023-11-15T00:00:00Z",
             "--trigger-source",
@@ -416,6 +420,19 @@ def test_cli_rejects_non_1d_scheduler_trigger_misaligned_time_and_empty_range() 
             "--dry-run",
         ]
     ) == EXIT_PARAMETER_ERROR
+
+
+def test_single_day_inclusive_range_is_valid_and_builds_one_binance_request() -> None:
+    request = request_for_offsets(0, 0)
+
+    validate_1d_backfill_request(request)
+    ranges = build_1d_binance_kline_request_ranges(request)
+
+    assert request.requested_count == 1
+    assert len(ranges) == 1
+    assert ranges[0].limit == 1
+    assert ranges[0].start_open_time_ms == ranges[0].end_open_time_ms
+    assert ranges[0].end_time_ms_for_binance == request.start_open_time_ms + KLINE_1D_INTERVAL_MS - 1
 
 
 def test_parameter_validation_requires_confirm_write_without_external_access() -> None:
@@ -653,6 +670,34 @@ def test_notify_success_sends_compact_1d_success_alert_without_delivery_claim() 
     assert "微信已送达" not in message
     assert "delivered" not in message
     assert "weixin_success" not in message
+
+
+def test_dry_run_success_alert_uses_manual_backfill_notice_type() -> None:
+    result, _repository, _lock, alert_sender, _quality_repo, _session, _client, _collector = run_1d_backfill_with_fakes(
+        request_for_offsets(0, 1, dry_run=True, confirm_write=False, notify_success=True),
+        [build_raw(0), build_raw(1)],
+    )
+
+    assert result.status == Kline1dBackfillStatus.SUCCESS
+    assert len(alert_sender.calls) == 1
+    event = alert_sender.calls[0]["event"]
+    assert event.alert_type == AlertType.MANUAL_BACKFILL_NOTICE
+    assert event.alert_type != AlertType.KLINE_INTEGRITY_CHECK_PASSED
+    assert event.severity.value == "info"
+
+
+def test_real_write_success_alert_uses_manual_backfill_notice_type() -> None:
+    result, _repository, _lock, alert_sender, _quality_repo, _session, _client, _collector = run_1d_backfill_with_fakes(
+        request_for_offsets(0, 1, notify_success=True),
+        [build_raw(0), build_raw(1)],
+    )
+
+    assert result.status == Kline1dBackfillStatus.SUCCESS
+    assert len(alert_sender.calls) == 1
+    event = alert_sender.calls[0]["event"]
+    assert event.alert_type == AlertType.MANUAL_BACKFILL_NOTICE
+    assert event.alert_type != AlertType.KLINE_INTEGRITY_CHECK_PASSED
+    assert event.severity.value == "info"
 
 
 def test_hermes_submission_failure_returns_alert_failed_exit_code() -> None:

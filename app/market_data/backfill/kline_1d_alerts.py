@@ -123,7 +123,7 @@ def _build_1d_backfill_alert_event(
             title = "手动 1d 日 K 回补预演通过"
             summary = "手动 1d 日 K 回补预演通过，正式 1d K线表未被修改。"
         return AlertEvent(
-            alert_type=AlertType.KLINE_INTEGRITY_CHECK_PASSED,
+            alert_type=AlertType.MANUAL_BACKFILL_NOTICE,
             severity=AlertSeverity.INFO,
             title=title,
             summary=summary,

@@ -32,8 +32,8 @@ def validate_1d_backfill_request(request: ManualKline1dBackfillRequest) -> None:
         raise KlineBackfillParameterError("trigger_source must be cli for manual 1d backfill")
     if request.start_open_time_ms < 0 or request.end_open_time_ms < 0:
         raise KlineBackfillParameterError("start/end open time must be greater than or equal to 0")
-    if request.end_open_time_ms <= request.start_open_time_ms:
-        raise KlineBackfillParameterError("end open time must be greater than start open time")
+    if request.end_open_time_ms < request.start_open_time_ms:
+        raise KlineBackfillParameterError("end open time must be greater than or equal to start open time")
     if request.start_open_time_ms % KLINE_1D_INTERVAL_MS != 0:
         raise KlineBackfillParameterError("start open time must align to UTC 00:00:00")
     if request.end_open_time_ms % KLINE_1D_INTERVAL_MS != 0:
