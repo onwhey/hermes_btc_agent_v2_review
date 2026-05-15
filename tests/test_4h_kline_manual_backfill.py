@@ -7,7 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterable
 
-from app.alerting.types import AlertSendResult, AlertSendStatus
+from app.alerting.service import format_alert_message
+from app.alerting.types import AlertSendResult, AlertSendStatus, AlertType
 from app.core.exceptions import RedisError
 from app.core.task_lock import RedisTaskLock
 from app.market_data.backfill.kline_4h_backfill_service import run_manual_4h_backfill
@@ -393,6 +394,16 @@ def test_binance_batch_gap_blocks_without_formal_write_and_alerts() -> None:
     assert result.first_issue_type == KlineQualityIssueType.BATCH_NOT_CONTINUOUS.value
     assert repository.bulk_write_called is False
     assert len(alert_sender.calls) == 1
+    event = alert_sender.calls[0]["event"]
+    message = format_alert_message(event)
+    assert event.alert_type == AlertType.KLINE_DATA_QUALITY_ERROR
+    assert event.severity.value == "error"
+    assert event.title == "手动补 K 被质量检查阻断"
+    assert "Binance 返回的历史 K线区间存在缺失、断档或不连续。" in message
+    assert "formal_write_performed" not in message
+    assert "requested_start_open_time_ms" not in message
+    assert "quality_summary" not in message
+    assert "action" not in message
 
 
 def test_backfill_not_connected_to_previous_database_kline_blocks_and_alerts() -> None:
@@ -425,7 +436,7 @@ def test_backfill_not_connected_to_next_database_kline_blocks_and_alerts() -> No
     assert len(alert_sender.calls) == 1
 
 
-def test_unclosed_kline_blocks_without_formal_write_and_alerts() -> None:
+def test_unclosed_kline_blocks_without_formal_write_and_sends_notice_alert() -> None:
     dto = build_dto(0)
 
     result, repository, _lock, alert_sender, _quality_repo, _session, _client = run_backfill_with_fakes(
@@ -436,8 +447,31 @@ def test_unclosed_kline_blocks_without_formal_write_and_alerts() -> None:
 
     assert result.status == KlineBackfillStatus.BLOCKED
     assert result.first_issue_type == KlineQualityIssueType.UNCLOSED_KLINE.value
+    assert result.inserted_count == 0
     assert repository.bulk_write_called is False
     assert len(alert_sender.calls) == 1
+    event = alert_sender.calls[0]["event"]
+    message = format_alert_message(event)
+
+    assert event.alert_type == AlertType.MANUAL_BACKFILL_NOTICE
+    assert event.severity.value == "notice"
+    assert event.title == "手动补 K 已安全阻断"
+    assert "【手动补 K 已安全阻断】" in message
+    assert "级别：提醒" in message
+    assert "原因：" in message
+    assert "请求区间包含尚未收盘的 4h K线" in message
+    assert "结果：" in message
+    assert "系统已阻断写入，正式 K线表未被修改。" in message
+    assert "建议：" in message
+    assert "结束时间参数 end-utc" in message
+    assert "追踪ID：" in message
+    assert result.trace_id in message
+    assert "formal_write_performed" not in message
+    assert "requested_start_open_time_ms" not in message
+    assert "quality_summary" not in message
+    assert "action" not in message
+    assert "Manual 4h Kline backfill did not complete" not in message
+    assert "K 线数据质量异常提醒" not in message
 
 
 def test_bulk_upsert_exception_does_not_leave_partial_formal_kline_write() -> None:
@@ -455,6 +489,9 @@ def test_bulk_upsert_exception_does_not_leave_partial_formal_kline_write() -> No
     assert session.rollbacks >= 1
     assert session.nested_rollbacks >= 1
     assert len(alert_sender.calls) == 1
+    event = alert_sender.calls[0]["event"]
+    assert event.severity.value == "critical"
+    assert event.title == "手动补 K 执行失败"
 
 
 def test_task_lock_already_exists_skips_without_binance_or_formal_write() -> None:
@@ -624,6 +661,7 @@ def test_success_notify_success_sends_fixed_template_success_alert() -> None:
     assert result.status == KlineBackfillStatus.SUCCESS
     assert len(alert_sender.calls) == 1
     assert alert_sender.calls[0]["event"].severity.value == "info"
+    assert alert_sender.calls[0]["event"].title == "手动补 K 已完成"
 
 
 def test_dry_run_notify_success_alert_clearly_marks_no_formal_write() -> None:
@@ -645,9 +683,10 @@ def test_dry_run_notify_success_alert_clearly_marks_no_formal_write() -> None:
     assert len(alert_sender.calls) == 1
     event = alert_sender.calls[0]["event"]
     assert "dry-run" in event.title
-    assert "no formal Kline write" in event.summary
-    assert event.details["dry_run"] is True
-    assert event.details["formal_write_performed"] is False
+    assert "未写入正式 K线表" in event.summary
+    internal_context = event.details["_internal_context"]
+    assert internal_context["dry_run"] is True
+    assert internal_context["formal_write_performed"] is False
 
 
 def test_hermes_submission_failure_returns_alert_failed_exit_code() -> None:

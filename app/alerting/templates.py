@@ -11,12 +11,21 @@ from __future__ import annotations
 from typing import Mapping
 
 from app.alerting.sanitizer import sanitize_mapping, sanitize_text
-from app.alerting.types import AlertEvent, AlertType
+from app.alerting.types import AlertEvent, AlertSeverity, AlertType
 from app.core.exceptions import ValidationError
 from app.core.time_utils import format_datetime_with_timezone, utc_aware_to_prc_aware
 
 NOT_TRADING_ADVICE_TEXT = "本提醒不是交易建议，不包含自动交易动作。"
 KLINE_BOUNDARY_TEXT = "系统没有自动修复数据，没有人工改数，也没有执行自动交易。"
+WECHAT_VISIBLE_BODY_DETAIL_KEY = "_wechat_visible_body"
+
+SEVERITY_LABELS: Mapping[AlertSeverity, str] = {
+    AlertSeverity.INFO: "信息",
+    AlertSeverity.NOTICE: "提醒",
+    AlertSeverity.WARNING: "注意",
+    AlertSeverity.ERROR: "错误",
+    AlertSeverity.CRITICAL: "严重",
+}
 
 TEMPLATE_TITLES: Mapping[AlertType, str] = {
     AlertType.SYSTEM_CHECK: "系统检查提醒",
@@ -30,6 +39,7 @@ TEMPLATE_TITLES: Mapping[AlertType, str] = {
     AlertType.KLINE_DATA_QUALITY_ERROR: "K 线数据质量异常提醒",
     AlertType.KLINE_INTEGRITY_CHECK_FAILED: "K 线一致性复核异常提醒",
     AlertType.KLINE_INTEGRITY_CHECK_PASSED: "K 线健康检查通过提醒",
+    AlertType.MANUAL_BACKFILL_NOTICE: "手动补 K 已安全阻断",
     AlertType.MANUAL_TEST_ALERT: "人工测试提醒",
 }
 
@@ -40,6 +50,7 @@ KLINE_RELATED_ALERT_TYPES = frozenset(
         AlertType.KLINE_DATA_QUALITY_ERROR,
         AlertType.KLINE_INTEGRITY_CHECK_FAILED,
         AlertType.KLINE_INTEGRITY_CHECK_PASSED,
+        AlertType.MANUAL_BACKFILL_NOTICE,
     }
 )
 
@@ -53,6 +64,12 @@ def _format_details(details: Mapping[str, object]) -> str:
     for key in sorted(sanitized):
         lines.append(f"- {sanitize_text(key)}: {sanitize_text(sanitized[key])}")
     return "\n".join(lines)
+
+
+def _severity_label(severity: AlertSeverity) -> str:
+    """Return the user-facing Chinese severity label."""
+
+    return SEVERITY_LABELS.get(severity, severity.value)
 
 
 def render_alert_message(event: AlertEvent) -> str:
@@ -76,13 +93,22 @@ def render_alert_message(event: AlertEvent) -> str:
     title = sanitize_text(event.title or TEMPLATE_TITLES[event.alert_type])
     summary = sanitize_text(event.summary)
     details = _format_details(event.details)
+    visible_body = event.details.get(WECHAT_VISIBLE_BODY_DETAIL_KEY)
 
     boundary_text = KLINE_BOUNDARY_TEXT if event.alert_type in KLINE_RELATED_ALERT_TYPES else ""
     boundary_block = f"\n{boundary_text}" if boundary_text else ""
 
+    if visible_body is not None:
+        return (
+            f"【{title}】\n\n"
+            f"级别：{_severity_label(event.severity)}\n"
+            f"{sanitize_text(visible_body)}\n\n"
+            f"{NOT_TRADING_ADVICE_TEXT}{boundary_block}"
+        )
+
     return (
         f"[{TEMPLATE_TITLES[event.alert_type]}]\n"
-        f"级别：{event.severity.value}\n"
+        f"级别：{_severity_label(event.severity)}\n"
         f"标题：{title}\n"
         f"摘要：{summary}\n"
         f"来源：{sanitize_text(event.source)}\n"
@@ -105,4 +131,3 @@ def supported_alert_type_values() -> tuple[str, ...]:
     """
 
     return tuple(alert_type.value for alert_type in TEMPLATE_TITLES)
-

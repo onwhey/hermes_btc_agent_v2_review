@@ -374,3 +374,270 @@ tests/test_4h_kline_manual_backfill.py
 ```
 
 默认 pytest 不请求真实 Binance，不连接真实 MySQL，不连接真实 Redis，不发送真实 Hermes，不调用 DeepSeek，不访问交易接口。
+
+## 14. 2026-05-15 补充：手动补 K 未收盘安全阻断通知优化
+
+### 14.1 功能名称
+
+手动 4h K线 backfill 中 `unclosed_kline` 安全阻断的 Hermes/微信通知分级与中文精简模板。
+
+本补充只优化通知分类和用户可见文案，不修改正式 K线写入规则、不绕过质量检查、不新增自动修复、不新增人工改数、不新增自动交易。
+
+### 14.2 发起入口
+
+用户仍然手动执行：
+
+```bash
+python -m scripts.backfill_4h_klines --start-utc 2026-05-14T08:00:00Z --end-utc 2026-05-14T20:00:00Z --trigger-source cli --confirm-write
+```
+
+入口文件：
+
+`scripts/backfill_4h_klines.py`
+
+入口方法：
+
+`main()`
+
+核心 service 文件：
+
+`app/market_data/backfill/kline_4h_backfill_service.py`
+
+核心 service 方法：
+
+`run_manual_4h_backfill()`
+
+通知构造文件：
+
+`app/market_data/backfill/alerts.py`
+
+通知构造方法：
+
+`_build_backfill_alert_event()`
+
+通用模板文件：
+
+`app/alerting/templates.py`
+
+模板渲染方法：
+
+`render_alert_message()`
+
+### 14.3 核心调用链路
+
+```text
+scripts/backfill_4h_klines.py::main
+    ↓
+app/market_data/backfill/kline_4h_backfill_service.py::run_manual_4h_backfill
+    ↓
+app/market_data/backfill/quality.py::check_backfill_quality
+    ↓
+app/market_data/kline_quality/batch_checker.py::check_kline_batch_before_persist
+    ↓
+发现请求区间最后一根 K线未收盘，返回 unclosed_kline
+    ↓
+app/storage/mysql/repositories/data_quality_check_repository.py::create_quality_check_record
+    ↓
+app/storage/mysql/repositories/collector_event_log_repository.py::mark_blocked
+    ↓
+app/market_data/backfill/alerts.py::send_failure_alert_and_adjust_exit_code
+    ↓
+app/market_data/backfill/alerts.py::_build_backfill_alert_event
+    ↓
+app/alerting/service.py::send_alert
+    ↓
+app/alerting/templates.py::render_alert_message
+```
+
+### 14.4 安全阻断判定
+
+仅当同时满足以下条件时，通知降级为安全阻断提醒：
+
+- `event_type = manual_backfill_4h`
+- `trigger_source = cli`
+- `status = blocked`
+- `first_issue_type = unclosed_kline`
+- 质量问题只来自请求区间最后一根未收盘 K线
+- `inserted_count = 0`
+- `formal_write_performed = False`
+- 本次任务没有写入 `market_kline_4h`
+- 系统没有自动修复、没有人工改数、没有自动交易
+
+满足条件时：
+
+- `alert_type = manual_backfill_notice`
+- `severity = notice`
+- 微信中文展示为 `级别：提醒`
+- 标题为 `手动补 K 已安全阻断`
+
+以下场景不降级，仍按 `error` 或 `critical` 发送：
+
+- 历史已收盘区间缺失、断档、不连续
+- 正式库已有 K线与 Binance 官方 K线字段冲突
+- Binance REST 返回结构异常
+- Redis 任务锁异常
+- MySQL 写入失败
+- 程序异常或无法确认任务是否安全
+- scheduler 增量采集相关异常
+- 每日一致性复核发现正式库数据异常
+
+### 14.5 微信正文模板
+
+安全阻断消息示例：
+
+```text
+【手动补 K 已安全阻断】
+
+级别：提醒
+币种周期：BTCUSDT 4h
+请求区间：2026-05-14 08:00 UTC ~ 2026-05-14 20:00 UTC
+
+原因：
+请求区间包含尚未收盘的 4h K线：2026-05-14 20:00 UTC。
+
+结果：
+系统已阻断写入，正式 K线表未被修改。
+
+建议：
+如需重试，请将结束时间参数 end-utc 改为最近一根已收盘 K线，例如：
+2026-05-14T16:00:00Z
+
+追踪ID：761e04f5167f49efb6e3431897e9ff51
+
+本提醒不是交易建议，不包含自动交易动作。
+系统没有自动修复数据，没有人工改数，也没有执行自动交易。
+```
+
+用户可见微信正文只保留人工判断必需信息：
+
+- 标题
+- 中文级别
+- 币种周期
+- 请求区间
+- 原因
+- 结果
+- 建议动作
+- 追踪ID
+- 非交易建议和无自动交易声明
+
+### 14.6 内部字段保留与微信移除
+
+以下字段仍保留在 `collector_event_log`、`data_quality_check.report_json`、`ManualKlineBackfillResult.details` 或 `AlertEvent.details._internal_context` 中，用于审计和排查：
+
+- `formal_write_performed`
+- `requested_start_open_time_ms`
+- `requested_end_open_time_ms`
+- `quality_summary`
+- `writable_count`
+- `parsed_count`
+- `fetched_count`
+- `requested_count`
+- `first_issue_message`
+- `action`
+- `data_source`
+- `trigger_source`
+- `dry_run`
+
+以上字段不再原样渲染到微信正文。`app/alerting/templates.py::render_alert_message()` 在发现 `_wechat_visible_body` 时，只渲染中文精简正文，不展开 `_internal_context`。
+
+### 14.7 数据库、Redis、外部接口与 Hermes
+
+本功能请求外部接口：
+
+- 仍只通过 `BinanceRestClient.get_server_time()` 请求 Binance server time。
+- 仍只通过 `BinanceRestClient.get_klines()` 请求 Binance REST `/fapi/v1/klines`。
+
+本功能读取数据库：
+
+- `market_kline_4h`，用于历史回补上下文、冲突和连续性检查。
+
+本功能写入数据库：
+
+- `collector_event_log`，记录 blocked/failed/success/skipped 等任务事件。
+- `data_quality_check`，记录质量检查报告。
+- `alert_message`，记录 Hermes 通知内容和发送结果。
+- `market_kline_4h` 只在质量检查通过且非 dry-run 时写入；本次通知优化没有改变该规则。
+
+本功能读取或写入 Redis：
+
+- 只使用 `kline_write:{symbol}:{interval}` 任务锁。
+- 不读取 Redis `bitcoin_price`。
+- 不写入 Redis `bitcoin_price`。
+
+本功能发送 Hermes：
+
+- 由 `app/market_data/backfill/alerts.py::send_failure_alert_and_adjust_exit_code()` 决定发送。
+- 通过 `app/alerting/service.py::send_alert()` 统一发送。
+- 安全阻断使用 `AlertType.MANUAL_BACKFILL_NOTICE`。
+- 真正质量异常继续使用 `AlertType.KLINE_DATA_QUALITY_ERROR`。
+- 任务失败继续使用 `AlertType.COLLECTOR_ERROR`。
+- Hermes `channel_response` 仍由 `alert_message` 记录，并经过脱敏。
+
+本功能不调用 DeepSeek 或其他大模型。
+本功能不涉及 scheduler。
+本功能不新增 scripts。
+本功能不涉及自动交易。
+
+### 14.8 异常处理
+
+安全阻断路径：
+
+```text
+app/market_data/kline_quality/batch_checker.py::check_kline_batch_before_persist
+    报告 unclosed_kline
+app/market_data/backfill/kline_4h_backfill_service.py::_handle_quality_blocked
+    捕获质量报告并记录 collector_event_log = blocked
+app/market_data/backfill/alerts.py::_build_backfill_alert_event
+    判断为安全阻断，生成 notice 提醒
+```
+
+该路径不写正式 K线表，不允许 `partial_success`，不重试，不自动修复。
+
+真正异常路径保持不变：
+
+- 历史 K线不连续：`_build_backfill_alert_event()` 继续生成 `severity = error`。
+- 数据库写入失败：`_handle_task_failure()` 继续生成 `severity = critical`。
+- Redis 或程序异常：继续生成 failed 结果并发送 `COLLECTOR_ERROR`。
+
+Hermes 发送失败时，CLI 仍返回 `3`，不因此修改正式 K线表。
+
+### 14.9 对应测试
+
+测试文件：
+
+`tests/test_4h_kline_manual_backfill.py`
+
+新增或调整覆盖：
+
+- 请求区间包含最后一根未收盘 K线时，任务 blocked、不写正式 K线表、`inserted_count = 0`。
+- 安全阻断通知 `alert_type = manual_backfill_notice`。
+- 安全阻断通知 `severity = notice`，微信展示 `级别：提醒`。
+- 安全阻断微信正文包含中文原因、结果、建议和追踪ID。
+- 安全阻断微信正文不包含 `formal_write_performed`、`requested_start_open_time_ms`、`quality_summary`、`action` 等内部字段。
+- 历史 K线断档仍然是 `severity = error`，不被降级。
+- 数据库写入失败仍然是 `severity = critical`。
+- 成功和 dry-run 成功通知改为中文精简正文。
+
+已运行：
+
+```bash
+.\.venv\Scripts\python.exe -m py_compile app\alerting\types.py app\alerting\templates.py app\market_data\backfill\alerts.py tests\test_4h_kline_manual_backfill.py
+.\.venv\Scripts\python.exe -m pytest tests\test_4h_kline_manual_backfill.py
+.\.venv\Scripts\python.exe -m pytest tests\test_alerting.py
+.\.venv\Scripts\python.exe -m pytest
+```
+
+默认 pytest 不请求真实 Binance，不连接真实 MySQL，不连接真实 Redis，不发送真实 Hermes，不调用 DeepSeek，不访问交易接口。
+
+### 14.10 本补充不负责
+
+- 不修改正式 K线写入规则。
+- 不降低真正历史数据质量异常的 severity。
+- 不绕过 `batch_before_persist` 检查。
+- 不新增自动修复 K线。
+- 不新增人工改数能力。
+- 不新增自动交易。
+- 不让大模型参与基础告警。
+- 不修改 scheduler slot 状态模型。
+- 不修改 Hermes gateway 服务本身。
+- 不执行数据库迁移。
