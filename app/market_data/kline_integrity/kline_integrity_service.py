@@ -32,11 +32,12 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from app.alerting.types import AlertEvent, AlertSendResult, AlertSendStatus, AlertSeverity, AlertType
+from app.alerting.types import AlertSendResult, AlertSendStatus
 from app.core.logger import get_logger
 from app.core.task_lock import RedisTaskLock, build_kline_integrity_check_lock_key
 from app.core.time_utils import now_utc
 from app.market_data.kline_constants import DEFAULT_KLINE_SYMBOL, KLINE_4H_INTERVAL_VALUE
+from app.market_data.kline_integrity.notification_formatter import build_daily_result_alert_event
 from app.market_data.kline_integrity.types import (
     ALLOWED_CHECK_MODES,
     CHECK_MODE_DAILY_INTEGRITY_CHECK,
@@ -537,7 +538,7 @@ def _send_daily_result_notification_safely(
             alert_repository = AlertMessageRepository()
 
         return alert_sender(
-            _build_daily_result_alert_event(result, request=request, report_status=report_status),
+            build_daily_result_alert_event(result, request=request, report_status=report_status),
             repository=alert_repository,
             db_session=db_session,
             send_real_alert=True,
@@ -549,39 +550,6 @@ def _send_daily_result_notification_safely(
             error_message=str(exc),
             attempted_real_send=True,
         )
-
-
-def _build_daily_result_alert_event(
-    result: DailyKlineIntegrityCheckResult,
-    *,
-    request: DailyKlineIntegrityCheckRequest,
-    report_status: str,
-) -> AlertEvent:
-    severity_by_status = {
-        "healthy": AlertSeverity.INFO,
-        "unhealthy": AlertSeverity.ERROR,
-        "unknown": AlertSeverity.CRITICAL,
-        "skipped": AlertSeverity.WARNING,
-    }
-    summary_by_status = {
-        "healthy": "Daily Kline health confirmed: healthy",
-        "unhealthy": "Daily Kline health check completed with issues",
-        "unknown": "Daily Kline health could not be confirmed",
-        "skipped": "Daily Kline health could not be confirmed because this run was skipped",
-    }
-    return AlertEvent(
-        alert_type=(
-            AlertType.KLINE_INTEGRITY_CHECK_PASSED
-            if report_status == "healthy"
-            else AlertType.KLINE_INTEGRITY_CHECK_FAILED
-        ),
-        severity=severity_by_status.get(report_status, AlertSeverity.CRITICAL),
-        title=f"Daily Kline integrity result: {report_status}",
-        summary=summary_by_status.get(report_status, "Daily Kline health could not be confirmed"),
-        details=dict(result.details),
-        source="app.market_data.kline_integrity.kline_integrity_service",
-        trace_id=request.trace_id,
-    )
 
 
 def _send_report_alert_safely(

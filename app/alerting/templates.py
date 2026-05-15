@@ -16,7 +16,7 @@ from app.core.exceptions import ValidationError
 from app.core.time_utils import format_datetime_with_timezone, utc_aware_to_prc_aware
 
 NOT_TRADING_ADVICE_TEXT = "本提醒不是交易建议，不包含自动交易动作。"
-KLINE_BOUNDARY_TEXT = "系统没有自动修复数据，没有人工改数，也没有执行自动交易。"
+KLINE_BOUNDARY_TEXT = "系统没有自动修复数据，没有人工改数，没有自动回补，也没有执行自动交易。"
 WECHAT_VISIBLE_BODY_DETAIL_KEY = "_wechat_visible_body"
 
 SEVERITY_LABELS: Mapping[AlertSeverity, str] = {
@@ -103,7 +103,7 @@ def render_alert_message(event: AlertEvent) -> str:
             f"【{title}】\n\n"
             f"级别：{_severity_label(event.severity)}\n"
             f"{sanitize_text(visible_body)}\n\n"
-            f"{NOT_TRADING_ADVICE_TEXT}{boundary_block}"
+            f"{NOT_TRADING_ADVICE_TEXT}"
         )
 
     return (

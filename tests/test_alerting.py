@@ -89,6 +89,7 @@ def test_kline_related_templates_state_no_auto_repair_or_manual_data_change() ->
 
         assert "没有自动修复数据" in message
         assert "没有人工改数" in message
+        assert "没有自动回补" in message
         assert "没有执行自动交易" in message
 
 
