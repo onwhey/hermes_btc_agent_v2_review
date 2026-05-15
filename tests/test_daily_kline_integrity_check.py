@@ -6,7 +6,8 @@ from types import SimpleNamespace
 from typing import Any, Iterable
 
 import app.storage.mysql.session as mysql_session
-from app.alerting.types import AlertSendResult, AlertSendStatus, AlertType
+from app.alerting.service import format_alert_message
+from app.alerting.types import AlertSendResult, AlertSendStatus, AlertSeverity, AlertType
 from app.core.config import AppSettings
 from app.core.task_lock import build_kline_integrity_check_lock_key
 from app.market_data.kline_constants import (
@@ -221,6 +222,28 @@ def assert_single_daily_notification(alert_sender: FakeAlertSender, report_statu
     assert event.alert_type == expected_type
 
 
+def _format_single_daily_notification_message(alert_sender: FakeAlertSender) -> str:
+    assert len(alert_sender.calls) == 1
+    return format_alert_message(alert_sender.calls[0]["event"])
+
+
+def _assert_daily_wechat_message_hides_internal_context(message: str) -> None:
+    hidden_terms = (
+        "report",
+        "existing_open_time_ms",
+        "writable_open_time_ms",
+        "metadata",
+        "lock_key",
+        "requested_binance_limit",
+        "enforce_database_source_rules",
+        "Daily Kline integrity result",
+        "Daily Kline health confirmed",
+        "Binance REST official klines",
+    )
+    for hidden_term in hidden_terms:
+        assert hidden_term not in message
+
+
 def test_daily_recent_100_pass_records_quality_and_sends_success_alert_without_formal_write() -> None:
     result, repository, quality_repository, alert_sender, _session, client = run_daily_with_fakes(
         raw_klines=make_raw_klines(101),
@@ -238,6 +261,59 @@ def test_daily_recent_100_pass_records_quality_and_sends_success_alert_without_f
     assert alert_sender.calls[0]["event"].details["source"] == "Binance REST official klines"
     assert repository.bulk_write_called is False
     assert repository.delete_called is False
+
+
+def test_daily_healthy_notification_uses_compact_chinese_visible_body_without_internal_context() -> None:
+    result, _repository, _quality_repository, alert_sender, _session, _client = run_daily_with_fakes(
+        raw_klines=make_raw_klines(101),
+        existing=[official_model(offset) for offset in range(100)],
+    )
+
+    event = alert_sender.calls[0]["event"]
+    message = _format_single_daily_notification_message(alert_sender)
+
+    assert event.title == "每日 K线健康检查通过"
+    assert event.summary == "最近 100 根 4h K线检查通过"
+    assert event.severity == AlertSeverity.INFO
+    assert "【每日 K线健康检查通过】" in message
+    assert "级别：信息" in message
+    assert "币种周期：BTCUSDT 4h" in message
+    assert "检查范围：" in message
+    assert "检查数量：100 根" in message
+    assert "问题数量：0" in message
+    assert "最近 100 根 4h K线连续、无缺失、无重复、未发现数据质量异常。" in message
+    assert "Binance REST 官方 K线" in message
+    assert "不修复、不回补、不写入正式 K线表" in message
+    assert "已过滤未收盘 K线 1 根，未写入数据库。" in message
+    assert "本次为只读健康检查" in message
+    assert "本提醒不是交易建议" in message
+    assert message.count("边界声明：") == 1
+    assert message.count("没有自动修复") == 1
+    assert f"追踪ID：{result.trace_id}" in message
+    assert "action" not in message
+    assert "check_mode" not in message
+    assert "check_trigger" not in message
+    assert "trigger_source" not in message
+    _assert_daily_wechat_message_hides_internal_context(message)
+
+
+def test_daily_notification_keeps_internal_context_structured_but_not_visible() -> None:
+    _result, _repository, _quality_repository, alert_sender, _session, _client = run_daily_with_fakes(
+        raw_klines=make_raw_klines(101),
+        existing=[official_model(offset) for offset in range(100)],
+    )
+
+    event = alert_sender.calls[0]["event"]
+    message = _format_single_daily_notification_message(alert_sender)
+    internal_context = event.details["_internal_context"]
+
+    assert event.details["action"] == "check_only_no_repair_no_backfill_no_market_kline_write"
+    assert event.details["report"]["metadata"]["filtered_unclosed_count"] == 1
+    assert len(event.details["report"]["existing_open_time_ms"]) == 100
+    assert internal_context["report"] == event.details["report"]
+    assert internal_context["lock_key"] == event.details["lock_key"]
+    assert "check_only_no_repair_no_backfill_no_market_kline_write" not in message
+    assert "filtered_unclosed_count" not in message
 
 
 def test_daily_integrity_lock_acquire_success_uses_symbol_interval_key_and_releases() -> None:
@@ -359,6 +435,46 @@ def test_daily_missing_database_kline_fails_alerts_and_does_not_backfill() -> No
     assert quality_repository.records[0].report.status.value == "failed"
     assert_single_daily_notification(alert_sender, "unhealthy")
     assert repository.bulk_write_called is False
+
+
+def test_daily_unhealthy_notification_stays_error_and_shows_compact_issue_summary() -> None:
+    existing = [official_model(offset) for offset in range(100) if offset not in {5, 6, 7, 8}]
+
+    result, _repository, _quality_repository, alert_sender, _session, _client = run_daily_with_fakes(
+        raw_klines=make_raw_klines(101),
+        existing=existing,
+    )
+
+    event = alert_sender.calls[0]["event"]
+    message = _format_single_daily_notification_message(alert_sender)
+
+    assert result.status == DailyKlineIntegrityStatus.FAILED
+    assert event.title == "每日 K线健康检查发现异常"
+    assert event.severity in {AlertSeverity.ERROR, AlertSeverity.CRITICAL}
+    assert "【每日 K线健康检查发现异常】" in message
+    assert "级别：错误" in message
+    assert "币种周期：BTCUSDT 4h" in message
+    assert "检查范围：" in message
+    assert "检查数量：100 根" in message
+    assert "问题数量：4" in message
+    assert "关键问题：" in message
+    assert "1. 数据库缺失 Binance 官方 K线" in message
+    assert "2. 数据库缺失 Binance 官方 K线" in message
+    assert "3. 数据库缺失 Binance 官方 K线" in message
+    assert "4. 数据库缺失 Binance 官方 K线" not in message
+    assert "数据质量检查ID：" in message
+    assert f"追踪ID：{result.trace_id}" in message
+    assert "请检查采集链路、Binance REST 返回、数据库最近 K线" in message
+    assert "不要人工改数、不要自动修复" in message
+    assert "本次为只读健康检查" in message
+    assert "本提醒不是交易建议" in message
+    assert message.count("边界声明：") == 1
+    assert message.count("没有自动修复") == 1
+    assert "action" not in message
+    assert "check_mode" not in message
+    assert "check_trigger" not in message
+    assert "trigger_source" not in message
+    _assert_daily_wechat_message_hides_internal_context(message)
 
 
 def test_daily_database_field_mismatch_fails_alerts_and_does_not_overwrite() -> None:

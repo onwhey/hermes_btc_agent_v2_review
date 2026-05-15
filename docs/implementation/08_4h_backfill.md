@@ -538,7 +538,7 @@ app/alerting/templates.py::render_alert_message
 - `trigger_source`
 - `dry_run`
 
-以上字段不再原样渲染到微信正文。`app/alerting/templates.py::render_alert_message()` 在发现 `_wechat_visible_body` 时，只渲染中文精简正文，不展开 `_internal_context`。
+以上字段不再原样渲染到微信正文。`app/alerting/templates.py::render_alert_message()` 在发现 `_wechat_visible_body` 时，只渲染中文精简正文，不展开 `_internal_context`。手动回补属于 K线相关通知；如果精简正文未自行包含边界声明，模板会追加“系统没有自动修复数据，没有人工改数，没有自动回补，也没有执行自动交易”。
 
 ### 14.7 数据库、Redis、外部接口与 Hermes
 

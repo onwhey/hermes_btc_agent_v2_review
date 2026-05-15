@@ -64,6 +64,7 @@ run_daily_kline_integrity_check()
 
 ```text
 app/market_data/kline_integrity/results.py
+app/market_data/kline_integrity/notification_formatter.py
 ```
 
 核心调用链路：
@@ -90,6 +91,10 @@ app/storage/mysql/repositories/market_kline_4h_repository.py::list_by_time_range
 app/storage/mysql/repositories/data_quality_check_repository.py::create_quality_check_record
     ↓
 app/market_data/kline_integrity/kline_integrity_service.py::_send_daily_result_notification_and_adjust_result
+    ↓
+app/market_data/kline_integrity/kline_integrity_service.py::_send_daily_result_notification_safely
+    ↓
+app/market_data/kline_integrity/notification_formatter.py::build_daily_result_alert_event
     ↓
 app/alerting/service.py::send_alert
 ```
@@ -502,3 +507,176 @@ scheduler / `daily_integrity_check` 场景下，`run_daily_kline_integrity_check
 这四类结果不再拆成“健康通知”和“失败报警”两套 scheduler 通知路径；同一次 scheduler 每日复核最多只产生一条 Hermes 结果通知。通知 `details` 必须包含 `report_status`、`symbol`、`interval`、`limit`、`trigger_source`、可用的检查数量和首个问题信息，以及 `no_repair_performed=true`。
 
 manual CLI 场景下，参数错误可以只返回错误，复核锁占用可以只返回 `skipped`，不强制发送 Hermes。该边界不影响 scheduler 每日结果通知规则。
+
+### 14.6 每日结果微信正文精简
+
+本分支只优化用户可见 Hermes / 微信正文，不修改 K线检查算法、不修改 scheduler slot 状态、不修改 Hermes gateway、不新增数据库迁移。
+
+通知生成链路：
+
+```text
+app/market_data/kline_integrity/kline_integrity_service.py::_send_daily_result_notification_safely
+    ↓
+app/market_data/kline_integrity/notification_formatter.py::build_daily_result_alert_event
+    ↓
+app/market_data/kline_integrity/notification_formatter.py::_build_daily_result_wechat_visible_body
+    ↓
+app/alerting/templates.py::render_alert_message
+    ↓
+app/alerting/service.py::send_alert
+```
+
+`build_daily_result_alert_event()` 仍把完整审计字段保留在 `AlertEvent.details` 中，包括：
+
+- `action`
+- `check_mode`
+- `check_trigger`
+- `trigger_source`
+- `lock_key`
+- `report`
+- `report.existing_open_time_ms`
+- `report.writable_open_time_ms`
+- `report.metadata`
+- `requested_binance_limit`
+- `enforce_database_source_rules`
+- `started_at`
+- `finished_at`
+- 原始 `source` / `status` / `report_status`
+
+这些字段用于 `alert_message` 结构化上下文、`data_quality_check`、`collector_event_log`、服务日志和排查审计，不直接展示在微信正文。
+
+微信正文只读取 `AlertEvent.details["_wechat_visible_body"]`。`render_alert_message()` 检测到该字段后，不再把 `details` 原始字典逐项渲染到微信，而是只展示精简中文正文。每日复核精简正文已包含“边界声明”，所以通用 K线边界不会重复追加。
+
+#### 14.6.1 健康通过正文
+
+当 `report_status=healthy` 且 `issue_count=0` 时，微信正文包含：
+
+- 中文标题：`每日 K线健康检查通过`。
+- 中文级别：`信息`。
+- 币种周期：例如 `BTCUSDT 4h`。
+- 检查范围：UTC 起止时间。
+- 检查数量与问题数量。
+- 检查结果：最近 N 根 4h K线连续、无缺失、无重复、未发现数据质量异常。
+- 数据来源：`Binance REST 官方 K线`。
+- 补充：已过滤未收盘 K线数量。
+- 只读边界：不修复、不回补、不写入正式 K线表、没有人工改数、没有自动交易。
+- 追踪ID。
+- `本提醒不是交易建议`。
+
+示例：
+
+```text
+【每日 K线健康检查通过】
+
+级别：信息
+币种周期：BTCUSDT 4h
+
+检查范围：
+2026-04-28 08:00 UTC ~ 2026-05-14 20:00 UTC
+
+检查数量：100 根
+问题数量：0
+
+检查结果：
+最近 100 根 4h K线连续、无缺失、无重复、未发现数据质量异常。
+
+数据来源：
+Binance REST 官方 K线；本次仅检查，不修复、不回补、不写入正式 K线表。
+
+补充：
+已过滤未收盘 K线 1 根，未写入数据库。
+
+边界声明：
+本次为只读健康检查：系统没有自动修复、没有人工改数、没有自动回补，也没有执行自动交易。
+
+追踪ID：434449aa0be5405694f3a874c0209ac1
+
+本提醒不是交易建议，不包含自动交易动作。
+```
+
+#### 14.6.2 异常正文
+
+当 `report_status=unhealthy` / `unknown` / `skipped` 时，微信正文仍保持原有严重级别映射，不降级：
+
+- `unhealthy`：`error` / 微信显示 `错误`。
+- `unknown`：`critical` / 微信显示 `严重`。
+- `skipped`：`warning` / 微信显示 `注意`。
+
+异常正文只展示前 1 到 3 个关键问题摘要，不展开完整 `issues`、`existing_open_time_ms`、`metadata` 或 `report` 原始字典。
+
+正文包含：
+
+- 币种周期。
+- 检查范围。
+- 检查数量。
+- 问题数量。
+- 前 1 到 3 个中文关键问题摘要。
+- 数据质量检查ID。
+- 追踪ID。
+- 建议动作：检查采集链路、Binance REST 返回、数据库最近 K线；不要人工改数、不要自动修复。
+- 只读边界与非交易建议声明。
+
+示例：
+
+```text
+【每日 K线健康检查发现异常】
+
+级别：错误
+币种周期：BTCUSDT 4h
+
+检查范围：
+2026-04-28 08:00 UTC ~ 2026-05-14 20:00 UTC
+
+检查数量：100 根
+问题数量：4
+
+关键问题：
+1. 数据库缺失 Binance 官方 K线（open time：2026-04-29 04:00 UTC）。
+2. 数据库缺失 Binance 官方 K线（open time：2026-04-29 08:00 UTC）。
+3. 数据库缺失 Binance 官方 K线（open time：2026-04-29 12:00 UTC）。
+
+数据来源：
+Binance REST 官方 K线；本次仅检查，不修复、不回补、不写入正式 K线表。
+
+数据质量检查ID：
+1
+
+建议动作：
+请检查采集链路、Binance REST 返回、数据库最近 K线；不要人工改数、不要自动修复。
+
+边界声明：
+本次为只读健康检查：系统没有自动修复、没有人工改数、没有自动回补，也没有执行自动交易。
+
+追踪ID：434449aa0be5405694f3a874c0209ac1
+
+本提醒不是交易建议，不包含自动交易动作。
+```
+
+#### 14.6.3 测试覆盖
+
+新增或更新的测试：
+
+```text
+tests/test_daily_kline_integrity_check.py::test_daily_healthy_notification_uses_compact_chinese_visible_body_without_internal_context
+tests/test_daily_kline_integrity_check.py::test_daily_notification_keeps_internal_context_structured_but_not_visible
+tests/test_daily_kline_integrity_check.py::test_daily_unhealthy_notification_stays_error_and_shows_compact_issue_summary
+tests/test_alerting.py::test_kline_related_templates_state_no_auto_repair_or_manual_data_change
+```
+
+覆盖内容：
+
+- 健康通过通知使用中文标题和中文级别，包含 `symbol`、`interval`、检查范围、`checked_count`、`issue_count=0`、追踪ID和只读边界。
+- 健康通过通知不包含 `report` 原始字典、`existing_open_time_ms`、`action`、`lock_key`、`metadata` 或旧英文标题。
+- 异常通知仍保持 `error` / `critical`，只展示前几个关键问题摘要，不展开完整内部上下文。
+- 异常通知包含“不要人工改数、不要自动修复”的边界提示。
+- 结构化 context 仍保留完整内部字段，只是不进入微信正文。
+- K线相关固定模板统一声明没有自动修复、没有人工改数、没有自动回补、没有执行自动交易。
+
+本次不涉及数据库迁移，因为没有新增表、字段、索引或枚举；只修改 Hermes 可见正文构造、固定模板尾部声明和测试。
+
+风险边界：
+
+- 不影响 4h 增量采集：未修改 `app/market_data/incremental` 或正式 K线写入 repository。
+- 不影响每日健康检查逻辑：未修改 Binance 拉取、未收盘过滤、连续性检查、数据库对齐比较或质量报告判定。
+- 不影响正式 K线写入：每日复核仍只读 `market_kline_4h`，只写 `data_quality_check` 和可选 `alert_message`。
+- 不影响 Hermes gateway：未修改 Hermes client、签名、发送、重试或 `channel_response` 保存逻辑。
