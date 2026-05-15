@@ -393,3 +393,217 @@ tests/test_runtime_status.py
 .\.venv\Scripts\python.exe -m pytest tests/test_alerting.py -q
 .\.venv\Scripts\python.exe -m pytest tests/test_runtime_status.py -q
 ```
+
+## 12. 功能：BTCUSDT 1d 日 K 增量采集 service
+
+### 12.1 发起方式
+
+第 14-3 只实现 app 层 service，并新增一个人工验证 CLI：
+
+```text
+python -m scripts.collect_1d_klines --symbol BTCUSDT --interval 1d --trigger-source cli --confirm-write --notify-success
+```
+
+后续 scheduler 接入时不得调用 `scripts.collect_1d_klines.py`，必须直接调用：
+
+```text
+app/market_data/collector/kline_1d_incremental_collector.py::run_incremental_1d_collection
+```
+
+并显式传入 `trigger_source=scheduler`。
+
+### 12.2 核心调用链路
+
+```text
+scripts/collect_1d_klines.py::main
+    ↓
+app/market_data/collector/kline_1d_incremental_collector.py::run_incremental_1d_collection
+    ↓
+app/core/task_lock.py::RedisTaskLock.acquire_lock
+    ↓
+app/storage/mysql/repositories/market_kline_1d_repository.py::get_latest
+    ↓
+app/exchange/binance/rest_client.py::BinanceRestClient.get_server_time
+    ↓
+app/exchange/binance/rest_client.py::BinanceRestClient.get_klines
+    ↓
+app/market_data/kline_parser.py::parse_binance_klines
+    ↓
+app/market_data/collector/kline_1d_incremental_quality.py::check_incremental_1d_quality
+    ↓
+app/storage/mysql/repositories/market_kline_1d_repository.py::bulk_upsert
+```
+
+### 12.3 数据源与写入表
+
+数据只能来自 Binance REST 官方 K线接口。
+
+写入目标只能是：
+
+```text
+market_kline_1d
+```
+
+本功能不写 `market_kline_4h`，不创建混合 K线表，不请求 WebSocket K线，不请求第三方数据源。
+
+`trigger_source` 与 `data_source` 映射：
+
+```text
+cli       -> binance_rest_by_cli
+scheduler -> binance_rest_by_scheduler
+```
+
+### 12.4 空表不自动初始化
+
+如果 `market_kline_1d` 中目标 symbol 没有任何记录，增量采集不会自动拉取 365/500 根历史日 K，也不会自动初始化历史数据。
+
+处理方式：
+
+1. 返回 `blocked`。
+2. 写入 `collector_event_log`，`event_type=kline_1d_incremental`。
+3. 提示“1d 数据尚未初始化，请先执行手动 backfill”。
+4. 不请求 Binance K线批次。
+5. 不写正式 1d K线表。
+
+### 12.5 理论最新已收盘日 K 判断
+
+理论最新已收盘日 K 基于 Binance `server_time_ms` 判断。
+
+规则：
+
+1. 1d K线按 UTC 自然日。
+2. 当前 UTC 当天正在形成的日 K 不视为已收盘。
+3. `expected_latest_open_time_ms = floor(server_time_ms / 86,400,000) * 86,400,000 - 86,400,000`。
+4. 如果数据库最新日 K 晚于该值，或最新行 `close_time_ms >= server_time_ms`，视为疑似未收盘 K线误写正式表或系统时间异常，任务 blocked。
+5. 本功能只报告并阻断，不删除、不覆盖、不修复正式表记录。
+
+### 12.6 重叠拉取规则
+
+增量采集不会只拉最新一根。
+
+如果数据库最新日 K 是 `2026-05-13 00:00 UTC`，理论最新已收盘日 K 是 `2026-05-15 00:00 UTC`，REST 拉取范围覆盖：
+
+```text
+2026-05-13
+2026-05-14
+2026-05-15
+```
+
+并额外允许探测当前未收盘日 K，用于过滤统计。
+
+写入规则：
+
+1. 已存在边界 K线跳过。
+2. 新缺失且已收盘 K线写入。
+3. REST 批次不连续、缺少边界 K线或缺口未返回时 blocked。
+4. 不跳过缺口继续写后续 K线。
+
+### 12.7 未收盘日 K过滤语义
+
+REST 返回当前 UTC 当天尚未收盘的 1d K线时，系统过滤掉该 K线，统计 `filtered_unclosed_count`，不作为 error。
+
+如果 `market_kline_1d` 已经存在未收盘日 K，或最新日 K 晚于理论最新已收盘日 K，则属于正式表异常，任务 blocked。
+
+这两种情况语义不同：
+
+1. REST 当前未收盘日 K 被过滤：预期内，不写入。
+2. 正式表已有未收盘日 K：异常，只阻断和提醒，不自动修复。
+
+### 12.8 幂等写入规则
+
+1. `MarketKline1dRepository.bulk_upsert()` 只访问 `market_kline_1d`。
+2. 已存在 `symbol + open_time_ms` 且字段一致时跳过。
+3. 已存在正式日 K 与 Binance 返回字段冲突时 blocked，不覆盖。
+4. dry-run 不写正式表。
+5. 重复执行同一次增量采集不会产生重复数据。
+
+### 12.9 collector_event_log
+
+事件类型：
+
+```text
+kline_1d_incremental
+```
+
+关键字段：
+
+```text
+symbol = BTCUSDT
+interval_value = 1d
+trigger_source = cli 或 scheduler
+data_source = binance_rest_by_cli 或 binance_rest_by_scheduler
+requested_start_open_time_ms
+requested_end_open_time_ms
+requested_count
+fetched_count
+parsed_count
+filtered_unclosed_count
+skipped_existing_count
+inserted_count
+issue_count
+trace_id
+```
+
+状态：
+
+1. `success`：质量检查通过，写入或 dry-run 完成；如果已是最新则不请求 K线批次。
+2. `blocked`：空表未初始化、正式表疑似未收盘误写、REST 不连续、字段异常或数据库冲突。
+3. `failed`：Binance、解析、Redis lock、MySQL 写入或事件记录异常。
+4. `skipped`：同一 `symbol + interval=1d` 采集锁已存在。
+
+### 12.10 Hermes 提醒
+
+提醒由：
+
+```text
+app/market_data/collector/kline_1d_incremental_alerts.py
+```
+
+构造，并通过 `app/alerting` 统一发送。
+
+规则：
+
+1. blocked / failed 使用中文精简提醒。
+2. `--notify-success` 时可发送成功摘要。
+3. dry-run 的 blocked / failed 不提交真实 Hermes。
+4. 正常过滤当前未收盘日 K 不作为 error。
+5. 正文不展开完整内部 context、完整 REST 数据或完整 SQL 结果。
+6. 不写“微信发送成功”或“微信已送达”。
+7. 保留边界声明：系统没有自动修复、没有人工改数、没有自动回补，也没有执行自动交易。
+
+Hermes HTTP 2xx 只代表已提交 Hermes，不代表微信最终送达。
+
+### 12.11 本阶段不负责
+
+第 14-3 不实现 1d scheduler。
+第 14-3 不实现 1d 每日复核。
+第 14-3 不修改 runtime status。
+第 14-3 不实现 MarketContextSnapshot。
+第 14-3 不生成策略建议。
+第 14-3 不调用 DeepSeek、GPT、Claude 或其他大模型。
+第 14-3 不执行自动交易。
+第 14-3 不修改 `market_kline_4h`。
+第 14-3 不修改 Hermes gateway。
+
+### 12.12 测试
+
+新增测试：
+
+```text
+tests/test_1d_kline_incremental_collector.py
+```
+
+覆盖：
+
+1. 空表 blocked，不自动初始化。
+2. Binance server time 计算理论最新已收盘日 K。
+3. 重叠拉取、边界 K 跳过、新日 K 写入。
+4. 当前未收盘日 K过滤。
+5. 正式表未收盘误写 blocked。
+6. REST 缺口和数据库边界不连续 blocked。
+7. 字段异常 blocked。
+8. 幂等重复执行。
+9. collector_event_log 字段。
+10. Hermes blocked / success 提醒。
+11. CLI 只允许人工 `trigger_source=cli`。
+12. 不使用 4h repository、不调用大模型、不访问交易私有接口。

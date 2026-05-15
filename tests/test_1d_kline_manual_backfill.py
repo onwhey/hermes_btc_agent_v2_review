@@ -201,6 +201,16 @@ class FakeKline1dRepository:
         self.bulk_write_called = False
         self.wrote_4h = False
 
+    def get_latest(
+        self,
+        _db_session: Any,
+        *,
+        symbol: str,
+    ) -> MarketKline1d | None:
+        if not self.rows:
+            return None
+        return self.rows[max(self.rows)]
+
     def list_by_open_times(
         self,
         _db_session: Any,
