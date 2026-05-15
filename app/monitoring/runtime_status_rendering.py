@@ -44,7 +44,11 @@ def render_runtime_status_console(report: RuntimeStatusReport) -> str:
         if report.mysql.recent_kline_count is None:
             lines.append("- 最近 100 根 K线：无法确认")
         else:
-            count_label = "数量正常" if report.mysql.recent_kline_count >= 100 else f"仅 {report.mysql.recent_kline_count} 根"
+            count_label = (
+                "已读取 100 根，连续性以每日 K线复核为准"
+                if report.mysql.recent_kline_count >= 100
+                else f"仅读取到 {report.mysql.recent_kline_count} 根"
+            )
             lines.append(f"- 最近 100 根 K线：{count_label}")
         lines.append(f"- 最近一次 4h 增量采集：{_collector_status_label(report.mysql.latest_collector_status)}")
         lines.append(f"- 最近一次每日 K线复核：{_daily_quality_status_label(report.mysql.latest_daily_quality_status)}")
@@ -147,7 +151,7 @@ def _build_runtime_status_alert_body(report: RuntimeStatusReport) -> str:
         _data_summary(report),
         "",
         "告警状态：",
-        "本次状态摘要已提交 Hermes；最终微信送达状态由 Hermes/微信通道决定，BTC Agent 不直接确认。",
+        "本摘要将通过 Hermes 通道提交；最终微信送达状态由 Hermes/微信通道决定，BTC Agent 不直接确认。",
     ]
     if issue_lines:
         body.extend(["", "关键问题：", *issue_lines])

@@ -9,6 +9,7 @@ from app.alerting.service import format_alert_message
 from app.alerting.types import AlertFinalDeliveryStatus, AlertGatewayStatus, AlertSendResult, AlertSendStatus
 from app.core.config import AppSettings
 from app.core.time_utils import UTC
+from app.monitoring import runtime_status as runtime_status_module
 from app.monitoring.runtime_status import collect_runtime_status
 from app.monitoring.runtime_status_rendering import (
     build_runtime_status_alert_event,
@@ -30,8 +31,16 @@ class FakeSystemdChecker:
 
 
 class FakeRedis:
-    def __init__(self, *, fail: bool = False, ttl: int = 30, keys: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        fail: bool = False,
+        fail_scan: bool = False,
+        ttl: int = 30,
+        keys: list[str] | None = None,
+    ) -> None:
         self.fail = fail
+        self.fail_scan = fail_scan
         self.ttl_value = ttl
         self.keys_list = keys or ["bitcoin_price"]
 
@@ -47,6 +56,8 @@ class FakeRedis:
         return self.ttl_value
 
     def scan_iter(self, pattern: str):
+        if self.fail_scan:
+            raise RuntimeError("redis scan down")
         for key in self.keys_list:
             if fnmatch(key, pattern):
                 yield key
@@ -134,6 +145,8 @@ def test_runtime_status_default_report_is_chinese_and_read_only(capsys) -> None:
     assert "【Hermes BTC 运行状态检查】" in output
     assert "总体结论：正常" in output
     assert "最新 BTCUSDT 4h K线" in output
+    assert "最近 100 根 K线：已读取 100 根，连续性以每日 K线复核为准" in output
+    assert "最近 100 根 K线：数量正常" not in output
     assert "本检查只读，不修复、不回补、不写正式 K线表，也不执行自动交易" in output
     assert "Binance" not in output
     assert "DeepSeek" not in output
@@ -174,6 +187,13 @@ def test_runtime_status_send_alert_uses_compact_chinese_summary(capsys) -> None:
     assert "Hermes BTC 运行状态检查" in message
     assert "总体结论：正常" in message
     assert "最新 BTCUSDT 4h K线" in message
+    assert "本次状态摘要已提交 Hermes" not in message
+    assert "本摘要将通过 Hermes 通道提交" in message
+    assert "最终微信送达状态由 Hermes/微信通道决定，BTC Agent 不直接确认" in message
+    assert "微信发送成功" not in message
+    assert "微信已送达" not in message
+    assert "delivered" not in message
+    assert "weixin_success" not in message
     assert "scheduler:running:" not in message
     assert "SELECT" not in message
     assert "channel_response" not in message
@@ -196,7 +216,30 @@ def test_redis_status_reports_scheduler_key_overview_and_legacy_notice() -> None
     assert "历史残留" in console
 
 
-def test_redis_error_marks_runtime_status_error() -> None:
+def test_redis_client_create_error_marks_runtime_status_error_and_report_continues(monkeypatch) -> None:
+    def fail_create_client(settings: AppSettings) -> object:
+        raise RuntimeError("redis config missing")
+
+    monkeypatch.setattr(runtime_status_module, "create_redis_client", fail_create_client)
+
+    report = collect_runtime_status(
+        settings=AppSettings(),
+        systemd_checker=FakeSystemdChecker(),
+        mysql_reader=FakeMySqlReader(),
+        current_time_utc=CURRENT_TIME,
+    )
+    console = render_runtime_status_console(report)
+
+    assert report.redis.connection_ok is False
+    assert report.redis.level == RuntimeStatusLevel.ERROR
+    assert "redis config missing" in str(report.redis.error_message)
+    assert any("Redis 无法初始化或连接失败" in issue.message for issue in report.issues)
+    assert "服务状态：" in console
+    assert "数据状态：" in console
+    assert "告警状态：" in console
+
+
+def test_redis_ping_error_marks_runtime_status_error() -> None:
     report = collect_runtime_status(
         systemd_checker=FakeSystemdChecker(),
         redis_client=FakeRedis(fail=True),
@@ -207,6 +250,22 @@ def test_redis_error_marks_runtime_status_error() -> None:
     assert report.redis.connection_ok is False
     assert report.redis.level == RuntimeStatusLevel.ERROR
     assert report.overall_level == RuntimeStatusLevel.ERROR
+    assert "Redis：" in render_runtime_status_console(report)
+
+
+def test_redis_scan_error_marks_runtime_status_error_and_report_continues() -> None:
+    report = collect_runtime_status(
+        systemd_checker=FakeSystemdChecker(),
+        redis_client=FakeRedis(fail_scan=True),
+        mysql_reader=FakeMySqlReader(),
+        current_time_utc=CURRENT_TIME,
+    )
+    console = render_runtime_status_console(report)
+
+    assert report.redis.connection_ok is False
+    assert report.redis.level == RuntimeStatusLevel.ERROR
+    assert "redis scan down" in str(report.redis.error_message)
+    assert "告警状态：" in console
 
 
 def test_mysql_latest_kline_and_recent_events_drive_error_levels() -> None:
@@ -232,6 +291,27 @@ def test_mysql_latest_kline_and_recent_events_drive_error_levels() -> None:
     assert stale_report.mysql.level == RuntimeStatusLevel.ERROR
     assert collector_failed.mysql.level == RuntimeStatusLevel.ERROR
     assert daily_failed.mysql.level == RuntimeStatusLevel.ERROR
+
+
+def test_latest_kline_later_than_expected_closed_bar_marks_error() -> None:
+    report = collect_runtime_status(
+        systemd_checker=FakeSystemdChecker(),
+        redis_client=FakeRedis(),
+        mysql_reader=FakeMySqlReader(latest_open_time=datetime(2026, 5, 15, 8, 0, tzinfo=UTC)),
+        current_time_utc=CURRENT_TIME,
+    )
+
+    assert report.mysql.level == RuntimeStatusLevel.ERROR
+    assert report.overall_level == RuntimeStatusLevel.ERROR
+    assert any("未收盘 K线误写正式表" in issue.message for issue in report.issues)
+
+
+def test_latest_closed_kline_at_expected_time_remains_normal() -> None:
+    report = _normal_report()
+
+    assert report.mysql.latest_kline_open_time_utc == LATEST_CLOSED_4H
+    assert report.mysql.level == RuntimeStatusLevel.NORMAL
+    assert report.overall_level == RuntimeStatusLevel.NORMAL
 
 
 def test_alert_status_interprets_submission_semantics_and_flags_legacy_status() -> None:
@@ -275,3 +355,12 @@ def test_runtime_status_does_not_import_binance_or_model_clients() -> None:
         text = Path(path).read_text(encoding="utf-8")
         assert "app.exchange.binance" not in text
         assert "openai" not in text.lower()
+
+
+def test_runtime_status_implementation_doc_has_clean_test_commands() -> None:
+    text = Path("docs/implementation/13_runtime_observability_and_ops.md").read_text(encoding="utf-8")
+
+    assert "S cripts" not in text
+    assert "p ython.exe" not in text
+    assert ".\\.venv\\Scripts\\python.exe -m pytest tests/test_alerting.py tests/test_runtime_status.py" in text
+    assert "python -m pytest tests/test_alerting.py tests/test_runtime_status.py" in text

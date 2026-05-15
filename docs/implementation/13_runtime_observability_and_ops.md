@@ -152,7 +152,7 @@ K线新鲜度只根据数据库已有 K线判断，不请求 Binance。
 
 数据状态：
 - 最新 BTCUSDT 4h K线：2026-05-15 04:00:00 UTC / 2026-05-15 12:00 北京时间
-- 最近 100 根 K线：数量正常
+- 最近 100 根 K线：已读取 100 根，连续性以每日 K线复核为准
 - 最近一次 4h 增量采集：成功
 - 最近一次每日 K线复核：健康
 
@@ -191,7 +191,7 @@ Redis 状态：
 最新 BTCUSDT 4h K线为 2026-05-15 04:00:00 UTC，最近采集成功，每日 K线复核健康。
 
 告警状态：
-本次状态摘要已提交 Hermes；最终微信送达状态由 Hermes/微信通道决定，BTC Agent 不直接确认。
+本摘要将通过 Hermes 通道提交；最终微信送达状态由 Hermes/微信通道决定，BTC Agent 不直接确认。
 
 追踪ID：<trace_id>
 本提醒不是交易建议，系统没有执行自动交易。
@@ -276,10 +276,14 @@ Redis 写入：
 - 告警新状态语义和旧状态 warning。
 - 摘要通知不展开 Redis key 列表、SQL 查询结果或内部字典。
 
-已运行：
+测试命令：
 
 ```bash
+# Windows PowerShell
 .\.venv\Scripts\python.exe -m pytest tests/test_alerting.py tests/test_runtime_status.py
+
+# Linux
+python -m pytest tests/test_alerting.py tests/test_runtime_status.py
 ```
 
 默认 pytest 不请求 Binance、不连接真实 Redis/MySQL、不发送真实 Hermes、不调用 DeepSeek。

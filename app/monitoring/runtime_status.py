@@ -64,7 +64,7 @@ def collect_runtime_status(
     trace_id = uuid4().hex
 
     services = _check_systemd_services(systemd_checker or SystemdStatusChecker())
-    redis_status = _check_redis_status(redis_client or create_redis_client(settings))
+    redis_status = _build_redis_status(settings=settings, redis_client=redis_client)
     mysql_status, alert_status = _check_mysql_and_alert_status(
         mysql_reader or DefaultRuntimeMySqlReader(settings),
         now_utc=now_utc,
@@ -124,6 +124,21 @@ def _check_systemd_services(checker: SystemdStatusChecker) -> list[ServiceRuntim
             )
         )
     return services
+
+
+def _build_redis_status(*, settings: AppSettings, redis_client: Any | None) -> RedisRuntimeStatus:
+    if redis_client is not None:
+        return _check_redis_status(redis_client)
+    try:
+        created_client = create_redis_client(settings)
+    except Exception as exc:  # noqa: BLE001 - 运行检查必须把 Redis 初始化失败转换为报告项。
+        return RedisRuntimeStatus(
+            connection_ok=False,
+            level=RuntimeStatusLevel.ERROR,
+            error_message=str(exc),
+            issues=[RuntimeIssue(RuntimeStatusLevel.ERROR, "redis", f"Redis 无法初始化或连接失败：{exc}")],
+        )
+    return _check_redis_status(created_client)
 
 
 def _check_redis_status(redis_client: Any) -> RedisRuntimeStatus:
@@ -263,6 +278,16 @@ def _evaluate_kline_freshness(
         return RuntimeStatusLevel.ERROR
 
     expected_latest = _expected_latest_closed_4h_open_time(now_utc)
+    if latest_open_time_utc > expected_latest:
+        issues.append(
+            RuntimeIssue(
+                RuntimeStatusLevel.ERROR,
+                "kline",
+                "最新 K线时间晚于当前应有的最新已收盘 K线，疑似未收盘 K线误写正式表或系统时间异常。",
+            )
+        )
+        return RuntimeStatusLevel.ERROR
+
     lag_ms = int((expected_latest - latest_open_time_utc).total_seconds() * 1000)
     lag_bars = max(0, lag_ms // KLINE_4H_INTERVAL_MS)
     if lag_bars == 0:
