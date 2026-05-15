@@ -545,7 +545,7 @@ app/alerting/service.py::send_alert
 
 这些字段用于 `alert_message` 结构化上下文、`data_quality_check`、`collector_event_log`、服务日志和排查审计，不直接展示在微信正文。
 
-微信正文只读取 `AlertEvent.details["_wechat_visible_body"]`。`render_alert_message()` 检测到该字段后，不再把 `details` 原始字典逐项渲染到微信，而是只展示精简中文正文。
+微信正文只读取 `AlertEvent.details["_wechat_visible_body"]`。`render_alert_message()` 检测到该字段后，不再把 `details` 原始字典逐项渲染到微信，而是只展示精简中文正文。每日复核精简正文已包含“边界声明”，所以通用 K线边界不会重复追加。
 
 #### 14.6.1 健康通过正文
 

@@ -287,6 +287,8 @@ def test_daily_healthy_notification_uses_compact_chinese_visible_body_without_in
     assert "已过滤未收盘 K线 1 根，未写入数据库。" in message
     assert "本次为只读健康检查" in message
     assert "本提醒不是交易建议" in message
+    assert message.count("边界声明：") == 1
+    assert message.count("没有自动修复") == 1
     assert f"追踪ID：{result.trace_id}" in message
     assert "action" not in message
     assert "check_mode" not in message
@@ -466,6 +468,8 @@ def test_daily_unhealthy_notification_stays_error_and_shows_compact_issue_summar
     assert "不要人工改数、不要自动修复" in message
     assert "本次为只读健康检查" in message
     assert "本提醒不是交易建议" in message
+    assert message.count("边界声明：") == 1
+    assert message.count("没有自动修复") == 1
     assert "action" not in message
     assert "check_mode" not in message
     assert "check_trigger" not in message

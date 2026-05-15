@@ -335,6 +335,14 @@ def run_backfill_with_fakes(
     )
 
 
+def assert_kline_boundary_statement_present_once(message: str) -> None:
+    assert "没有自动修复" in message
+    assert "没有人工改数" in message
+    assert "没有自动回补" in message
+    assert "没有执行自动交易" in message
+    assert message.count("没有自动修复") == 1
+
+
 def test_backfill_middle_single_gap_inserts_between_existing_neighbors() -> None:
     existing = [model_from_dto(build_dto(0)), model_from_dto(build_dto(1)), model_from_dto(build_dto(3))]
 
@@ -469,6 +477,7 @@ def test_unclosed_kline_blocks_without_formal_write_and_sends_notice_alert() -> 
     assert "结束时间参数 end-utc" in message
     assert "追踪ID：" in message
     assert result.trace_id in message
+    assert_kline_boundary_statement_present_once(message)
     assert "formal_write_performed" not in message
     assert "requested_start_open_time_ms" not in message
     assert "quality_summary" not in message
@@ -495,6 +504,13 @@ def test_bulk_upsert_exception_does_not_leave_partial_formal_kline_write() -> No
     event = alert_sender.calls[0]["event"]
     assert event.severity.value == "critical"
     assert event.title == "手动补 K 执行失败"
+    message = format_alert_message(event)
+    assert "结果：" in message
+    assert "正式 K线表未被本次任务修改" in message
+    assert_kline_boundary_statement_present_once(message)
+    assert "formal_write_performed" not in message
+    assert "quality_summary" not in message
+    assert "action" not in message
 
 
 def test_task_lock_already_exists_skips_without_binance_or_formal_write() -> None:
@@ -670,6 +686,7 @@ def test_success_notify_success_sends_fixed_template_success_alert() -> None:
     assert event.title == "手动补 K 已完成"
     assert "采集事件日志 collector_event_log" in message
     assert "追踪ID" in message
+    assert_kline_boundary_statement_present_once(message)
     assert "trace_id" not in message
 
 
@@ -697,6 +714,7 @@ def test_dry_run_notify_success_alert_clearly_marks_no_formal_write() -> None:
     assert "预演检查（dry-run）" in event.summary
     assert "预演模式（dry-run）只完成请求、解析和质量检查，正式 K线表未被修改。" in message
     assert "采集事件日志 collector_event_log" in message
+    assert_kline_boundary_statement_present_once(message)
     internal_context = event.details["_internal_context"]
     assert internal_context["dry_run"] is True
     assert internal_context["formal_write_performed"] is False

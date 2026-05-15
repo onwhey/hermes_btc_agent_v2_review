@@ -72,6 +72,29 @@ def _severity_label(severity: AlertSeverity) -> str:
     return SEVERITY_LABELS.get(severity, severity.value)
 
 
+def _kline_boundary_block_for_visible_body(event: AlertEvent, visible_body: object) -> str:
+    """Return the Kline safety boundary when the compact body does not include it.
+
+    参数：`event` 是报警事件；`visible_body` 是微信精简正文。
+    返回值：需要追加的 K线边界声明，或空字符串。
+    失败场景：无预期失败场景。
+    外部服务：不访问外部服务。
+    数据影响：不读写 MySQL，不读写 Redis，不发送 Hermes。
+    本函数只补足用户可见安全边界，不展开结构化 context。
+    """
+
+    if event.alert_type not in KLINE_RELATED_ALERT_TYPES:
+        return ""
+    visible_text = str(visible_body)
+    has_full_boundary = all(
+        phrase in visible_text
+        for phrase in ("没有自动修复", "没有人工改数", "没有自动回补", "没有执行自动交易")
+    )
+    if "边界声明" in visible_text or has_full_boundary:
+        return ""
+    return f"\n{KLINE_BOUNDARY_TEXT}"
+
+
 def render_alert_message(event: AlertEvent) -> str:
     """渲染固定模板报警文案。
 
@@ -99,11 +122,12 @@ def render_alert_message(event: AlertEvent) -> str:
     boundary_block = f"\n{boundary_text}" if boundary_text else ""
 
     if visible_body is not None:
+        visible_boundary_block = _kline_boundary_block_for_visible_body(event, visible_body)
         return (
             f"【{title}】\n\n"
             f"级别：{_severity_label(event.severity)}\n"
             f"{sanitize_text(visible_body)}\n\n"
-            f"{NOT_TRADING_ADVICE_TEXT}"
+            f"{NOT_TRADING_ADVICE_TEXT}{visible_boundary_block}"
         )
 
     return (

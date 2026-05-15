@@ -6,7 +6,7 @@ from pathlib import Path
 from app.alerting.hermes_client import HermesClient, HermesTransportResponse, build_hermes_headers
 from app.alerting.sanitizer import sanitize_mapping
 from app.alerting.service import format_alert_message, send_alert
-from app.alerting.templates import supported_alert_type_values
+from app.alerting.templates import WECHAT_VISIBLE_BODY_DETAIL_KEY, supported_alert_type_values
 from app.alerting.types import (
     AlertEvent,
     AlertFinalDeliveryStatus,
@@ -91,6 +91,26 @@ def test_kline_related_templates_state_no_auto_repair_or_manual_data_change() ->
         assert "没有人工改数" in message
         assert "没有自动回补" in message
         assert "没有执行自动交易" in message
+
+
+def test_non_kline_visible_body_does_not_append_kline_boundary_statement() -> None:
+    event = AlertEvent(
+        alert_type=AlertType.SYSTEM_CHECK,
+        severity=AlertSeverity.INFO,
+        title="系统检查通过",
+        summary="system ok",
+        details={WECHAT_VISIBLE_BODY_DETAIL_KEY: "系统检查可见正文。"},
+        source="tests.test_alerting",
+    )
+
+    message = format_alert_message(event)
+
+    assert "系统检查可见正文" in message
+    assert "本提醒不是交易建议" in message
+    assert "没有自动修复" not in message
+    assert "没有人工改数" not in message
+    assert "没有自动回补" not in message
+    assert "没有执行自动交易" not in message
 
 
 def test_sanitizer_redacts_sensitive_mapping_values() -> None:
