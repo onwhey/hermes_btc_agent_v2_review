@@ -20,7 +20,8 @@ from app.core.config import AppSettings, load_settings
 from app.core.time_utils import now_utc
 from app.storage.mysql.models.alert_message import AlertMessage
 from app.storage.mysql.repositories.alert_message_repository import AlertMessageRepository
-from scripts.check_alerting import collect_alerting_errors
+from scripts import check_alerting
+from scripts.check_alerting import AlertingCheckResult, collect_alerting_errors
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -431,6 +432,32 @@ def test_check_alerting_rejects_real_send_when_config_is_not_explicit() -> None:
     )
 
     assert errors
+
+
+def test_check_alerting_real_send_output_uses_hermes_submission_language(capsys) -> None:
+    def fake_runner(*_: object, **__: object) -> AlertingCheckResult:
+        return AlertingCheckResult(
+            errors=[],
+            send_result=AlertSendResult(
+                status=AlertSendStatus.SUBMITTED_TO_HERMES,
+                gateway_status=AlertGatewayStatus.GATEWAY_ACCEPTED,
+                final_delivery_status=AlertFinalDeliveryStatus.UNKNOWN,
+                attempted_real_send=True,
+            ),
+        )
+
+    exit_code = check_alerting.main(["--send-real-alert"], check_runner=fake_runner)
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "已提交 Hermes" in output
+    assert "Hermes 网关已接收" in output
+    assert "BTC Agent 无法确认微信最终送达" in output
+    assert "微信发送成功" not in output
+    assert "微信已送达" not in output
+    assert "delivered" not in output
+    assert "sent success" not in output
+    assert "weixin_success" not in output
 
 
 def test_alerting_code_has_no_legacy_sent_or_failed_status_calls() -> None:

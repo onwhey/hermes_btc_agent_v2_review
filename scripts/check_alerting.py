@@ -14,10 +14,13 @@ Hermes 影响：默认不发送 Hermes；真实发送只在用户显式传参且
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
+from typing import Callable
 
 from app.alerting.hermes_client import HermesClient
 from app.alerting.service import format_alert_message, send_test_alert
-from app.alerting.types import AlertEvent, AlertSendStatus, AlertSeverity, AlertType
+from app.alerting.status_text import render_alert_send_result_lines
+from app.alerting.types import AlertEvent, AlertSendResult, AlertSendStatus, AlertSeverity, AlertType
 from app.core.config import AppSettings, load_settings
 from app.core.logger import configure_logging, get_logger
 
@@ -28,6 +31,21 @@ REQUIRED_TEMPLATE_TYPES = (
     AlertType.COLLECTOR_ERROR,
     AlertType.PRICE_MONITOR_ERROR,
 )
+
+
+@dataclass(frozen=True)
+class AlertingCheckResult:
+    """人工告警通道检查结果。
+
+    参数：`errors` 是检查错误列表；`send_result` 是 dry-run 或真实发送结果。
+    返回值：不可变结果对象。
+    失败场景：无预期失败场景。
+    外部服务：本对象不访问外部服务。
+    数据影响：本对象不读写 MySQL，不读写 Redis，不发送 Hermes。
+    """
+
+    errors: list[str]
+    send_result: AlertSendResult | None = None
 
 
 def _check_required_templates() -> list[str]:
@@ -62,6 +80,50 @@ def _validate_real_send_settings(settings: AppSettings) -> list[str]:
     return errors
 
 
+def run_alerting_check(
+    *,
+    settings: AppSettings | None = None,
+    send_real_alert: bool = False,
+    client: HermesClient | None = None,
+) -> AlertingCheckResult:
+    """执行报警模块检查并返回发送结果。
+
+    参数：`settings` 是可注入配置；`send_real_alert` 显式允许真实 Hermes；
+    `client` 可注入 mock，默认由 service 构造。
+    返回值：`AlertingCheckResult`。
+    失败场景：模板渲染失败、配置不允许真实发送或 Hermes 返回失败。
+    外部服务：默认不访问外部服务；只有显式真实发送且配置允许才访问 Hermes。
+    数据影响：不写 MySQL，不读写 Redis，不执行 migration，不发送 DeepSeek。
+    本函数不涉及 scheduler、正式 K 线写入或自动交易。
+    """
+
+    active_settings = settings or load_settings()
+    configure_logging(active_settings, enable_file=False)
+    logger = get_logger("scripts.check_alerting")
+
+    errors = _check_required_templates()
+    if errors:
+        return AlertingCheckResult(errors=errors)
+
+    if send_real_alert:
+        errors.extend(_validate_real_send_settings(active_settings))
+        if errors:
+            return AlertingCheckResult(errors=errors)
+        logger.warning("用户手动显式触发真实 Hermes 测试报警。")
+
+    result = send_test_alert(
+        settings=active_settings,
+        client=client,
+        send_real_alert=send_real_alert,
+    )
+
+    if send_real_alert and result.status != AlertSendStatus.SUBMITTED_TO_HERMES:
+        errors.append(f"真实 Hermes 测试报警失败：{result.error_message or result.message}")
+    if not send_real_alert and result.attempted_real_send:
+        errors.append("dry-run 模式不应尝试真实 Hermes 发送")
+    return AlertingCheckResult(errors=errors, send_result=result)
+
+
 def collect_alerting_errors(
     *,
     settings: AppSettings | None = None,
@@ -79,31 +141,20 @@ def collect_alerting_errors(
     本函数不涉及 scheduler、正式 K 线写入或自动交易。
     """
 
-    active_settings = settings or load_settings()
-    configure_logging(active_settings, enable_file=False)
-    logger = get_logger("scripts.check_alerting")
-
-    errors = _check_required_templates()
-    if errors:
-        return errors
-
-    if send_real_alert:
-        errors.extend(_validate_real_send_settings(active_settings))
-        if errors:
-            return errors
-        logger.warning("用户手动显式触发真实 Hermes 测试报警。")
-
-    result = send_test_alert(
-        settings=active_settings,
-        client=client,
+    return run_alerting_check(
+        settings=settings,
         send_real_alert=send_real_alert,
-    )
+        client=client,
+    ).errors
 
-    if send_real_alert and result.status != AlertSendStatus.SUBMITTED_TO_HERMES:
-        errors.append(f"真实 Hermes 测试报警失败：{result.error_message or result.message}")
-    if not send_real_alert and result.attempted_real_send:
-        errors.append("dry-run 模式不应尝试真实 Hermes 发送")
-    return errors
+
+def _print_real_send_result(result: AlertSendResult | None) -> None:
+    """打印真实发送的中文提交状态，不声称微信最终送达。"""
+
+    if result is None:
+        return
+    for line in render_alert_send_result_lines(result):
+        print(line)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -134,7 +185,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    check_runner: Callable[..., AlertingCheckResult] = run_alerting_check,
+) -> int:
     """脚本入口。
 
     参数：`argv` 是可选命令行参数列表。
@@ -146,7 +201,8 @@ def main(argv: list[str] | None = None) -> int:
     """
 
     args = build_arg_parser().parse_args(argv)
-    errors = collect_alerting_errors(send_real_alert=args.send_real_alert)
+    check_result = check_runner(send_real_alert=args.send_real_alert)
+    errors = check_result.errors
 
     if errors:
         print("Hermes 报警模块检查失败：")
@@ -156,6 +212,8 @@ def main(argv: list[str] | None = None) -> int:
 
     mode = "real-send" if args.send_real_alert else "dry-run"
     print(f"Hermes 报警模块检查通过（{mode}）。")
+    if args.send_real_alert:
+        _print_real_send_result(check_result.send_result)
     return 0
 
 
