@@ -26,6 +26,7 @@ MAX_COLLECT_LIMIT = 20
 DEFAULT_COLLECT_LOCK_TTL_SECONDS = 300
 
 EXIT_SUCCESS = 0
+EXIT_SKIPPED = 0
 EXIT_PARAMETER_ERROR = 1
 EXIT_QUALITY_BLOCKED = 2
 EXIT_ALERT_FAILED = 3
@@ -105,4 +106,3 @@ class IncrementalKlineCollectResult:
         """Return whether this collection run completed successfully."""
 
         return self.status == KlineCollectStatus.SUCCESS and self.exit_code == EXIT_SUCCESS
-
