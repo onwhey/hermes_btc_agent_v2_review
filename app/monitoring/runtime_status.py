@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -41,7 +40,6 @@ SYSTEMD_SERVICES: tuple[tuple[str, str], ...] = (
 )
 
 CURRENT_ALERT_FAILURE_STATUSES = {"submit_failed", "gateway_rejected"}
-CURRENT_ALERT_FAILURE_GATEWAY_STATUSES = {"submit_failed", "gateway_rejected"}
 OLD_ALERT_STATUSES = {"sent", "failed", "delivered", "weixin_success"}
 
 
@@ -310,29 +308,27 @@ def _evaluate_alert_messages(alert_rows: list[Any], issues: list[RuntimeIssue]) 
 
     latest = alert_rows[0]
     latest_status = _row_value(latest, "status")
-    channel_response = _channel_response_dict(_row_value(latest, "channel_response"))
-    latest_gateway_status = _row_value(latest, "gateway_status") or channel_response.get("gateway_status")
-    latest_final_status = _row_value(latest, "final_delivery_status") or channel_response.get("final_delivery_status")
     latest_trace_id = _row_value(latest, "trace_id")
-    latest_failed = _is_current_alert_failure(latest_status, latest_gateway_status)
-    latest_legacy = _is_legacy_alert_status(latest_status, latest_final_status)
+    latest_failed = _is_current_alert_failure(latest_status)
+    latest_legacy = _is_legacy_alert_status(latest_status)
 
     failed_count = 0
     legacy_count = 0
     consecutive_failed_count = 0
+    latest_failure_error_message: str | None = None
     counting_consecutive_failures = True
     for row in alert_rows:
         status = _row_value(row, "status")
-        gateway_status = _row_value(row, "gateway_status") or _channel_response_dict(_row_value(row, "channel_response")).get("gateway_status")
-        final_status = _row_value(row, "final_delivery_status") or _channel_response_dict(_row_value(row, "channel_response")).get("final_delivery_status")
-        row_failed = _is_current_alert_failure(status, gateway_status)
+        row_failed = _is_current_alert_failure(status)
         if row_failed:
             failed_count += 1
+            if latest_failure_error_message is None:
+                latest_failure_error_message = _row_value(row, "error_message")
             if counting_consecutive_failures:
                 consecutive_failed_count += 1
         else:
             counting_consecutive_failures = False
-        if _is_legacy_alert_status(status, final_status):
+        if _is_legacy_alert_status(status):
             legacy_count += 1
 
     level = RuntimeStatusLevel.NORMAL
@@ -344,7 +340,10 @@ def _evaluate_alert_messages(alert_rows: list[Any], issues: list[RuntimeIssue]) 
             issues.append(RuntimeIssue(RuntimeStatusLevel.ERROR, "alert", "最近一次 Hermes 提交失败或网关拒绝。"))
     elif failed_count:
         level = _max_level(level, RuntimeStatusLevel.WARNING)
-        issues.append(RuntimeIssue(RuntimeStatusLevel.WARNING, "alert", "回看窗口内曾经出现 Hermes 提交失败，但最近一次已提交 Hermes。"))
+        if str(latest_status) == "submitted_to_hermes":
+            issues.append(RuntimeIssue(RuntimeStatusLevel.WARNING, "alert", "回看窗口内曾经出现 Hermes 提交失败，但最近一次已提交 Hermes。"))
+        else:
+            issues.append(RuntimeIssue(RuntimeStatusLevel.WARNING, "alert", "回看窗口内曾经出现 Hermes 提交失败，但最近一次不是失败状态。"))
 
     if latest_legacy:
         level = _max_level(level, RuntimeStatusLevel.WARNING)
@@ -357,9 +356,8 @@ def _evaluate_alert_messages(alert_rows: list[Any], issues: list[RuntimeIssue]) 
         connection_ok=True,
         level=level,
         latest_status=latest_status,
-        latest_gateway_status=latest_gateway_status,
-        latest_final_delivery_status=latest_final_status,
         latest_trace_id=latest_trace_id,
+        latest_failure_error_message=latest_failure_error_message,
         failed_count=failed_count,
         consecutive_failed_count=consecutive_failed_count,
         legacy_status_count=legacy_count,
@@ -367,12 +365,12 @@ def _evaluate_alert_messages(alert_rows: list[Any], issues: list[RuntimeIssue]) 
     )
 
 
-def _is_current_alert_failure(status: Any, gateway_status: Any) -> bool:
-    return str(status) in CURRENT_ALERT_FAILURE_STATUSES or str(gateway_status) in CURRENT_ALERT_FAILURE_GATEWAY_STATUSES
+def _is_current_alert_failure(status: Any) -> bool:
+    return str(status) in CURRENT_ALERT_FAILURE_STATUSES
 
 
-def _is_legacy_alert_status(status: Any, final_status: Any) -> bool:
-    return str(status) in OLD_ALERT_STATUSES or str(final_status) in OLD_ALERT_STATUSES
+def _is_legacy_alert_status(status: Any) -> bool:
+    return str(status) in OLD_ALERT_STATUSES
 
 
 def _determine_overall_level(
@@ -422,18 +420,6 @@ def _expected_latest_closed_4h_open_time(now_utc: datetime) -> datetime:
     bucket_hour = (now_utc.hour // 4) * 4
     current_bucket = now_utc.replace(hour=bucket_hour, minute=0, second=0, microsecond=0)
     return current_bucket - timedelta(hours=4)
-
-
-def _channel_response_dict(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str) and value:
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
 
 
 def _row_value(row: Any, name: str) -> Any:

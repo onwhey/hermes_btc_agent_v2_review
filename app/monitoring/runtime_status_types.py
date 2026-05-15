@@ -119,9 +119,8 @@ class AlertRuntimeStatus:
     connection_ok: bool
     level: RuntimeStatusLevel
     latest_status: str | None = None
-    latest_gateway_status: str | None = None
-    latest_final_delivery_status: str | None = None
     latest_trace_id: str | None = None
+    latest_failure_error_message: str | None = None
     failed_count: int = 0
     consecutive_failed_count: int = 0
     legacy_status_count: int = 0

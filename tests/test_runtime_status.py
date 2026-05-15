@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.alerting.service import format_alert_message
-from app.alerting.types import AlertFinalDeliveryStatus, AlertGatewayStatus, AlertSendResult, AlertSendStatus
+from app.alerting.types import AlertSendResult, AlertSendStatus
 from app.core.config import AppSettings
 from app.core.time_utils import UTC
 from app.monitoring import runtime_status as runtime_status_module
@@ -106,8 +106,6 @@ class FakeMySqlReader:
 def _submitted_alert_row() -> SimpleNamespace:
     return _alert_row(
         status=AlertSendStatus.SUBMITTED_TO_HERMES.value,
-        gateway_status=AlertGatewayStatus.GATEWAY_ACCEPTED.value,
-        final_delivery_status=AlertFinalDeliveryStatus.UNKNOWN.value,
         trace_id="trace-ok",
     )
 
@@ -115,15 +113,13 @@ def _submitted_alert_row() -> SimpleNamespace:
 def _alert_row(
     *,
     status: str,
-    gateway_status: str = AlertGatewayStatus.NOT_ATTEMPTED.value,
-    final_delivery_status: str = AlertFinalDeliveryStatus.UNKNOWN.value,
     trace_id: str = "trace-alert",
+    error_message: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         status=status,
-        gateway_status=gateway_status,
-        final_delivery_status=final_delivery_status,
         trace_id=trace_id,
+        error_message=error_message,
     )
 
 
@@ -161,8 +157,8 @@ def test_runtime_status_default_report_is_chinese_and_read_only(capsys) -> None:
     assert "总体结论：正常" in output
     assert "最新 BTCUSDT 4h K线" in output
     assert "最近 100 根 K线：已读取 100 根，连续性以每日 K线复核为准" in output
-    assert "回看窗口内历史失败：无" in output
-    assert "旧版送达状态记录：无" in output
+    assert "回看窗口内历史提交失败：无" in output
+    assert "旧版状态记录：无" in output
     assert "最近 100 根 K线：数量正常" not in output
     assert "本检查只读，不修复、不回补、不写正式 K线表，也不执行自动交易" in output
     assert "Binance" not in output
@@ -181,8 +177,6 @@ def test_runtime_status_send_alert_uses_compact_chinese_summary(capsys) -> None:
         captured["message"] = format_alert_message(event)
         return AlertSendResult(
             status=AlertSendStatus.SUBMITTED_TO_HERMES,
-            gateway_status=AlertGatewayStatus.GATEWAY_ACCEPTED,
-            final_delivery_status=AlertFinalDeliveryStatus.UNKNOWN,
             attempted_real_send=True,
         )
 
@@ -342,9 +336,8 @@ def test_alert_status_interprets_submission_semantics_and_flags_legacy_status() 
             alert_rows=[
                 SimpleNamespace(
                     status="sent",
-                    gateway_status=AlertGatewayStatus.GATEWAY_ACCEPTED.value,
-                    final_delivery_status="weixin_success",
                     trace_id="trace-old",
+                    error_message=None,
                 )
             ]
         ),
@@ -353,16 +346,28 @@ def test_alert_status_interprets_submission_semantics_and_flags_legacy_status() 
     console = render_runtime_status_console(normal_report)
 
     assert normal_report.alert.latest_status == AlertSendStatus.SUBMITTED_TO_HERMES.value
-    assert normal_report.alert.latest_gateway_status == AlertGatewayStatus.GATEWAY_ACCEPTED.value
-    assert normal_report.alert.latest_final_delivery_status == AlertFinalDeliveryStatus.UNKNOWN.value
     assert "已提交 Hermes" in console
-    assert "Hermes 网关已接收" in console
-    assert "最终微信送达状态：未知" in console
-    assert "回看窗口内历史失败：无" in console
-    assert "旧版送达状态记录：无" in console
+    assert "回看窗口内历史提交失败：无" in console
+    assert "旧版状态记录：无" in console
+    assert "最终微信送达状态不由 alert_message 表直接确认" in console
     assert legacy_report.alert.level == RuntimeStatusLevel.WARNING
     assert legacy_report.overall_level == RuntimeStatusLevel.WARNING
     assert legacy_report.alert.legacy_status_count == 1
+
+
+def test_empty_alert_message_history_does_not_mark_error() -> None:
+    report = collect_runtime_status(
+        systemd_checker=FakeSystemdChecker(),
+        redis_client=FakeRedis(),
+        mysql_reader=FakeMySqlReader(alert_rows=[]),
+        current_time_utc=CURRENT_TIME,
+    )
+    console = render_runtime_status_console(report)
+
+    assert report.alert.level == RuntimeStatusLevel.NORMAL
+    assert report.overall_level == RuntimeStatusLevel.NORMAL
+    assert "暂无告警发送记录" in console
+    assert "最终微信送达状态不由 alert_message 表直接确认" in console
 
 
 def test_latest_alert_failure_marks_runtime_status_error() -> None:
@@ -373,7 +378,7 @@ def test_latest_alert_failure_marks_runtime_status_error() -> None:
             alert_rows=[
                 _alert_row(
                     status=AlertSendStatus.SUBMIT_FAILED.value,
-                    gateway_status=AlertGatewayStatus.SUBMIT_FAILED.value,
+                    error_message="timed out",
                 )
             ]
         ),
@@ -385,7 +390,8 @@ def test_latest_alert_failure_marks_runtime_status_error() -> None:
     assert report.overall_level == RuntimeStatusLevel.ERROR
     assert report.alert.failed_count == 1
     assert "最近一次 Hermes 提交：提交 Hermes 失败" in console
-    assert "回看窗口内历史失败：有" in console
+    assert "回看窗口内历史提交失败：有" in console
+    assert "最近失败原因：timed out" in console
 
 
 def test_recovered_alert_history_is_warning_not_error() -> None:
@@ -397,7 +403,7 @@ def test_recovered_alert_history_is_warning_not_error() -> None:
                 _submitted_alert_row(),
                 _alert_row(
                     status=AlertSendStatus.GATEWAY_REJECTED.value,
-                    gateway_status=AlertGatewayStatus.GATEWAY_REJECTED.value,
+                    error_message="timed out",
                 ),
             ]
         ),
@@ -410,7 +416,8 @@ def test_recovered_alert_history_is_warning_not_error() -> None:
     assert report.alert.failed_count == 1
     assert any("最近一次已提交 Hermes" in issue.message for issue in report.issues)
     assert "最近一次 Hermes 提交：已提交 Hermes" in console
-    assert "回看窗口内历史失败：有" in console
+    assert "回看窗口内历史提交失败：有" in console
+    assert "最近失败原因：timed out" in console
 
 
 def test_historical_legacy_alert_status_with_latest_success_is_notice_not_error() -> None:
@@ -420,7 +427,8 @@ def test_historical_legacy_alert_status_with_latest_success_is_notice_not_error(
         mysql_reader=FakeMySqlReader(
             alert_rows=[
                 _submitted_alert_row(),
-                _alert_row(status="sent", final_delivery_status="weixin_success"),
+                _alert_row(status="sent"),
+                _alert_row(status="failed"),
             ]
         ),
         current_time_utc=CURRENT_TIME,
@@ -430,8 +438,8 @@ def test_historical_legacy_alert_status_with_latest_success_is_notice_not_error(
     assert report.alert.level == RuntimeStatusLevel.NOTICE
     assert report.overall_level == RuntimeStatusLevel.NOTICE
     assert report.alert.failed_count == 0
-    assert report.alert.legacy_status_count == 1
-    assert "旧版送达状态记录：有，需后续清理或忽略历史数据" in console
+    assert report.alert.legacy_status_count == 2
+    assert "旧版状态记录：有，需后续清理或忽略历史数据" in console
 
 
 def test_consecutive_recent_alert_failures_mark_runtime_status_error() -> None:
@@ -442,12 +450,10 @@ def test_consecutive_recent_alert_failures_mark_runtime_status_error() -> None:
             alert_rows=[
                 _alert_row(
                     status=AlertSendStatus.SUBMIT_FAILED.value,
-                    gateway_status=AlertGatewayStatus.SUBMIT_FAILED.value,
                     trace_id="trace-fail-1",
                 ),
                 _alert_row(
                     status=AlertSendStatus.GATEWAY_REJECTED.value,
-                    gateway_status=AlertGatewayStatus.GATEWAY_REJECTED.value,
                     trace_id="trace-fail-2",
                 ),
                 _submitted_alert_row(),

@@ -11,11 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.alerting.service import send_alert
-from app.alerting.status_text import (
-    alert_send_status_label,
-    final_delivery_status_label,
-    gateway_status_label,
-)
+from app.alerting.status_text import alert_send_status_label
 from app.alerting.templates import WECHAT_VISIBLE_BODY_DETAIL_KEY
 from app.alerting.types import AlertEvent, AlertSeverity, AlertType
 from app.core.config import AppSettings
@@ -73,12 +69,14 @@ def render_runtime_status_console(report: RuntimeStatusReport) -> str:
     lines.extend(["", "告警状态："])
     if report.alert.connection_ok and report.alert.latest_status:
         lines.append(f"- 最近一次 Hermes 提交：{_alert_status_label(report.alert.latest_status)}")
-        lines.append(f"- Hermes 网关状态：{gateway_status_label(report.alert.latest_gateway_status)}")
-        lines.append(f"- 最终微信送达状态：{_final_delivery_status_label(report.alert.latest_final_delivery_status)}")
-        lines.append(f"- 回看窗口内历史失败：{'有' if report.alert.failed_count else '无'}")
-        lines.append(f"- 旧版送达状态记录：{_legacy_status_record_label(report)}")
+        lines.append(f"- 回看窗口内历史提交失败：{'有' if report.alert.failed_count else '无'}")
+        lines.append(f"- 旧版状态记录：{_legacy_status_record_label(report)}")
+        if report.alert.latest_failure_error_message:
+            lines.append(f"- 最近失败原因：{report.alert.latest_failure_error_message}")
+        lines.append("- 说明：BTC Agent 只记录是否提交 Hermes；最终微信送达状态不由 alert_message 表直接确认。")
     elif report.alert.connection_ok:
-        lines.append("- 最近告警记录：无")
+        lines.append("- 暂无告警发送记录")
+        lines.append("- 说明：BTC Agent 只记录是否提交 Hermes；最终微信送达状态不由 alert_message 表直接确认。")
     else:
         lines.append(f"- 告警记录：{report.alert.error_message or '无法读取'}")
 
@@ -205,13 +203,9 @@ def _alert_status_label(status: str | None) -> str:
         return "未知"
     if str(status) in LEGACY_ALERT_STATUS_VALUES:
         return "旧版状态记录"
+    if str(status) == "skipped":
+        return "已跳过发送"
     return alert_send_status_label(status) or "未知"
-
-
-def _final_delivery_status_label(status: str | None) -> str:
-    if str(status) in LEGACY_ALERT_STATUS_VALUES:
-        return "旧版送达状态记录，BTC Agent 不按当前语义判定"
-    return final_delivery_status_label(status)
 
 
 def _legacy_status_record_label(report: RuntimeStatusReport) -> str:
@@ -221,11 +215,18 @@ def _legacy_status_record_label(report: RuntimeStatusReport) -> str:
 
 
 def _alert_status_summary(report: RuntimeStatusReport) -> str:
-    return (
+    if not report.alert.latest_status:
+        return "暂无告警发送记录。\nBTC Agent 只记录是否提交 Hermes；最终微信送达状态不由 alert_message 表直接确认。"
+
+    summary = (
         f"最近一次 Hermes 提交：{_alert_status_label(report.alert.latest_status)}；"
-        f"回看窗口内历史失败：{'有' if report.alert.failed_count else '无'}；"
-        f"旧版送达状态记录：{_legacy_status_record_label(report)}。"
+        f"回看窗口内历史提交失败：{'有' if report.alert.failed_count else '无'}；"
+        f"旧版状态记录：{_legacy_status_record_label(report)}。"
     )
+    if report.alert.latest_failure_error_message:
+        summary += f"\n最近失败原因：{report.alert.latest_failure_error_message}。"
+    summary += "\nBTC Agent 只记录是否提交 Hermes；最终微信送达状态不由 alert_message 表直接确认。"
+    return summary
 
 
 def _collector_status_label(status: str | None) -> str:

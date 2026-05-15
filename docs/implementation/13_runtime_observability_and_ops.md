@@ -133,9 +133,9 @@ K线新鲜度只根据数据库已有 K线判断，不请求 Binance。
 - `error / 错误`：核心服务停止、Redis/MySQL 不可读、最新已收盘 K线明显缺失、最近采集或每日复核失败、最新一次 Hermes 提交失败或网关拒绝。
 - `critical / 严重`：多个核心服务同时异常、Redis 和 MySQL 同时异常、K线严重滞后或多个核心状态同时错误。
 
-`final_delivery_status=unknown` 是当前 Hermes/微信通道语义下的预期状态，不代表错误。
+运行状态检查只从 `alert_message.status` 判断最近 Hermes 提交状态，不依赖数据库中不存在的 `gateway_status` 或 `final_delivery_status` 字段。
 `sent`、`delivered`、`weixin_success` 等旧状态只用于识别历史记录。最新记录仍是旧状态时标记为 warning；最新记录已恢复且只是历史旧记录时标记为 notice。
-如果最新一次告警已经是 `submitted_to_hermes / gateway_accepted`，窗口内早些时候的提交失败只表示历史波动，不再直接把总体结论升为 error。
+如果最新一次告警已经是 `submitted_to_hermes`，窗口内早些时候的 `submit_failed` / `gateway_rejected` 只表示历史波动，不再直接把总体结论升为 error。
 
 ### 2.6 输出示例
 
@@ -166,10 +166,9 @@ Redis 状态：
 
 告警状态：
 - 最近一次 Hermes 提交：已提交 Hermes
-- Hermes 网关状态：Hermes 网关已接收
-- 最终微信送达状态：未知，BTC Agent 无法确认微信最终送达
-- 回看窗口内历史失败：无
-- 旧版送达状态记录：无
+- 回看窗口内历史提交失败：无
+- 旧版状态记录：无
+- 说明：BTC Agent 只记录是否提交 Hermes；最终微信送达状态不由 alert_message 表直接确认。
 
 结论：
 系统当前运行正常。
@@ -193,9 +192,9 @@ Redis 状态：
 最新 BTCUSDT 4h K线为 2026-05-15 04:00:00 UTC，最近采集成功，每日 K线复核健康。
 
 告警状态：
-最近一次 Hermes 提交：已提交 Hermes；回看窗口内历史失败：无；旧版送达状态记录：无。
+最近一次 Hermes 提交：已提交 Hermes；回看窗口内历史提交失败：无；旧版状态记录：无。
 本摘要将通过 Hermes 通道提交。
-本报告反映发送前的系统状态；本次摘要提交结果见命令行输出。最终微信送达状态由 Hermes/微信通道决定，BTC Agent 不直接确认。
+本报告反映发送前的系统状态；本次摘要提交结果见命令行输出。BTC Agent 只记录是否提交 Hermes；最终微信送达状态不由 alert_message 表直接确认。
 
 追踪ID：<trace_id>
 本提醒不是交易建议，系统没有执行自动交易。
@@ -263,6 +262,7 @@ Redis 写入：
 - 最新一次 Hermes 已提交但回看窗口内曾失败：标记 warning，不误判为当前提交失败。
 - 连续多次最近告警失败：标记 error。
 - 最新一次告警仍是旧版状态：标记 warning；仅历史旧版状态且最新已恢复：标记 notice。
+- `alert_message` 回看窗口内无记录：显示“暂无告警发送记录”，不因空表标记 error。
 - `--send-alert` 写 `alert_message` 失败：记录日志后降级为仅提交 Hermes，不修改 K线、Redis 或 scheduler 状态。
 
 ## 6. 测试
@@ -279,7 +279,7 @@ Redis 写入：
 - `--send-alert` 发送中文精简摘要，不输出“微信发送成功”。
 - Redis 正常、旧 key notice、Redis 异常 error。
 - MySQL 最新 K线、K线滞后、采集失败、每日复核失败。
-- 告警新状态语义、历史失败恢复后的 warning、旧状态 notice / warning。
+- 告警新状态语义、空表、历史失败恢复后的 warning、旧状态 notice / warning。
 - 摘要通知不展开 Redis key 列表、SQL 查询结果或内部字典。
 
 测试命令：

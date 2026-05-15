@@ -8,6 +8,7 @@ DeepSeek，不执行任何修复、回补、采集或交易动作。
 from __future__ import annotations
 
 import subprocess
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from app.core.config import AppSettings
@@ -118,11 +119,20 @@ class DefaultRuntimeMySqlReader:
     def list_recent_alert_messages(self, *, since_utc: Any, limit: int) -> list[Any]:
         def _read(session: Any) -> list[Any]:
             stmt = (
-                select(AlertMessage)
+                select(
+                    AlertMessage.id,
+                    AlertMessage.alert_type,
+                    AlertMessage.severity,
+                    AlertMessage.status,
+                    AlertMessage.sent_at_utc,
+                    AlertMessage.created_at_utc,
+                    AlertMessage.error_message,
+                    AlertMessage.trace_id,
+                )
                 .where(AlertMessage.created_at_utc >= since_utc)
                 .order_by(AlertMessage.created_at_utc.desc())
                 .limit(limit)
             )
-            return list(session.execute(stmt).scalars().all())
+            return [SimpleNamespace(**dict(row._mapping)) for row in session.execute(stmt).all()]
 
         return self._query(_read)
