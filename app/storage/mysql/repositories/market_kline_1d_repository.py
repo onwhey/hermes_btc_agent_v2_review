@@ -127,6 +127,60 @@ class MarketKline1dRepository:
         )
         return db_session.execute(stmt).scalar_one_or_none()
 
+    def get_previous_before(
+        self,
+        db_session: Any,
+        *,
+        symbol: str,
+        open_time_ms: int,
+    ) -> MarketKline1d | None:
+        """Return the nearest 1d Kline before an open-time boundary.
+
+        Parameters: caller-provided session, `symbol`, and exclusive `open_time_ms`.
+        Return value: the previous row or `None`.
+        Failure scenarios: database execution errors propagate.
+        External service access: none.
+        Data impact: reads only `market_kline_1d`; used by manual backfill context checks.
+        """
+
+        _require_sqlalchemy()
+        stmt = (
+            select(MarketKline1d)
+            .where(MarketKline1d.symbol == symbol)
+            .where(MarketKline1d.interval_value == KLINE_1D_INTERVAL_VALUE)
+            .where(MarketKline1d.open_time_ms < open_time_ms)
+            .order_by(MarketKline1d.open_time_ms.desc())
+            .limit(1)
+        )
+        return db_session.execute(stmt).scalar_one_or_none()
+
+    def get_next_after(
+        self,
+        db_session: Any,
+        *,
+        symbol: str,
+        open_time_ms: int,
+    ) -> MarketKline1d | None:
+        """Return the nearest 1d Kline after an open-time boundary.
+
+        Parameters: caller-provided session, `symbol`, and exclusive `open_time_ms`.
+        Return value: the next row or `None`.
+        Failure scenarios: database execution errors propagate.
+        External service access: none.
+        Data impact: reads only `market_kline_1d`; used by manual backfill context checks.
+        """
+
+        _require_sqlalchemy()
+        stmt = (
+            select(MarketKline1d)
+            .where(MarketKline1d.symbol == symbol)
+            .where(MarketKline1d.interval_value == KLINE_1D_INTERVAL_VALUE)
+            .where(MarketKline1d.open_time_ms > open_time_ms)
+            .order_by(MarketKline1d.open_time_ms.asc())
+            .limit(1)
+        )
+        return db_session.execute(stmt).scalar_one_or_none()
+
     def list_recent(
         self,
         db_session: Any,
