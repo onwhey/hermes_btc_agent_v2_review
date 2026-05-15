@@ -25,6 +25,7 @@ from app.market_data.collector.kline_1d_incremental_quality import (
 from app.market_data.collector.kline_1d_incremental_types import (
     EXIT_PERSIST_FAILED,
     EXIT_QUALITY_BLOCKED,
+    EXIT_SKIPPED,
     EXIT_SUCCESS,
     EXIT_TASK_FAILED,
     IncrementalKline1dCollectRequest,
@@ -98,7 +99,7 @@ def try_acquire_incremental_1d_lock(
     commit_if_possible(db_session)
     return IncrementalKline1dCollectResult(
         status=KlineCollectStatus.SKIPPED,
-        exit_code=EXIT_QUALITY_BLOCKED,
+        exit_code=EXIT_SKIPPED,
         trace_id=request.trace_id,
         message=f"Skipped because task lock is already held: {lock_key}",
         event_log_id=record_id(event_log),

@@ -18,6 +18,7 @@ from app.market_data.collector.kline_1d_incremental_types import (
     EXIT_PARAMETER_ERROR,
     EXIT_PERSIST_FAILED,
     EXIT_QUALITY_BLOCKED,
+    EXIT_SKIPPED,
     EXIT_SUCCESS,
     EXIT_TASK_FAILED,
     IncrementalKline1dCollectRequest,
@@ -451,7 +452,7 @@ def test_incremental_task_lock_already_exists_skips_without_binance_or_write() -
     )
 
     assert result.status == KlineCollectStatus.SKIPPED
-    assert result.exit_code == EXIT_QUALITY_BLOCKED
+    assert result.exit_code == EXIT_SKIPPED
     assert client.get_server_time_calls == 0
     assert client.get_klines_calls == []
     assert repository.bulk_write_called is False
