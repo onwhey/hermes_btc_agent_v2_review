@@ -119,8 +119,8 @@ def _build_backfill_alert_event(
         title = "手动补 K 已完成"
         summary = "手动 4h K线回补已完成。"
         if request.dry_run:
-            title = "手动补 K dry-run 检查通过"
-            summary = "手动 4h K线 dry-run 检查通过，未写入正式 K线表。"
+            title = "手动补 K 预演检查（dry-run）通过"
+            summary = "手动补 K 预演检查（dry-run）通过，正式 K线表未被修改。"
         return AlertEvent(
             alert_type=AlertType.KLINE_INTEGRITY_CHECK_PASSED,
             severity=AlertSeverity.INFO,
@@ -132,7 +132,7 @@ def _build_backfill_alert_event(
                 report,
                 reason=summary,
                 result_text=_success_result_text(request, result),
-                suggestion="无需处理。可通过 collector_event_log 和 trace_id 追踪本次任务。",
+                suggestion="无需处理。可通过采集事件日志 collector_event_log 和追踪ID排查本次任务。",
             ),
             source="app.market_data.backfill.alerts",
             trace_id=request.trace_id,
@@ -340,7 +340,7 @@ def _success_result_text(
     result: ManualKlineBackfillResult,
 ) -> str:
     if request.dry_run:
-        return "dry-run 只完成请求、解析和质量检查，正式 K线表未被修改。"
+        return "预演模式（dry-run）只完成请求、解析和质量检查，正式 K线表未被修改。"
     if result.inserted_count > 0:
         return f"系统已写入 {result.inserted_count} 根通过质量检查的已收盘 K线。"
     return "本次没有新增正式 K线，正式 K线表未被修改。"
@@ -371,7 +371,10 @@ def _public_failure_reason(result: ManualKlineBackfillResult) -> str:
 
 def _failure_retry_suggestion(result: ManualKlineBackfillResult) -> str:
     if result.status == KlineBackfillStatus.BLOCKED:
-        return "请先查看 collector_event_log、data_quality_check 与 Binance REST 返回，再确认是否需要重新选择已收盘区间执行手动补 K。"
+        return (
+            "请先查看采集事件日志 collector_event_log、数据质量记录 data_quality_check "
+            "与 Binance REST 官方返回，再确认是否需要重新选择已收盘区间执行手动补 K。"
+        )
     return "请先排查程序异常、Binance REST、Redis 任务锁或 MySQL 写入状态；确认系统恢复后再重试。"
 
 

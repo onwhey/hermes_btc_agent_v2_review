@@ -400,6 +400,9 @@ def test_binance_batch_gap_blocks_without_formal_write_and_alerts() -> None:
     assert event.severity.value == "error"
     assert event.title == "手动补 K 被质量检查阻断"
     assert "Binance 返回的历史 K线区间存在缺失、断档或不连续。" in message
+    assert "采集事件日志 collector_event_log" in message
+    assert "数据质量记录 data_quality_check" in message
+    assert "Binance REST 官方返回" in message
     assert "formal_write_performed" not in message
     assert "requested_start_open_time_ms" not in message
     assert "quality_summary" not in message
@@ -660,8 +663,14 @@ def test_success_notify_success_sends_fixed_template_success_alert() -> None:
 
     assert result.status == KlineBackfillStatus.SUCCESS
     assert len(alert_sender.calls) == 1
-    assert alert_sender.calls[0]["event"].severity.value == "info"
-    assert alert_sender.calls[0]["event"].title == "手动补 K 已完成"
+    event = alert_sender.calls[0]["event"]
+    message = format_alert_message(event)
+
+    assert event.severity.value == "info"
+    assert event.title == "手动补 K 已完成"
+    assert "采集事件日志 collector_event_log" in message
+    assert "追踪ID" in message
+    assert "trace_id" not in message
 
 
 def test_dry_run_notify_success_alert_clearly_marks_no_formal_write() -> None:
@@ -682,8 +691,12 @@ def test_dry_run_notify_success_alert_clearly_marks_no_formal_write() -> None:
     assert repository.bulk_write_called is False
     assert len(alert_sender.calls) == 1
     event = alert_sender.calls[0]["event"]
-    assert "dry-run" in event.title
-    assert "未写入正式 K线表" in event.summary
+    message = format_alert_message(event)
+
+    assert event.title == "手动补 K 预演检查（dry-run）通过"
+    assert "预演检查（dry-run）" in event.summary
+    assert "预演模式（dry-run）只完成请求、解析和质量检查，正式 K线表未被修改。" in message
+    assert "采集事件日志 collector_event_log" in message
     internal_context = event.details["_internal_context"]
     assert internal_context["dry_run"] is True
     assert internal_context["formal_write_performed"] is False
