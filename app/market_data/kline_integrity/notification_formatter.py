@@ -52,17 +52,21 @@ def build_daily_result_alert_event(
         "unknown": AlertSeverity.CRITICAL,
         "skipped": AlertSeverity.WARNING,
     }
+    symbol_interval = f"{request.symbol} {request.interval_value}"
     summary_by_status = {
-        "healthy": f"最近 {result.checked_count or request.lookback_count} 根 4h K线检查通过",
-        "unhealthy": "每日 K线健康检查发现数据质量问题",
-        "unknown": "每日 K线健康检查无法确认健康状态",
-        "skipped": "每日 K线健康检查已跳过，无法确认本次健康状态",
+        "healthy": (
+            f"最近 {result.checked_count or request.lookback_count} 根 {symbol_interval} "
+            "K线连续且字段正常，未发现异常。"
+        ),
+        "unhealthy": f"{symbol_interval} K线每日复核发现连续性或字段质量异常，请检查采集链路。",
+        "unknown": f"{symbol_interval} K线每日复核无法确认健康状态。",
+        "skipped": f"{symbol_interval} K线每日复核已跳过，本次未确认健康状态。",
     }
     title_by_status = {
-        "healthy": "每日 K线健康检查通过",
-        "unhealthy": "每日 K线健康检查发现异常",
-        "unknown": "每日 K线健康检查无法确认",
-        "skipped": "每日 K线健康检查已跳过",
+        "healthy": f"{symbol_interval} K线每日复核通过",
+        "unhealthy": f"{symbol_interval} K线每日复核异常",
+        "unknown": f"{symbol_interval} K线每日复核无法确认",
+        "skipped": f"{symbol_interval} K线每日复核已跳过",
     }
     details = dict(result.details)
     return AlertEvent(
@@ -72,7 +76,7 @@ def build_daily_result_alert_event(
             else AlertType.KLINE_INTEGRITY_CHECK_FAILED
         ),
         severity=severity_by_status.get(report_status, AlertSeverity.CRITICAL),
-        title=title_by_status.get(report_status, "每日 K线健康检查结果"),
+        title=title_by_status.get(report_status, f"{symbol_interval} K线每日复核结果"),
         summary=summary_by_status.get(report_status, "每日 K线健康检查无法确认健康状态"),
         details={
             **details,
@@ -100,18 +104,21 @@ def _build_daily_result_wechat_visible_body(
     issue_count = result.issue_count or 0
     common_lines = [
         f"币种周期：{request.symbol} {request.interval_value}",
+        f"检查结果：{_result_label(report_status)}",
         "",
         "检查范围：",
         _format_checked_range_utc(result),
         "",
         f"检查数量：{checked_count} 根",
-        f"问题数量：{issue_count}",
+        f"异常数量：{issue_count}",
+        f"触发方式：{request.check_trigger}",
+        f"数据质量记录：{_quality_check_id_text(result)}",
+        f"追踪ID：{request.trace_id}",
         "",
     ]
 
     if report_status == "healthy" and issue_count == 0:
         outcome_lines = [
-            "检查结果：",
             (
                 f"最近 {checked_count or request.lookback_count} 根 {request.interval_value} K线"
                 "连续、无缺失、无重复、未发现数据质量异常。"
@@ -124,15 +131,13 @@ def _build_daily_result_wechat_visible_body(
             f"已过滤未收盘 K线 {_filtered_unclosed_count(result)} 根，未写入数据库。",
         ]
     else:
+        first_issue_name, first_issue_message = _first_public_issue(result)
         outcome_lines = [
-            "关键问题：",
-            *_format_public_issue_summary_lines(result),
+            f"首个问题：{first_issue_name}",
+            f"问题说明：{first_issue_message}",
             "",
             "数据来源：",
             "Binance REST 官方 K线；本次仅检查，不修复、不回补、不写入正式 K线表。",
-            "",
-            "数据质量检查ID：",
-            _quality_check_id_text(result),
             "",
             "建议动作：",
             "请检查采集链路、Binance REST 返回、数据库最近 K线；不要人工改数、不要自动修复。",
@@ -142,10 +147,33 @@ def _build_daily_result_wechat_visible_body(
         "",
         "边界声明：",
         "本次为只读健康检查：系统没有自动修复、没有人工改数、没有自动回补，也没有执行自动交易。",
-        "",
-        f"追踪ID：{request.trace_id}",
     ]
     return "\n".join(common_lines + outcome_lines + boundary_lines)
+
+
+def _result_label(report_status: str) -> str:
+    if report_status == "healthy":
+        return "健康"
+    if report_status == "unhealthy":
+        return "异常"
+    if report_status == "skipped":
+        return "已跳过"
+    return "无法确认"
+
+
+def _first_public_issue(result: DailyKlineIntegrityCheckResult) -> tuple[str, str]:
+    issues = _extract_report_issues(result)
+    if issues:
+        return _public_issue_name(issues[0]), _public_issue_summary(issues[0])
+    if result.first_issue_type or result.first_issue_message:
+        issue = {
+            "issue_type": result.first_issue_type or "",
+            "message": result.first_issue_message or "",
+        }
+        return _public_issue_name(issue), result.first_issue_message or _public_issue_summary(issue)
+    if result.status == DailyKlineIntegrityStatus.SKIPPED:
+        return "任务跳过", "复核任务被跳过，本次未完成检查，无法确认 K线健康状态。"
+    return "任务异常", "复核任务异常，本次无法确认 K线健康状态。"
 
 
 def _format_public_issue_summary_lines(result: DailyKlineIntegrityCheckResult) -> list[str]:
@@ -209,6 +237,29 @@ def _public_issue_summary(issue: Mapping[str, object]) -> str:
     if not issue_type:
         return "检查任务未完成，无法确认本次 K线健康状态。"
     return "发现未分类数据质量问题，请查看数据质量检查记录。"
+
+
+def _public_issue_name(issue: Mapping[str, object]) -> str:
+    issue_type = str(issue.get("issue_type", "") or "")
+    if issue_type == KlineQualityIssueType.MISSING_IN_DATABASE.value:
+        return "缺失 K线"
+    if issue_type == KlineQualityIssueType.DATABASE_FIELD_MISMATCH.value:
+        return "字段不一致"
+    if issue_type == KlineQualityIssueType.EXTRA_IN_DATABASE.value:
+        return "数据库多余 K线"
+    if issue_type == KlineQualityIssueType.DUPLICATE_OPEN_TIME.value:
+        return "重复 K线"
+    if issue_type == KlineQualityIssueType.UNCLOSED_KLINE.value:
+        return "未收盘误写"
+    if issue_type == KlineQualityIssueType.INVALID_DATA_SOURCE_MAPPING.value:
+        return "数据来源异常"
+    if issue_type == KlineQualityIssueType.INVALID_KLINE.value:
+        return "字段异常"
+    if issue_type == KlineQualityIssueType.INSUFFICIENT_CLOSED_KLINES.value:
+        return "已收盘 K线不足"
+    if issue_type == KlineQualityIssueType.TASK_ERROR.value:
+        return "任务异常"
+    return "未分类问题"
 
 
 def _filtered_unclosed_count(result: DailyKlineIntegrityCheckResult) -> int:

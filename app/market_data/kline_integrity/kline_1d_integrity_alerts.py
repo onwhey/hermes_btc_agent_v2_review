@@ -76,26 +76,26 @@ def _severity_for_result(result: DailyKline1dIntegrityCheckResult) -> AlertSever
 
 def _title_for_result(result: DailyKline1dIntegrityCheckResult) -> str:
     title_by_status = {
-        DailyKline1dIntegrityStatus.HEALTHY: "1d 日 K 每日健康复核通过",
-        DailyKline1dIntegrityStatus.WARNING: "1d 日 K 每日健康复核需关注",
-        DailyKline1dIntegrityStatus.BLOCKED: "1d 日 K 每日健康复核未完成",
-        DailyKline1dIntegrityStatus.FAILED: "1d 日 K 每日健康复核发现异常",
-        DailyKline1dIntegrityStatus.ERROR: "1d 日 K 每日健康复核执行异常",
-        DailyKline1dIntegrityStatus.SKIPPED: "1d 日 K 每日健康复核已跳过",
+        DailyKline1dIntegrityStatus.HEALTHY: "BTCUSDT 1d 日K每日复核通过",
+        DailyKline1dIntegrityStatus.WARNING: "BTCUSDT 1d 日K每日复核需关注",
+        DailyKline1dIntegrityStatus.BLOCKED: "BTCUSDT 1d 日K每日复核未完成",
+        DailyKline1dIntegrityStatus.FAILED: "BTCUSDT 1d 日K每日复核异常",
+        DailyKline1dIntegrityStatus.ERROR: "BTCUSDT 1d 日K每日复核执行异常",
+        DailyKline1dIntegrityStatus.SKIPPED: "BTCUSDT 1d 日K每日复核已跳过",
     }
-    return title_by_status.get(result.status, "1d 日 K 每日健康复核结果")
+    return title_by_status.get(result.status, "BTCUSDT 1d 日K每日复核结果")
 
 
 def _summary_for_result(result: DailyKline1dIntegrityCheckResult) -> str:
     if result.status == DailyKline1dIntegrityStatus.HEALTHY:
-        return f"最近 {result.checked_count} 根 1d 日 K 连续、字段合理，未发现数据质量异常。"
+        return f"最近 {result.checked_count} 根 BTCUSDT 1d 日K连续且字段正常，未发现异常。"
     if result.status == DailyKline1dIntegrityStatus.WARNING:
-        return "1d 日 K 每日复核发现需关注状态，请检查最近日 K 和采集链路。"
+        return "BTCUSDT 1d 日K每日复核发现需关注状态，请检查最近日 K 和采集链路。"
     if result.status == DailyKline1dIntegrityStatus.BLOCKED:
-        return "1d 日 K 尚未完成初始化或本次复核无法确认健康状态。"
+        return "BTCUSDT 1d 日K尚未完成初始化或本次复核无法确认健康状态。"
     if result.status == DailyKline1dIntegrityStatus.SKIPPED:
-        return "1d 日 K 每日复核因任务锁存在而跳过，本次未执行检查。"
-    return result.first_issue_message or "1d 日 K 每日复核发现数据质量异常。"
+        return "BTCUSDT 1d 日K每日复核因任务锁存在而跳过，本次未执行检查。"
+    return result.first_issue_message or "BTCUSDT 1d 日K每日复核发现数据质量异常。"
 
 
 def _build_visible_body(
@@ -105,17 +105,20 @@ def _build_visible_body(
 ) -> str:
     common_lines = [
         f"币种周期：{request.symbol} {request.interval_value}",
+        f"检查结果：{_result_label(result)}",
         "",
         "检查范围：",
         _format_checked_range(result),
         "",
         f"检查数量：{result.checked_count} 根",
-        f"问题数量：{result.issue_count}",
+        f"异常数量：{result.issue_count}",
+        f"触发方式：{request.check_trigger}",
+        f"数据质量记录：{result.quality_check_id or '未生成'}",
+        f"追踪ID：{request.trace_id}",
         "",
     ]
     if result.status == DailyKline1dIntegrityStatus.HEALTHY and result.issue_count == 0:
         result_lines = [
-            "检查结果：",
             f"最近 {result.checked_count or request.lookback_count} 根 1d 日 K 连续、无缺失、无重复、字段合理。",
             "",
             "数据状态：",
@@ -123,9 +126,10 @@ def _build_visible_body(
             f"理论最新已收盘日 K：{_format_open_time_ms(result.expected_latest_open_time_ms)}",
         ]
     else:
+        first_issue_name, first_issue_message = _first_issue(result)
         result_lines = [
-            "关键问题：",
-            *_issue_lines(result),
+            f"首个问题：{first_issue_name}",
+            f"问题说明：{first_issue_message}",
             "",
             "数据状态：",
             f"最新日 K：{_format_open_time_ms(result.latest_open_time_ms)}",
@@ -136,12 +140,38 @@ def _build_visible_body(
         ]
     tail_lines = [
         "",
-        f"数据质量检查ID：{result.quality_check_id or '未生成'}",
-        f"追踪ID：{request.trace_id}",
         KLINE_1D_BOUNDARY_TEXT,
         "本提醒不是交易建议。",
     ]
     return "\n".join(common_lines + result_lines + tail_lines)
+
+
+def _result_label(result: DailyKline1dIntegrityCheckResult) -> str:
+    if result.status == DailyKline1dIntegrityStatus.HEALTHY:
+        return "健康"
+    if result.status in {DailyKline1dIntegrityStatus.FAILED, DailyKline1dIntegrityStatus.ERROR}:
+        return "异常"
+    if result.status == DailyKline1dIntegrityStatus.SKIPPED:
+        return "已跳过"
+    if result.status == DailyKline1dIntegrityStatus.BLOCKED:
+        return "未完成"
+    return "需关注"
+
+
+def _first_issue(result: DailyKline1dIntegrityCheckResult) -> tuple[str, str]:
+    issues = result.details.get("issues") if isinstance(result.details, Mapping) else None
+    if isinstance(issues, list):
+        for issue in issues:
+            if isinstance(issue, Mapping):
+                return _public_issue_name(issue), _public_issue_text(issue)
+    if result.first_issue_type or result.first_issue_message:
+        issue = {
+            "issue_type": result.first_issue_type or "",
+            "message": result.first_issue_message or "",
+            "open_time_ms": result.latest_open_time_ms,
+        }
+        return _public_issue_name(issue), result.first_issue_message or _public_issue_text(issue)
+    return "未分类问题", "本次未能确认 1d 日 K 健康状态。"
 
 
 def _issue_lines(result: DailyKline1dIntegrityCheckResult) -> list[str]:
@@ -164,6 +194,25 @@ def _issue_lines(result: DailyKline1dIntegrityCheckResult) -> list[str]:
             )
         ]
     return ["1. 本次未能确认 1d 日 K 健康状态。"]
+
+
+def _public_issue_name(issue: Mapping[str, object]) -> str:
+    issue_type = str(issue.get("issue_type", "") or "")
+    if issue_type == "empty_batch":
+        return "未初始化"
+    if issue_type == "batch_not_continuous":
+        return "时间不连续"
+    if issue_type == "duplicate_open_time":
+        return "重复 K线"
+    if issue_type == "unclosed_kline":
+        return "未收盘误写"
+    if issue_type == "missing_in_database":
+        return "最新日 K 滞后"
+    if issue_type == "invalid_kline":
+        return "字段异常"
+    if issue_type == "task_error":
+        return "任务异常"
+    return "未分类问题"
 
 
 def _public_issue_text(issue: Mapping[str, object]) -> str:

@@ -118,8 +118,24 @@ def test_1d_integrity_healthy_continuous_rows_pass_and_send_compact_summary() ->
     assert collector.status_calls[-1]["status"] == "success"
     assert quality_repo.records[0].report.check_type == CHECK_TYPE_DAILY_KLINE_1D_INTEGRITY
     assert len(alert_sender.calls) == 1
+    event = alert_sender.calls[0]["event"]
     message = format_alert_message(alert_sender.calls[0]["event"])
+    assert event.title == "BTCUSDT 1d 日K每日复核通过"
+    assert event.summary == "最近 3 根 BTCUSDT 1d 日K连续且字段正常，未发现异常。"
     assert "1d" in message
+    assert "【BTCUSDT 1d 日K每日复核通过】" in message
+    assert "币种周期：BTCUSDT 1d" in message
+    assert "检查结果：健康" in message
+    assert "检查范围：" in message
+    assert "检查数量：3 根" in message
+    assert "异常数量：0" in message
+    assert "触发方式：scheduler" in message
+    assert "数据质量记录：1" in message
+    assert f"追踪ID：{result.trace_id}" in message
+    assert "existing_open_time_ms" not in message
+    assert "lock_key" not in message
+    assert "report" not in message
+    assert "Daily Kline integrity result" not in message
     assert "market_kline_4h" not in message
     assert "微信发送成功" not in message
     assert "微信已送达" not in message
@@ -159,6 +175,14 @@ def test_1d_integrity_gap_duplicate_future_unclosed_and_invalid_fields_fail() ->
         assert result.first_issue_type == issue_type
         assert repository.bulk_write_called is False
         assert len(alert_sender.calls) == 1
+        message = format_alert_message(alert_sender.calls[0]["event"])
+        assert "BTCUSDT 1d 日K每日复核" in message
+        assert "检查结果：异常" in message
+        assert "首个问题：" in message
+        assert "问题说明：" in message
+        assert "existing_open_time_ms" not in message
+        assert "lock_key" not in message
+        assert "report" not in message
 
 
 def test_1d_integrity_one_day_stale_is_warning_not_healthy() -> None:

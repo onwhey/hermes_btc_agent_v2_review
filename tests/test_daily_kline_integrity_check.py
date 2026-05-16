@@ -272,15 +272,18 @@ def test_daily_healthy_notification_uses_compact_chinese_visible_body_without_in
     event = alert_sender.calls[0]["event"]
     message = _format_single_daily_notification_message(alert_sender)
 
-    assert event.title == "每日 K线健康检查通过"
-    assert event.summary == "最近 100 根 4h K线检查通过"
+    assert event.title == "BTCUSDT 4h K线每日复核通过"
+    assert event.summary == "最近 100 根 BTCUSDT 4h K线连续且字段正常，未发现异常。"
     assert event.severity == AlertSeverity.INFO
-    assert "【每日 K线健康检查通过】" in message
+    assert "【BTCUSDT 4h K线每日复核通过】" in message
     assert "级别：信息" in message
     assert "币种周期：BTCUSDT 4h" in message
+    assert "检查结果：健康" in message
     assert "检查范围：" in message
     assert "检查数量：100 根" in message
-    assert "问题数量：0" in message
+    assert "异常数量：0" in message
+    assert "触发方式：scheduler" in message
+    assert "数据质量记录：1" in message
     assert "最近 100 根 4h K线连续、无缺失、无重复、未发现数据质量异常。" in message
     assert "Binance REST 官方 K线" in message
     assert "不修复、不回补、不写入正式 K线表" in message
@@ -449,20 +452,19 @@ def test_daily_unhealthy_notification_stays_error_and_shows_compact_issue_summar
     message = _format_single_daily_notification_message(alert_sender)
 
     assert result.status == DailyKlineIntegrityStatus.FAILED
-    assert event.title == "每日 K线健康检查发现异常"
+    assert event.title == "BTCUSDT 4h K线每日复核异常"
     assert event.severity in {AlertSeverity.ERROR, AlertSeverity.CRITICAL}
-    assert "【每日 K线健康检查发现异常】" in message
+    assert "【BTCUSDT 4h K线每日复核异常】" in message
     assert "级别：错误" in message
     assert "币种周期：BTCUSDT 4h" in message
+    assert "检查结果：异常" in message
     assert "检查范围：" in message
     assert "检查数量：100 根" in message
-    assert "问题数量：4" in message
-    assert "关键问题：" in message
-    assert "1. 数据库缺失 Binance 官方 K线" in message
-    assert "2. 数据库缺失 Binance 官方 K线" in message
-    assert "3. 数据库缺失 Binance 官方 K线" in message
-    assert "4. 数据库缺失 Binance 官方 K线" not in message
-    assert "数据质量检查ID：" in message
+    assert "异常数量：4" in message
+    assert "触发方式：scheduler" in message
+    assert "数据质量记录：1" in message
+    assert "首个问题：缺失 K线" in message
+    assert "问题说明：数据库缺失 Binance 官方 K线" in message
     assert f"追踪ID：{result.trace_id}" in message
     assert "请检查采集链路、Binance REST 返回、数据库最近 K线" in message
     assert "不要人工改数、不要自动修复" in message
