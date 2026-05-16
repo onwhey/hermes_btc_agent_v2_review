@@ -63,6 +63,12 @@ from app.core.constants import (
     DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_LIMIT,
     DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_SYMBOL,
     DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_UTC_MINUTES_AFTER_CLOSE,
+    DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_ENABLED,
+    DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_INTERVAL,
+    DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_LOCK_TTL_SECONDS,
+    DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_MAX_CLOSED_COUNT,
+    DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_SYMBOL,
+    DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_UTC_TIME,
     DEFAULT_SCHEDULER_ENABLED,
     DEFAULT_SCHEDULER_COMPLETED_MARKER_TTL_SECONDS,
     DEFAULT_SCHEDULER_POLL_INTERVAL_SECONDS,
@@ -70,6 +76,13 @@ from app.core.constants import (
     DEFAULT_SCHEDULER_SLOT_LOG_COOLDOWN_SECONDS,
     DEFAULT_SCHEDULER_STATUS_MARKER_TTL_SECONDS,
     DEFAULT_DAILY_KLINE_INTEGRITY_UTC_TIME,
+    DEFAULT_DAILY_KLINE_1D_INTEGRITY_ENABLED,
+    DEFAULT_DAILY_KLINE_1D_INTEGRITY_INTERVAL,
+    DEFAULT_DAILY_KLINE_1D_INTEGRITY_LIMIT,
+    DEFAULT_DAILY_KLINE_1D_INTEGRITY_LOCK_TTL_SECONDS,
+    DEFAULT_DAILY_KLINE_1D_INTEGRITY_NOTIFY_SUCCESS,
+    DEFAULT_DAILY_KLINE_1D_INTEGRITY_SYMBOL,
+    DEFAULT_DAILY_KLINE_1D_INTEGRITY_UTC_TIME,
     DEFAULT_SYMBOL,
     DEFAULT_TIMEZONE,
     SENSITIVE_FIELD_NAMES,
@@ -151,6 +164,12 @@ class AppSettings:
     kline_4h_incremental_collect_utc_minutes_after_close: int = (
         DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_UTC_MINUTES_AFTER_CLOSE
     )
+    kline_1d_incremental_collect_enabled: bool = DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_ENABLED
+    kline_1d_incremental_collect_symbol: str = DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_SYMBOL
+    kline_1d_incremental_collect_interval: str = DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_INTERVAL
+    kline_1d_incremental_collect_max_closed_count: int = DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_MAX_CLOSED_COUNT
+    kline_1d_incremental_collect_lock_ttl_seconds: int = DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_LOCK_TTL_SECONDS
+    kline_1d_incremental_collect_utc_time: str = DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_UTC_TIME
     daily_kline_integrity_enabled: bool = DEFAULT_DAILY_KLINE_INTEGRITY_ENABLED
     daily_kline_integrity_symbol: str = DEFAULT_DAILY_KLINE_INTEGRITY_SYMBOL
     daily_kline_integrity_interval: str = DEFAULT_DAILY_KLINE_INTEGRITY_INTERVAL
@@ -158,6 +177,13 @@ class AppSettings:
     daily_kline_integrity_notify_success: bool = DEFAULT_DAILY_KLINE_INTEGRITY_NOTIFY_SUCCESS
     daily_kline_integrity_lock_ttl_seconds: int = DEFAULT_DAILY_KLINE_INTEGRITY_LOCK_TTL_SECONDS
     daily_kline_integrity_utc_time: str = DEFAULT_DAILY_KLINE_INTEGRITY_UTC_TIME
+    daily_kline_1d_integrity_enabled: bool = DEFAULT_DAILY_KLINE_1D_INTEGRITY_ENABLED
+    daily_kline_1d_integrity_symbol: str = DEFAULT_DAILY_KLINE_1D_INTEGRITY_SYMBOL
+    daily_kline_1d_integrity_interval: str = DEFAULT_DAILY_KLINE_1D_INTEGRITY_INTERVAL
+    daily_kline_1d_integrity_limit: int = DEFAULT_DAILY_KLINE_1D_INTEGRITY_LIMIT
+    daily_kline_1d_integrity_notify_success: bool = DEFAULT_DAILY_KLINE_1D_INTEGRITY_NOTIFY_SUCCESS
+    daily_kline_1d_integrity_lock_ttl_seconds: int = DEFAULT_DAILY_KLINE_1D_INTEGRITY_LOCK_TTL_SECONDS
+    daily_kline_1d_integrity_utc_time: str = DEFAULT_DAILY_KLINE_1D_INTEGRITY_UTC_TIME
     hermes_webhook_url: str = ""
     hermes_secret: str = ""
     hermes_timeout_seconds: float = DEFAULT_HERMES_TIMEOUT_SECONDS
@@ -646,6 +672,48 @@ def load_settings(
             "KLINE_4H_INCREMENTAL_COLLECT_UTC_MINUTES_AFTER_CLOSE",
             DEFAULT_KLINE_4H_INCREMENTAL_COLLECT_UTC_MINUTES_AFTER_CLOSE,
         ),
+        kline_1d_incremental_collect_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "KLINE_1D_INCREMENTAL_COLLECT_ENABLED",
+                str(DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_ENABLED).lower(),
+            ),
+            "KLINE_1D_INCREMENTAL_COLLECT_ENABLED",
+            DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_ENABLED,
+        ),
+        kline_1d_incremental_collect_symbol=_get_config_value(
+            merged_values,
+            "KLINE_1D_INCREMENTAL_COLLECT_SYMBOL",
+            DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_SYMBOL,
+        ),
+        kline_1d_incremental_collect_interval=_get_config_value(
+            merged_values,
+            "KLINE_1D_INCREMENTAL_COLLECT_INTERVAL",
+            DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_INTERVAL,
+        ),
+        kline_1d_incremental_collect_max_closed_count=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "KLINE_1D_INCREMENTAL_COLLECT_MAX_CLOSED_COUNT",
+                str(DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_MAX_CLOSED_COUNT),
+            ),
+            "KLINE_1D_INCREMENTAL_COLLECT_MAX_CLOSED_COUNT",
+            DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_MAX_CLOSED_COUNT,
+        ),
+        kline_1d_incremental_collect_lock_ttl_seconds=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "KLINE_1D_INCREMENTAL_COLLECT_LOCK_TTL_SECONDS",
+                str(DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_LOCK_TTL_SECONDS),
+            ),
+            "KLINE_1D_INCREMENTAL_COLLECT_LOCK_TTL_SECONDS",
+            DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_LOCK_TTL_SECONDS,
+        ),
+        kline_1d_incremental_collect_utc_time=_get_config_value(
+            merged_values,
+            "KLINE_1D_INCREMENTAL_COLLECT_UTC_TIME",
+            DEFAULT_KLINE_1D_INCREMENTAL_COLLECT_UTC_TIME,
+        ),
         daily_kline_integrity_enabled=_parse_optional_bool_config(
             _get_config_value(
                 merged_values,
@@ -696,6 +764,57 @@ def load_settings(
             merged_values,
             "DAILY_KLINE_INTEGRITY_UTC_TIME",
             DEFAULT_DAILY_KLINE_INTEGRITY_UTC_TIME,
+        ),
+        daily_kline_1d_integrity_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "DAILY_KLINE_1D_INTEGRITY_ENABLED",
+                str(DEFAULT_DAILY_KLINE_1D_INTEGRITY_ENABLED).lower(),
+            ),
+            "DAILY_KLINE_1D_INTEGRITY_ENABLED",
+            DEFAULT_DAILY_KLINE_1D_INTEGRITY_ENABLED,
+        ),
+        daily_kline_1d_integrity_symbol=_get_config_value(
+            merged_values,
+            "DAILY_KLINE_1D_INTEGRITY_SYMBOL",
+            DEFAULT_DAILY_KLINE_1D_INTEGRITY_SYMBOL,
+        ),
+        daily_kline_1d_integrity_interval=_get_config_value(
+            merged_values,
+            "DAILY_KLINE_1D_INTEGRITY_INTERVAL",
+            DEFAULT_DAILY_KLINE_1D_INTEGRITY_INTERVAL,
+        ),
+        daily_kline_1d_integrity_limit=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "DAILY_KLINE_1D_INTEGRITY_LIMIT",
+                str(DEFAULT_DAILY_KLINE_1D_INTEGRITY_LIMIT),
+            ),
+            "DAILY_KLINE_1D_INTEGRITY_LIMIT",
+            DEFAULT_DAILY_KLINE_1D_INTEGRITY_LIMIT,
+        ),
+        daily_kline_1d_integrity_notify_success=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "DAILY_KLINE_1D_INTEGRITY_NOTIFY_SUCCESS",
+                str(DEFAULT_DAILY_KLINE_1D_INTEGRITY_NOTIFY_SUCCESS).lower(),
+            ),
+            "DAILY_KLINE_1D_INTEGRITY_NOTIFY_SUCCESS",
+            DEFAULT_DAILY_KLINE_1D_INTEGRITY_NOTIFY_SUCCESS,
+        ),
+        daily_kline_1d_integrity_lock_ttl_seconds=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "DAILY_KLINE_1D_INTEGRITY_LOCK_TTL_SECONDS",
+                str(DEFAULT_DAILY_KLINE_1D_INTEGRITY_LOCK_TTL_SECONDS),
+            ),
+            "DAILY_KLINE_1D_INTEGRITY_LOCK_TTL_SECONDS",
+            DEFAULT_DAILY_KLINE_1D_INTEGRITY_LOCK_TTL_SECONDS,
+        ),
+        daily_kline_1d_integrity_utc_time=_get_config_value(
+            merged_values,
+            "DAILY_KLINE_1D_INTEGRITY_UTC_TIME",
+            DEFAULT_DAILY_KLINE_1D_INTEGRITY_UTC_TIME,
         ),
         hermes_webhook_url=_get_config_value(merged_values, "HERMES_WEBHOOK_URL"),
         hermes_secret=_get_config_value(merged_values, "HERMES_SECRET"),

@@ -13,7 +13,7 @@ from datetime import time
 
 from app.core.config import AppSettings, get_settings
 from app.core.exceptions import ConfigError
-from app.market_data.kline_constants import KLINE_4H_INTERVAL_VALUE
+from app.market_data.kline_constants import KLINE_1D_INTERVAL_VALUE, KLINE_4H_INTERVAL_VALUE
 
 
 @dataclass(frozen=True)
@@ -38,11 +38,24 @@ class SchedulerRuntimeConfig:
     kline_4h_incremental_collect_interval: str
     kline_4h_incremental_collect_limit: int
     kline_4h_incremental_collect_utc_minutes_after_close: int
+    kline_1d_incremental_collect_enabled: bool
+    kline_1d_incremental_collect_symbol: str
+    kline_1d_incremental_collect_interval: str
+    kline_1d_incremental_collect_max_closed_count: int
+    kline_1d_incremental_collect_lock_ttl_seconds: int
+    kline_1d_incremental_collect_utc_time: time
     daily_kline_integrity_enabled: bool
     daily_kline_integrity_symbol: str
     daily_kline_integrity_interval: str
     daily_kline_integrity_limit: int
     daily_kline_integrity_utc_time: time
+    daily_kline_1d_integrity_enabled: bool
+    daily_kline_1d_integrity_symbol: str
+    daily_kline_1d_integrity_interval: str
+    daily_kline_1d_integrity_limit: int
+    daily_kline_1d_integrity_notify_success: bool
+    daily_kline_1d_integrity_lock_ttl_seconds: int
+    daily_kline_1d_integrity_utc_time: time
 
 
 def build_scheduler_runtime_config(
@@ -71,6 +84,15 @@ def build_scheduler_runtime_config(
         kline_4h_incremental_collect_utc_minutes_after_close=(
             active_settings.kline_4h_incremental_collect_utc_minutes_after_close
         ),
+        kline_1d_incremental_collect_enabled=active_settings.kline_1d_incremental_collect_enabled,
+        kline_1d_incremental_collect_symbol=active_settings.kline_1d_incremental_collect_symbol.strip().upper(),
+        kline_1d_incremental_collect_interval=active_settings.kline_1d_incremental_collect_interval,
+        kline_1d_incremental_collect_max_closed_count=active_settings.kline_1d_incremental_collect_max_closed_count,
+        kline_1d_incremental_collect_lock_ttl_seconds=active_settings.kline_1d_incremental_collect_lock_ttl_seconds,
+        kline_1d_incremental_collect_utc_time=_parse_utc_hhmm(
+            active_settings.kline_1d_incremental_collect_utc_time,
+            key="KLINE_1D_INCREMENTAL_COLLECT_UTC_TIME",
+        ),
         daily_kline_integrity_enabled=active_settings.daily_kline_integrity_enabled,
         daily_kline_integrity_symbol=active_settings.daily_kline_integrity_symbol.strip().upper(),
         daily_kline_integrity_interval=active_settings.daily_kline_integrity_interval,
@@ -78,6 +100,16 @@ def build_scheduler_runtime_config(
         daily_kline_integrity_utc_time=_parse_utc_hhmm(
             active_settings.daily_kline_integrity_utc_time,
             key="DAILY_KLINE_INTEGRITY_UTC_TIME",
+        ),
+        daily_kline_1d_integrity_enabled=active_settings.daily_kline_1d_integrity_enabled,
+        daily_kline_1d_integrity_symbol=active_settings.daily_kline_1d_integrity_symbol.strip().upper(),
+        daily_kline_1d_integrity_interval=active_settings.daily_kline_1d_integrity_interval,
+        daily_kline_1d_integrity_limit=active_settings.daily_kline_1d_integrity_limit,
+        daily_kline_1d_integrity_notify_success=active_settings.daily_kline_1d_integrity_notify_success,
+        daily_kline_1d_integrity_lock_ttl_seconds=active_settings.daily_kline_1d_integrity_lock_ttl_seconds,
+        daily_kline_1d_integrity_utc_time=_parse_utc_hhmm(
+            active_settings.daily_kline_1d_integrity_utc_time,
+            key="DAILY_KLINE_1D_INTEGRITY_UTC_TIME",
         ),
     )
     validate_scheduler_runtime_config(config)
@@ -111,12 +143,30 @@ def validate_scheduler_runtime_config(config: SchedulerRuntimeConfig) -> None:
         raise ConfigError("KLINE_4H_INCREMENTAL_COLLECT_LIMIT 必须大于 0")
     if not 0 <= config.kline_4h_incremental_collect_utc_minutes_after_close <= 59:
         raise ConfigError("KLINE_4H_INCREMENTAL_COLLECT_UTC_MINUTES_AFTER_CLOSE 必须在 0 到 59 之间")
+    if not config.kline_1d_incremental_collect_symbol:
+        raise ConfigError("KLINE_1D_INCREMENTAL_COLLECT_SYMBOL must not be empty")
+    if config.kline_1d_incremental_collect_interval != KLINE_1D_INTERVAL_VALUE:
+        raise ConfigError("KLINE_1D_INCREMENTAL_COLLECT_INTERVAL must be 1d")
+    if config.kline_1d_incremental_collect_max_closed_count <= 0:
+        raise ConfigError("KLINE_1D_INCREMENTAL_COLLECT_MAX_CLOSED_COUNT must be greater than 0")
+    if config.kline_1d_incremental_collect_lock_ttl_seconds <= 0:
+        raise ConfigError("KLINE_1D_INCREMENTAL_COLLECT_LOCK_TTL_SECONDS must be greater than 0")
     if not config.daily_kline_integrity_symbol:
         raise ConfigError("DAILY_KLINE_INTEGRITY_SYMBOL 不能为空")
     if config.daily_kline_integrity_interval != KLINE_4H_INTERVAL_VALUE:
         raise ConfigError("DAILY_KLINE_INTEGRITY_INTERVAL 只能是 4h")
     if config.daily_kline_integrity_limit <= 0:
         raise ConfigError("DAILY_KLINE_INTEGRITY_LIMIT 必须大于 0")
+
+
+    if not config.daily_kline_1d_integrity_symbol:
+        raise ConfigError("DAILY_KLINE_1D_INTEGRITY_SYMBOL must not be empty")
+    if config.daily_kline_1d_integrity_interval != KLINE_1D_INTERVAL_VALUE:
+        raise ConfigError("DAILY_KLINE_1D_INTEGRITY_INTERVAL must be 1d")
+    if config.daily_kline_1d_integrity_limit <= 0:
+        raise ConfigError("DAILY_KLINE_1D_INTEGRITY_LIMIT must be greater than 0")
+    if config.daily_kline_1d_integrity_lock_ttl_seconds <= 0:
+        raise ConfigError("DAILY_KLINE_1D_INTEGRITY_LOCK_TTL_SECONDS must be greater than 0")
 
 
 def _parse_utc_hhmm(raw_value: str, *, key: str) -> time:

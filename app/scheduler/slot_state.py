@@ -24,6 +24,8 @@ from app.storage.redis.client import get_redis_client
 
 KLINE_4H_INCREMENTAL_JOB_NAME = "kline_4h_incremental"
 DAILY_KLINE_INTEGRITY_JOB_NAME = "daily_kline_integrity"
+KLINE_1D_INCREMENTAL_JOB_NAME = "kline_1d_incremental"
+KLINE_1D_INTEGRITY_JOB_NAME = "kline_1d_integrity_check"
 
 _DELETE_KEY_IF_VALUE_MATCHES = """
 if redis.call("GET", KEYS[1]) == ARGV[1] then
@@ -540,6 +542,18 @@ def build_kline_4h_incremental_slot_id(slot_time_utc: datetime) -> str:
     return _ensure_utc_aware(slot_time_utc).strftime("%Y-%m-%dT%H:%MZ")
 
 
+def build_kline_1d_incremental_slot_id(slot_time_utc: datetime) -> str:
+    """Build the UTC slot id for one scheduled 1d collection window."""
+
+    return _ensure_utc_aware(slot_time_utc).strftime("%Y-%m-%dT%H:%MZ")
+
+
+def build_kline_1d_integrity_slot_id(slot_date_utc: Any) -> str:
+    """Build the UTC slot id for one 1d daily integrity review date."""
+
+    return slot_date_utc.isoformat()
+
+
 def build_daily_kline_integrity_slot_id(slot_date_utc: Any) -> str:
     """Build the UTC slot id for one 11 daily integrity review date."""
 
@@ -658,6 +672,8 @@ def _ensure_utc_aware(value: datetime) -> datetime:
 
 __all__ = [
     "DAILY_KLINE_INTEGRITY_JOB_NAME",
+    "KLINE_1D_INCREMENTAL_JOB_NAME",
+    "KLINE_1D_INTEGRITY_JOB_NAME",
     "KLINE_4H_INCREMENTAL_JOB_NAME",
     "RedisSchedulerSlotStore",
     "SchedulerSlotAction",
@@ -665,6 +681,8 @@ __all__ = [
     "SchedulerSlotLock",
     "SchedulerSlotStatus",
     "build_daily_kline_integrity_slot_id",
+    "build_kline_1d_incremental_slot_id",
+    "build_kline_1d_integrity_slot_id",
     "build_kline_4h_incremental_slot_id",
     "build_scheduler_completed_key",
     "build_scheduler_owner",

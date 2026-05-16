@@ -16,8 +16,15 @@ from typing import Any
 from uuid import uuid4
 
 from app.core.config import AppSettings
-from app.core.time_utils import UTC
-from app.market_data.kline_constants import DEFAULT_KLINE_SYMBOL, KLINE_4H_INTERVAL_MS, KLINE_4H_INTERVAL_VALUE
+from app.core.time_utils import UTC, timestamp_ms_to_utc_datetime, utc_datetime_to_timestamp_ms
+from app.market_data.collector.kline_1d_incremental_collector import expected_latest_closed_1d_open_time
+from app.market_data.kline_constants import (
+    DEFAULT_KLINE_SYMBOL,
+    KLINE_1D_INTERVAL_MS,
+    KLINE_1D_INTERVAL_VALUE,
+    KLINE_4H_INTERVAL_MS,
+    KLINE_4H_INTERVAL_VALUE,
+)
 from app.monitoring.runtime_status_readers import DefaultRuntimeMySqlReader, SystemdStatusChecker
 from app.monitoring.runtime_status_types import (
     LEVEL_LABELS,
@@ -67,6 +74,7 @@ def collect_runtime_status(
     redis_status = _build_redis_status(settings=settings, redis_client=redis_client)
     mysql_status, alert_status = _check_mysql_and_alert_status(
         mysql_reader or DefaultRuntimeMySqlReader(settings),
+        settings=settings,
         now_utc=now_utc,
         lookback_hours=max(1, lookback_hours),
         kline_count=max(1, kline_count),
@@ -187,6 +195,7 @@ def _check_redis_status(redis_client: Any) -> RedisRuntimeStatus:
 def _check_mysql_and_alert_status(
     reader: RuntimeMySqlReader,
     *,
+    settings: AppSettings,
     now_utc: datetime,
     lookback_hours: int,
     kline_count: int,
@@ -211,6 +220,22 @@ def _check_mysql_and_alert_status(
         latest_quality = reader.get_latest_daily_quality_check(
             symbol=DEFAULT_KLINE_SYMBOL,
             interval_value=KLINE_4H_INTERVAL_VALUE,
+            since_utc=since_utc,
+        )
+        latest_1d_kline = reader.get_latest_kline(symbol=DEFAULT_KLINE_SYMBOL, interval_value=KLINE_1D_INTERVAL_VALUE)
+        recent_1d_klines = reader.list_recent_klines(
+            symbol=DEFAULT_KLINE_SYMBOL,
+            interval_value=KLINE_1D_INTERVAL_VALUE,
+            limit=kline_count,
+        )
+        latest_1d_collector = reader.get_latest_collector_event(
+            symbol=DEFAULT_KLINE_SYMBOL,
+            interval_value=KLINE_1D_INTERVAL_VALUE,
+            since_utc=since_utc,
+        )
+        latest_1d_quality = reader.get_latest_daily_quality_check(
+            symbol=DEFAULT_KLINE_SYMBOL,
+            interval_value=KLINE_1D_INTERVAL_VALUE,
             since_utc=since_utc,
         )
         recent_alerts = reader.list_recent_alert_messages(since_utc=since_utc, limit=10)
@@ -255,6 +280,54 @@ def _check_mysql_and_alert_status(
         mysql_level = _max_level(mysql_level, RuntimeStatusLevel.ERROR)
         mysql_issues.append(RuntimeIssue(RuntimeStatusLevel.ERROR, "daily_kline_integrity", "最近一次每日 K线复核异常。"))
 
+    latest_1d_kline_time = _row_to_open_time_utc(latest_1d_kline)
+    expected_latest_1d_time = _expected_latest_closed_1d_open_time_utc(now_utc)
+    mysql_level = _max_level(
+        mysql_level,
+        _evaluate_1d_kline_freshness(
+            latest_1d_kline_time,
+            expected_latest_1d_time,
+            mysql_issues,
+            scheduler_enabled=bool(getattr(settings, "kline_1d_incremental_collect_enabled", True)),
+        ),
+    )
+
+    latest_1d_collector_status = _row_value(latest_1d_collector, "status")
+    latest_1d_collector_message = _row_message(latest_1d_collector)
+    if latest_1d_collector_status is None:
+        mysql_level = _max_level(mysql_level, RuntimeStatusLevel.WARNING)
+        mysql_issues.append(RuntimeIssue(RuntimeStatusLevel.WARNING, "collector_1d", "最近查询窗口内未读取到 1d 增量采集事件。"))
+    elif latest_1d_collector_status in {"failed", "blocked", "error", "critical"}:
+        mysql_level = _max_level(mysql_level, RuntimeStatusLevel.ERROR)
+        mysql_issues.append(RuntimeIssue(RuntimeStatusLevel.ERROR, "collector_1d", "最近一次 1d 增量采集异常。"))
+    elif latest_1d_collector_status == "skipped":
+        mysql_level = _max_level(mysql_level, RuntimeStatusLevel.NOTICE)
+        mysql_issues.append(
+            RuntimeIssue(
+                RuntimeStatusLevel.NOTICE,
+                "collector_1d",
+                f"最近一次 1d 增量采集跳过：{latest_1d_collector_message or '任务锁已存在或本次无需执行'}。",
+            )
+        )
+
+    latest_1d_quality_status = _row_value(latest_1d_quality, "status")
+    latest_1d_quality_message = _row_message(latest_1d_quality)
+    if latest_1d_quality_status is None:
+        mysql_level = _max_level(mysql_level, RuntimeStatusLevel.WARNING)
+        mysql_issues.append(RuntimeIssue(RuntimeStatusLevel.WARNING, "daily_kline_1d_integrity", "最近查询窗口内未读取到 1d 每日复核事件。"))
+    elif latest_1d_quality_status in {"failed", "error", "critical", "unhealthy"}:
+        mysql_level = _max_level(mysql_level, RuntimeStatusLevel.ERROR)
+        mysql_issues.append(RuntimeIssue(RuntimeStatusLevel.ERROR, "daily_kline_1d_integrity", "最近一次 1d 每日复核异常。"))
+    elif latest_1d_quality_status in {"warning", "blocked", "not_initialized"}:
+        mysql_level = _max_level(mysql_level, RuntimeStatusLevel.WARNING)
+        mysql_issues.append(
+            RuntimeIssue(
+                RuntimeStatusLevel.WARNING,
+                "daily_kline_1d_integrity",
+                latest_1d_quality_message or "最近一次 1d 每日复核提示需要关注。",
+            )
+        )
+
     alert_status = _evaluate_alert_messages(recent_alerts, alert_issues)
     mysql_status = MySqlRuntimeStatus(
         connection_ok=True,
@@ -263,6 +336,13 @@ def _check_mysql_and_alert_status(
         recent_kline_count=len(recent_klines),
         latest_collector_status=latest_collector_status,
         latest_daily_quality_status=latest_quality_status,
+        latest_kline_1d_open_time_utc=latest_1d_kline_time,
+        expected_latest_kline_1d_open_time_utc=expected_latest_1d_time,
+        recent_kline_1d_count=len(recent_1d_klines),
+        latest_1d_collector_status=latest_1d_collector_status,
+        latest_1d_collector_message=latest_1d_collector_message,
+        latest_1d_daily_quality_status=latest_1d_quality_status,
+        latest_1d_daily_quality_message=latest_1d_quality_message,
         issues=mysql_issues,
     )
     return mysql_status, alert_status
@@ -299,6 +379,54 @@ def _evaluate_kline_freshness(
         issues.append(RuntimeIssue(RuntimeStatusLevel.CRITICAL, "kline", "最新已收盘 4h K线严重滞后。"))
         return RuntimeStatusLevel.CRITICAL
     issues.append(RuntimeIssue(RuntimeStatusLevel.ERROR, "kline", "最新已收盘 4h K线明显缺失。"))
+    return RuntimeStatusLevel.ERROR
+
+
+def _evaluate_1d_kline_freshness(
+    latest_open_time_utc: datetime | None,
+    expected_latest_open_time_utc: datetime,
+    issues: list[RuntimeIssue],
+    *,
+    scheduler_enabled: bool,
+) -> RuntimeStatusLevel:
+    """Evaluate 1d freshness from existing MySQL rows only.
+
+    本函数只比较 `market_kline_1d` 已有时间与理论最新已收盘日 K，
+    不请求 Binance、不触发采集、不修复或回补数据。
+    """
+
+    if latest_open_time_utc is None:
+        level = RuntimeStatusLevel.WARNING if scheduler_enabled else RuntimeStatusLevel.NOTICE
+        issues.append(
+            RuntimeIssue(
+                level,
+                "kline_1d",
+                "BTCUSDT 1d 日 K 未初始化，需先执行手动 1d 回补；scheduler 不会自动初始化历史日 K。",
+            )
+        )
+        return level
+
+    if latest_open_time_utc > expected_latest_open_time_utc:
+        issues.append(
+            RuntimeIssue(
+                RuntimeStatusLevel.ERROR,
+                "kline_1d",
+                "最新 BTCUSDT 1d 日 K 晚于理论最新已收盘日 K，疑似未收盘日 K 误写正式表或系统时间异常。",
+            )
+        )
+        return RuntimeStatusLevel.ERROR
+
+    lag_ms = int((expected_latest_open_time_utc - latest_open_time_utc).total_seconds() * 1000)
+    lag_bars = max(0, lag_ms // KLINE_1D_INTERVAL_MS)
+    if lag_bars == 0:
+        return RuntimeStatusLevel.NORMAL
+    if lag_bars == 1:
+        issues.append(RuntimeIssue(RuntimeStatusLevel.WARNING, "kline_1d", "最新 BTCUSDT 1d 日 K 落后理论最新已收盘日 K 1 根。"))
+        return RuntimeStatusLevel.WARNING
+    if lag_bars >= 7:
+        issues.append(RuntimeIssue(RuntimeStatusLevel.CRITICAL, "kline_1d", f"最新 BTCUSDT 1d 日 K 严重滞后 {lag_bars} 根。"))
+        return RuntimeStatusLevel.CRITICAL
+    issues.append(RuntimeIssue(RuntimeStatusLevel.ERROR, "kline_1d", f"最新 BTCUSDT 1d 日 K 明显滞后 {lag_bars} 根。"))
     return RuntimeStatusLevel.ERROR
 
 
@@ -420,6 +548,27 @@ def _expected_latest_closed_4h_open_time(now_utc: datetime) -> datetime:
     bucket_hour = (now_utc.hour // 4) * 4
     current_bucket = now_utc.replace(hour=bucket_hour, minute=0, second=0, microsecond=0)
     return current_bucket - timedelta(hours=4)
+
+
+def _expected_latest_closed_1d_open_time_utc(now_utc: datetime) -> datetime:
+    now_ms = utc_datetime_to_timestamp_ms(_ensure_utc(now_utc))
+    expected_ms = expected_latest_closed_1d_open_time(now_ms)
+    return timestamp_ms_to_utc_datetime(expected_ms)
+
+
+def _row_to_open_time_utc(row: Any) -> datetime | None:
+    latest_kline_time = _row_value(row, "open_time_utc")
+    if latest_kline_time is None:
+        latest_kline_time = _open_time_ms_to_utc(_row_value(row, "open_time_ms"))
+    return _ensure_utc(latest_kline_time) if latest_kline_time else None
+
+
+def _row_message(row: Any) -> str | None:
+    for field_name in ("error_message", "first_issue_message", "message"):
+        value = _row_value(row, field_name)
+        if value:
+            return str(value)
+    return None
 
 
 def _row_value(row: Any, name: str) -> Any:

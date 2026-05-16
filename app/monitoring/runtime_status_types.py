@@ -108,6 +108,13 @@ class MySqlRuntimeStatus:
     recent_kline_count: int | None = None
     latest_collector_status: str | None = None
     latest_daily_quality_status: str | None = None
+    latest_kline_1d_open_time_utc: datetime | None = None
+    expected_latest_kline_1d_open_time_utc: datetime | None = None
+    recent_kline_1d_count: int | None = None
+    latest_1d_collector_status: str | None = None
+    latest_1d_collector_message: str | None = None
+    latest_1d_daily_quality_status: str | None = None
+    latest_1d_daily_quality_message: str | None = None
     error_message: str | None = None
     issues: list[RuntimeIssue] = field(default_factory=list)
 

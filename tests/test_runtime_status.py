@@ -16,10 +16,12 @@ from app.monitoring.runtime_status_rendering import (
     render_runtime_status_console,
 )
 from app.monitoring.runtime_status_types import RuntimeStatusLevel
+from app.market_data.kline_constants import KLINE_1D_INTERVAL_VALUE, KLINE_4H_INTERVAL_VALUE
 from scripts import check_runtime_status
 
 CURRENT_TIME = datetime(2026, 5, 15, 8, 10, tzinfo=UTC)
 LATEST_CLOSED_4H = datetime(2026, 5, 15, 4, 0, tzinfo=UTC)
+LATEST_CLOSED_1D = datetime(2026, 5, 14, 0, 0, tzinfo=UTC)
 
 
 class FakeSystemdChecker:
@@ -68,16 +70,28 @@ class FakeMySqlReader:
         self,
         *,
         latest_open_time: datetime | None = LATEST_CLOSED_4H,
+        latest_1d_open_time: datetime | None = LATEST_CLOSED_1D,
         recent_count: int = 100,
+        recent_1d_count: int = 100,
         collector_status: str = "success",
+        collector_1d_status: str = "success",
+        collector_1d_message: str | None = None,
         daily_quality_status: str = "healthy",
+        daily_1d_quality_status: str = "healthy",
+        daily_1d_quality_message: str | None = None,
         alert_rows: list[SimpleNamespace] | None = None,
         fail: bool = False,
     ) -> None:
         self.latest_open_time = latest_open_time
+        self.latest_1d_open_time = latest_1d_open_time
         self.recent_count = recent_count
+        self.recent_1d_count = recent_1d_count
         self.collector_status = collector_status
+        self.collector_1d_status = collector_1d_status
+        self.collector_1d_message = collector_1d_message
         self.daily_quality_status = daily_quality_status
+        self.daily_1d_quality_status = daily_1d_quality_status
+        self.daily_1d_quality_message = daily_1d_quality_message
         self.alert_rows = alert_rows if alert_rows is not None else [_submitted_alert_row()]
         self.fail = fail
 
@@ -86,17 +100,23 @@ class FakeMySqlReader:
             raise RuntimeError("mysql down")
 
     def get_latest_kline(self, *, symbol: str, interval_value: str) -> SimpleNamespace | None:
-        if self.latest_open_time is None:
+        latest_time = self.latest_1d_open_time if interval_value == KLINE_1D_INTERVAL_VALUE else self.latest_open_time
+        if latest_time is None:
             return None
-        return SimpleNamespace(open_time_utc=self.latest_open_time)
+        return SimpleNamespace(open_time_utc=latest_time)
 
     def list_recent_klines(self, *, symbol: str, interval_value: str, limit: int) -> list[object]:
-        return [object()] * min(self.recent_count, limit)
+        count = self.recent_1d_count if interval_value == KLINE_1D_INTERVAL_VALUE else self.recent_count
+        return [object()] * min(count, limit)
 
     def get_latest_collector_event(self, *, symbol: str, interval_value: str, since_utc: datetime) -> SimpleNamespace:
+        if interval_value == KLINE_1D_INTERVAL_VALUE:
+            return SimpleNamespace(status=self.collector_1d_status, error_message=self.collector_1d_message)
         return SimpleNamespace(status=self.collector_status)
 
     def get_latest_daily_quality_check(self, *, symbol: str, interval_value: str, since_utc: datetime) -> SimpleNamespace:
+        if interval_value == KLINE_1D_INTERVAL_VALUE:
+            return SimpleNamespace(status=self.daily_1d_quality_status, first_issue_message=self.daily_1d_quality_message)
         return SimpleNamespace(status=self.daily_quality_status)
 
     def list_recent_alert_messages(self, *, since_utc: datetime, limit: int) -> list[SimpleNamespace]:
@@ -156,6 +176,9 @@ def test_runtime_status_default_report_is_chinese_and_read_only(capsys) -> None:
     assert "【Hermes BTC 运行状态检查】" in output
     assert "总体结论：正常" in output
     assert "最新 BTCUSDT 4h K线" in output
+    assert "最新 BTCUSDT 1d 日 K" in output
+    assert "最近一次 1d 增量采集：成功" in output
+    assert "最近一次 1d 每日复核：健康" in output
     assert "最近 100 根 K线：已读取 100 根，连续性以每日 K线复核为准" in output
     assert "回看窗口内历史提交失败：无" in output
     assert "旧版状态记录：无" in output
@@ -198,6 +221,8 @@ def test_runtime_status_send_alert_uses_compact_chinese_summary(capsys) -> None:
     assert "Hermes BTC 运行状态检查" in message
     assert "总体结论：正常" in message
     assert "最新 BTCUSDT 4h K线" in message
+    assert "最新 BTCUSDT 1d 日 K" in message
+    assert "最近增量采集成功" in message
     assert "本次状态摘要已提交 Hermes" not in message
     assert "本摘要将通过 Hermes 通道提交" in message
     assert "本报告反映发送前的系统状态；本次摘要提交结果见命令行输出" in message
@@ -207,6 +232,8 @@ def test_runtime_status_send_alert_uses_compact_chinese_summary(capsys) -> None:
     assert "微信已送达" not in message
     assert "delivered" not in message
     assert "weixin_success" not in message
+    assert "无法确认 UTC ~ 无法确认 UTC" not in message
+    assert "本检查只读，不修复、不回补、不写正式 K线表，也不执行自动交易" in message
     assert "scheduler:running:" not in message
     assert "SELECT" not in message
     assert "channel_response" not in message
@@ -323,8 +350,106 @@ def test_latest_closed_kline_at_expected_time_remains_normal() -> None:
     report = _normal_report()
 
     assert report.mysql.latest_kline_open_time_utc == LATEST_CLOSED_4H
+    assert report.mysql.latest_kline_1d_open_time_utc == LATEST_CLOSED_1D
     assert report.mysql.level == RuntimeStatusLevel.NORMAL
     assert report.overall_level == RuntimeStatusLevel.NORMAL
+
+
+def test_runtime_status_reports_1d_not_initialized_without_auto_backfill() -> None:
+    report = collect_runtime_status(
+        systemd_checker=FakeSystemdChecker(),
+        redis_client=FakeRedis(),
+        mysql_reader=FakeMySqlReader(
+            latest_1d_open_time=None,
+            recent_1d_count=0,
+            collector_1d_status="blocked",
+            collector_1d_message="1d 数据尚未初始化，请先执行手动 backfill",
+            daily_1d_quality_status="warning",
+            daily_1d_quality_message="market_kline_1d 尚未初始化，请先执行手动 1d backfill",
+        ),
+        current_time_utc=CURRENT_TIME,
+    )
+    console = render_runtime_status_console(report)
+
+    assert report.mysql.latest_kline_1d_open_time_utc is None
+    assert report.overall_level == RuntimeStatusLevel.ERROR
+    assert "最新 BTCUSDT 1d 日 K：未初始化，需先执行手动 1d 回补" in console
+    assert "scheduler 不会自动初始化历史日 K" in console
+    assert "1d 数据尚未初始化" in console
+    assert "Binance" not in console
+
+
+def test_runtime_status_reports_1d_stale_as_key_issue() -> None:
+    report = collect_runtime_status(
+        systemd_checker=FakeSystemdChecker(),
+        redis_client=FakeRedis(),
+        mysql_reader=FakeMySqlReader(latest_1d_open_time=datetime(2026, 5, 12, 0, 0, tzinfo=UTC)),
+        current_time_utc=CURRENT_TIME,
+    )
+    console = render_runtime_status_console(report)
+
+    assert report.mysql.level == RuntimeStatusLevel.ERROR
+    assert report.overall_level == RuntimeStatusLevel.ERROR
+    assert any("1d 日 K 明显滞后" in issue.message for issue in report.issues)
+    assert "1d 数据新鲜度：滞后" in console
+    assert "关键问题：" in console
+
+
+def test_runtime_status_reports_1d_incremental_failure_without_masking_4h() -> None:
+    report = collect_runtime_status(
+        systemd_checker=FakeSystemdChecker(),
+        redis_client=FakeRedis(),
+        mysql_reader=FakeMySqlReader(
+            collector_status="success",
+            collector_1d_status="failed",
+            collector_1d_message="network timeout",
+        ),
+        current_time_utc=CURRENT_TIME,
+    )
+    console = render_runtime_status_console(report)
+
+    assert report.mysql.latest_collector_status == "success"
+    assert report.mysql.latest_1d_collector_status == "failed"
+    assert report.overall_level == RuntimeStatusLevel.ERROR
+    assert "最近一次 4h 增量采集：成功" in console
+    assert "最近一次 1d 增量采集：异常：network timeout" in console
+    assert any(issue.source == "collector_1d" for issue in report.issues)
+
+
+def test_runtime_status_reports_1d_daily_integrity_failure() -> None:
+    report = collect_runtime_status(
+        systemd_checker=FakeSystemdChecker(),
+        redis_client=FakeRedis(),
+        mysql_reader=FakeMySqlReader(
+            daily_1d_quality_status="failed",
+            daily_1d_quality_message="最近 1d 日 K 不连续",
+        ),
+        current_time_utc=CURRENT_TIME,
+    )
+    console = render_runtime_status_console(report)
+
+    assert report.mysql.latest_1d_daily_quality_status == "failed"
+    assert report.overall_level == RuntimeStatusLevel.ERROR
+    assert "最近一次 1d 每日复核：异常：最近 1d 日 K 不连续" in console
+    assert any(issue.source == "daily_kline_1d_integrity" for issue in report.issues)
+
+
+def test_runtime_status_treats_1d_lock_skipped_as_notice_not_quality_error() -> None:
+    report = collect_runtime_status(
+        systemd_checker=FakeSystemdChecker(),
+        redis_client=FakeRedis(),
+        mysql_reader=FakeMySqlReader(
+            collector_1d_status="skipped",
+            collector_1d_message="task lock already held: kline:collector:BTCUSDT:1d",
+        ),
+        current_time_utc=CURRENT_TIME,
+    )
+    console = render_runtime_status_console(report)
+
+    assert report.mysql.level == RuntimeStatusLevel.NOTICE
+    assert report.overall_level == RuntimeStatusLevel.NOTICE
+    assert "最近一次 1d 增量采集：跳过：任务锁已存在" in console
+    assert not any(issue.source == "collector_1d" and issue.level == RuntimeStatusLevel.ERROR for issue in report.issues)
 
 
 def test_alert_status_interprets_submission_semantics_and_flags_legacy_status() -> None:

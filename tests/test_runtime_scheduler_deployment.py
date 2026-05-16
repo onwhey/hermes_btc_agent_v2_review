@@ -15,6 +15,12 @@ from app.market_data.collector.types import (
     IncrementalKlineCollectResult,
     KlineCollectStatus,
 )
+from app.market_data.collector.kline_1d_incremental_types import (
+    EXIT_SUCCESS as COLLECT_1D_EXIT_SUCCESS,
+    EXIT_SKIPPED as COLLECT_1D_EXIT_SKIPPED,
+    IncrementalKline1dCollectRequest,
+    IncrementalKline1dCollectResult,
+)
 from app.market_data.kline_constants import TRIGGER_SOURCE_SCHEDULER
 from app.market_data.kline_integrity.types import (
     CHECK_MODE_DAILY_INTEGRITY_CHECK,
@@ -22,11 +28,18 @@ from app.market_data.kline_integrity.types import (
     DailyKlineIntegrityCheckResult,
     DailyKlineIntegrityStatus,
 )
+from app.market_data.kline_integrity.kline_1d_integrity_types import (
+    DailyKline1dIntegrityCheckRequest,
+    DailyKline1dIntegrityCheckResult,
+    DailyKline1dIntegrityStatus,
+)
 from app.market_data.kline_quality.types import CHECK_TRIGGER_SOURCE_SCHEDULER
 from app.scheduler.config import SchedulerRuntimeConfig, build_scheduler_runtime_config
 from app.scheduler.execution_slot import SchedulerExecutionSlotStore
 from app.scheduler.slot_state import (
     DAILY_KLINE_INTEGRITY_JOB_NAME,
+    KLINE_1D_INCREMENTAL_JOB_NAME,
+    KLINE_1D_INTEGRITY_JOB_NAME,
     KLINE_4H_INCREMENTAL_JOB_NAME,
     RedisSchedulerSlotStore,
     SchedulerSlotAction,
@@ -37,6 +50,8 @@ from app.scheduler.slot_state import (
     build_scheduler_status_key,
 )
 from app.scheduler.jobs.daily_kline_integrity_check import run_daily_kline_integrity_check_job
+from app.scheduler.jobs.kline_1d_incremental_collect import run_kline_1d_incremental_collect_job
+from app.scheduler.jobs.kline_1d_integrity_check import run_kline_1d_integrity_check_job
 from app.scheduler.jobs.kline_4h_incremental_collect import run_kline_4h_incremental_collect_job
 from app.scheduler.runner import SchedulerRunner, SchedulerSlotLogThrottle
 from scripts import run_scheduler as run_scheduler_script
@@ -178,11 +193,24 @@ def runtime_config(**overrides: Any) -> SchedulerRuntimeConfig:
         "kline_4h_incremental_collect_interval": "4h",
         "kline_4h_incremental_collect_limit": 6,
         "kline_4h_incremental_collect_utc_minutes_after_close": 5,
+        "kline_1d_incremental_collect_enabled": False,
+        "kline_1d_incremental_collect_symbol": "BTCUSDT",
+        "kline_1d_incremental_collect_interval": "1d",
+        "kline_1d_incremental_collect_max_closed_count": 30,
+        "kline_1d_incremental_collect_lock_ttl_seconds": 300,
+        "kline_1d_incremental_collect_utc_time": time(hour=0, minute=10),
         "daily_kline_integrity_enabled": True,
         "daily_kline_integrity_symbol": "BTCUSDT",
         "daily_kline_integrity_interval": "4h",
         "daily_kline_integrity_limit": 100,
         "daily_kline_integrity_utc_time": time(hour=0, minute=30),
+        "daily_kline_1d_integrity_enabled": False,
+        "daily_kline_1d_integrity_symbol": "BTCUSDT",
+        "daily_kline_1d_integrity_interval": "1d",
+        "daily_kline_1d_integrity_limit": 500,
+        "daily_kline_1d_integrity_notify_success": True,
+        "daily_kline_1d_integrity_lock_ttl_seconds": 1800,
+        "daily_kline_1d_integrity_utc_time": time(hour=0, minute=20),
     }
     data.update(overrides)
     return SchedulerRuntimeConfig(**data)
@@ -219,6 +247,32 @@ def daily_healthy_job(calls: list[str]) -> Any:
     return _job
 
 
+def kline_1d_success_job(calls: list[str]) -> Any:
+    def _job() -> IncrementalKline1dCollectResult:
+        calls.append("14-1d-collect")
+        return IncrementalKline1dCollectResult(
+            status=KlineCollectStatus.SUCCESS,
+            exit_code=COLLECT_1D_EXIT_SUCCESS,
+            trace_id="collect-1d-trace",
+            message="ok",
+        )
+
+    return _job
+
+
+def kline_1d_integrity_healthy_job(calls: list[str]) -> Any:
+    def _job() -> DailyKline1dIntegrityCheckResult:
+        calls.append("14-1d-integrity")
+        return DailyKline1dIntegrityCheckResult(
+            status=DailyKline1dIntegrityStatus.HEALTHY,
+            exit_code=0,
+            trace_id="daily-1d-trace",
+            message="ok",
+        )
+
+    return _job
+
+
 def read_files(paths: list[Path]) -> str:
     return "\n".join(path.read_text(encoding="utf-8") for path in paths)
 
@@ -236,11 +290,24 @@ def test_scheduler_runtime_config_loads_from_settings() -> None:
         kline_4h_incremental_collect_interval="4h",
         kline_4h_incremental_collect_limit=7,
         kline_4h_incremental_collect_utc_minutes_after_close=6,
+        kline_1d_incremental_collect_enabled=True,
+        kline_1d_incremental_collect_symbol="btcusdt",
+        kline_1d_incremental_collect_interval="1d",
+        kline_1d_incremental_collect_max_closed_count=12,
+        kline_1d_incremental_collect_lock_ttl_seconds=301,
+        kline_1d_incremental_collect_utc_time="00:10",
         daily_kline_integrity_enabled=False,
         daily_kline_integrity_symbol="btcusdt",
         daily_kline_integrity_interval="4h",
         daily_kline_integrity_limit=101,
         daily_kline_integrity_utc_time="01:15",
+        daily_kline_1d_integrity_enabled=True,
+        daily_kline_1d_integrity_symbol="btcusdt",
+        daily_kline_1d_integrity_interval="1d",
+        daily_kline_1d_integrity_limit=500,
+        daily_kline_1d_integrity_notify_success=False,
+        daily_kline_1d_integrity_lock_ttl_seconds=1201,
+        daily_kline_1d_integrity_utc_time="00:20",
     )
 
     config = build_scheduler_runtime_config(settings)
@@ -254,8 +321,13 @@ def test_scheduler_runtime_config_loads_from_settings() -> None:
     assert config.kline_4h_incremental_collect_enabled is False
     assert config.kline_4h_incremental_collect_symbol == "BTCUSDT"
     assert config.kline_4h_incremental_collect_limit == 7
+    assert config.kline_1d_incremental_collect_enabled is True
+    assert config.kline_1d_incremental_collect_symbol == "BTCUSDT"
+    assert config.kline_1d_incremental_collect_utc_time == time(hour=0, minute=10)
     assert config.daily_kline_integrity_enabled is False
     assert config.daily_kline_integrity_utc_time == time(hour=1, minute=15)
+    assert config.daily_kline_1d_integrity_enabled is True
+    assert config.daily_kline_1d_integrity_utc_time == time(hour=0, minute=20)
 
 
 def test_price_monitor_enabled_is_not_a_phase_12_required_config() -> None:
@@ -547,6 +619,109 @@ def test_11_disabled_runner_does_not_run_11_job() -> None:
     assert calls == []
 
 
+def test_14_4_1d_incremental_runner_calls_app_job_at_utc_0010() -> None:
+    calls: list[str] = []
+    slot_store = FakeSlotStore()
+    runner = SchedulerRunner(
+        config=runtime_config(
+            kline_4h_incremental_collect_enabled=False,
+            daily_kline_integrity_enabled=False,
+            kline_1d_incremental_collect_enabled=True,
+        ),
+        slot_store=slot_store,
+        settings=AppSettings(),
+        kline_1d_job=kline_1d_success_job(calls),
+        alert_sender=FakeAlertSender(),
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(0, 10, 5))
+
+    assert calls == ["14-1d-collect"]
+    assert records[0].job_name == KLINE_1D_INCREMENTAL_JOB_NAME
+    assert records[0].status == "completed"
+    assert slot_store.calls[0]["slot"] == "2026-05-13T00:10Z"
+    assert "1d" in records[0].slot_key
+    assert "4h" not in records[0].slot_key
+
+
+def test_14_4_1d_integrity_runner_calls_app_job_at_utc_0020() -> None:
+    calls: list[str] = []
+    slot_store = FakeSlotStore()
+    runner = SchedulerRunner(
+        config=runtime_config(
+            kline_4h_incremental_collect_enabled=False,
+            daily_kline_integrity_enabled=False,
+            daily_kline_1d_integrity_enabled=True,
+        ),
+        slot_store=slot_store,
+        settings=AppSettings(),
+        kline_1d_integrity_job=kline_1d_integrity_healthy_job(calls),
+        alert_sender=FakeAlertSender(),
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(0, 20, 5))
+
+    assert calls == ["14-1d-integrity"]
+    assert records[0].job_name == KLINE_1D_INTEGRITY_JOB_NAME
+    assert records[0].status == "completed"
+    assert slot_store.calls[0]["slot"] == "2026-05-13"
+    assert "kline_1d_integrity_check" in records[0].slot_key
+
+
+def test_14_4_1d_incremental_late_start_catches_only_recent_slot() -> None:
+    calls: list[str] = []
+    runner = SchedulerRunner(
+        config=runtime_config(
+            kline_4h_incremental_collect_enabled=False,
+            daily_kline_integrity_enabled=False,
+            kline_1d_incremental_collect_enabled=True,
+        ),
+        slot_store=FakeSlotStore(),
+        settings=AppSettings(),
+        kline_1d_job=kline_1d_success_job(calls),
+        alert_sender=FakeAlertSender(),
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(0, 11))
+    expired_records = runner.run_once(current_time_utc=utc_at(2, 11))
+
+    assert calls == ["14-1d-collect"]
+    assert records[0].status == "completed"
+    assert records[0].details["slot"] == "2026-05-13T00:10Z"
+    assert expired_records == []
+
+
+def test_14_4_1d_incremental_skipped_lock_result_is_scheduler_skipped_not_quality_failed() -> None:
+    def skipped_job() -> IncrementalKline1dCollectResult:
+        return IncrementalKline1dCollectResult(
+            status=KlineCollectStatus.SKIPPED,
+            exit_code=COLLECT_1D_EXIT_SKIPPED,
+            trace_id="skip-trace",
+            message="Skipped because task lock is already held",
+        )
+
+    slot_store = FakeSlotStore()
+    runner = SchedulerRunner(
+        config=runtime_config(
+            kline_4h_incremental_collect_enabled=False,
+            daily_kline_integrity_enabled=False,
+            kline_1d_incremental_collect_enabled=True,
+        ),
+        slot_store=slot_store,
+        settings=AppSettings(),
+        kline_1d_job=skipped_job,
+        alert_sender=FakeAlertSender(),
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(0, 10))
+
+    assert records[0].job_name == KLINE_1D_INCREMENTAL_JOB_NAME
+    assert records[0].status == "skipped"
+    assert slot_store.status_calls[0]["status"] == SchedulerSlotStatus.SKIPPED
+    assert slot_store.status_calls[0]["reason"] == "kline_1d_incremental_skipped"
+    assert slot_store.completed_calls == []
+
+
 def test_09_scheduler_job_passes_scheduler_trigger_to_app_service() -> None:
     called: dict[str, Any] = {}
     expected_result = IncrementalKlineCollectResult(
@@ -599,6 +774,65 @@ def test_11_scheduler_job_passes_scheduler_trigger_and_daily_mode_to_app_service
     assert result is expected_result
     assert called["request"].check_trigger == CHECK_TRIGGER_SOURCE_SCHEDULER
     assert called["request"].check_mode == CHECK_MODE_DAILY_INTEGRITY_CHECK
+    assert called["kwargs"]["db_session"] is db_session
+
+
+def test_14_4_1d_incremental_job_passes_scheduler_trigger_to_app_service() -> None:
+    called: dict[str, Any] = {}
+    expected_result = IncrementalKline1dCollectResult(
+        status=KlineCollectStatus.SUCCESS,
+        exit_code=COLLECT_1D_EXIT_SUCCESS,
+        trace_id="trace",
+        message="ok",
+    )
+
+    def fake_service(request: IncrementalKline1dCollectRequest, **kwargs: Any) -> Any:
+        called["request"] = request
+        called["kwargs"] = kwargs
+        return expected_result
+
+    db_session = object()
+    result = run_kline_1d_incremental_collect_job(
+        db_session=db_session,
+        settings=AppSettings(),
+        service_runner=fake_service,
+    )
+
+    assert result is expected_result
+    assert called["request"].trigger_source == TRIGGER_SOURCE_SCHEDULER
+    assert called["request"].data_source == "binance_rest_by_scheduler"
+    assert called["request"].interval_value == "1d"
+    assert called["request"].confirm_write is True
+    assert called["request"].dry_run is False
+    assert called["kwargs"]["db_session"] is db_session
+
+
+def test_14_4_1d_integrity_job_passes_scheduler_trigger_to_app_service() -> None:
+    called: dict[str, Any] = {}
+    expected_result = DailyKline1dIntegrityCheckResult(
+        status=DailyKline1dIntegrityStatus.HEALTHY,
+        exit_code=0,
+        trace_id="trace",
+        message="ok",
+    )
+
+    def fake_service(request: DailyKline1dIntegrityCheckRequest, **kwargs: Any) -> Any:
+        called["request"] = request
+        called["kwargs"] = kwargs
+        return expected_result
+
+    db_session = object()
+    result = run_kline_1d_integrity_check_job(
+        db_session=db_session,
+        settings=AppSettings(),
+        service_runner=fake_service,
+    )
+
+    assert result is expected_result
+    assert called["request"].check_trigger == CHECK_TRIGGER_SOURCE_SCHEDULER
+    assert called["request"].data_source == "binance_rest_by_scheduler"
+    assert called["request"].interval_value == "1d"
+    assert called["request"].lookback_count == 500
     assert called["kwargs"]["db_session"] is db_session
 
 
@@ -1050,6 +1284,7 @@ def test_scheduler_sources_do_not_call_scripts_or_start_price_monitor() -> None:
 
     forbidden_scheduler_terms = [
         "scripts.collect_4h_klines",
+        "scripts.collect_1d_klines",
         "scripts.check_kline_integrity",
         "scripts.run_price_monitor_10s",
         "python -m scripts",

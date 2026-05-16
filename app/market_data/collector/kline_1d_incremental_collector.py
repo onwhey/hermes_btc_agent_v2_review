@@ -150,7 +150,11 @@ def run_incremental_1d_collection(
                 issue_type="empty_market_kline_1d",
                 alert_sender=alert_sender,
                 alert_repository=alert_repository,
-                details={"lock_key": lock_key, "formal_write_performed": False},
+                details={
+                    "lock_key": lock_key,
+                    "formal_write_performed": False,
+                    "range_unavailable_reason": "1d 数据尚未初始化",
+                },
             )
 
         active_binance_client = binance_client or _default_binance_client()

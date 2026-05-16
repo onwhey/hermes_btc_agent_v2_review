@@ -30,11 +30,15 @@ from app.core.time_utils import UTC, now_utc
 from app.scheduler.config import SchedulerRuntimeConfig, build_scheduler_runtime_config
 from app.scheduler.slot_state import (
     DAILY_KLINE_INTEGRITY_JOB_NAME,
+    KLINE_1D_INCREMENTAL_JOB_NAME,
+    KLINE_1D_INTEGRITY_JOB_NAME,
     KLINE_4H_INCREMENTAL_JOB_NAME,
     RedisSchedulerSlotStore,
     SchedulerSlotDecision,
     SchedulerSlotStatus,
     build_daily_kline_integrity_slot_id,
+    build_kline_1d_incremental_slot_id,
+    build_kline_1d_integrity_slot_id,
     build_kline_4h_incremental_slot_id,
     build_scheduler_owner,
 )
@@ -42,6 +46,7 @@ from app.scheduler.slot_state import (
 LOGGER = get_logger("scheduler.runner")
 FOUR_HOUR_SLOT_INTERVAL = timedelta(hours=4)
 DAILY_INTEGRITY_CATCH_UP_WINDOW = timedelta(hours=2)
+DAILY_1D_JOB_CATCH_UP_WINDOW = timedelta(hours=2)
 
 JobCallable = Callable[[], Any]
 AlertSender = Callable[..., Any]
@@ -90,6 +95,8 @@ class SchedulerRunner:
         slot_store: RedisSchedulerSlotStore,
         settings: AppSettings | None = None,
         kline_4h_job: JobCallable | None = None,
+        kline_1d_job: JobCallable | None = None,
+        kline_1d_integrity_job: JobCallable | None = None,
         daily_integrity_job: JobCallable | None = None,
         alert_sender: AlertSender | None = None,
         sleep_fn: Callable[[float], None] = time_module.sleep,
@@ -98,6 +105,8 @@ class SchedulerRunner:
         self.slot_store = slot_store
         self.settings = settings or get_settings()
         self.kline_4h_job = kline_4h_job or _default_kline_4h_job
+        self.kline_1d_job = kline_1d_job or _default_kline_1d_job
+        self.kline_1d_integrity_job = kline_1d_integrity_job or _default_kline_1d_integrity_job
         self.daily_integrity_job = daily_integrity_job or _default_daily_integrity_job
         self.alert_sender = alert_sender or _default_alert_sender
         self.sleep_fn = sleep_fn
@@ -147,6 +156,32 @@ class SchedulerRunner:
                     slot_id=build_kline_4h_incremental_slot_id(slot_time),
                     slot_time_utc=slot_time,
                     job_runner=self.kline_4h_job,
+                )
+        if self.config.kline_1d_incremental_collect_enabled:
+            slot_time = _due_daily_utc_time_slot(
+                current_time_utc,
+                self.config.kline_1d_incremental_collect_utc_time,
+                catch_up_window=DAILY_1D_JOB_CATCH_UP_WINDOW,
+            )
+            if slot_time is not None:
+                yield DueSchedulerJob(
+                    name=KLINE_1D_INCREMENTAL_JOB_NAME,
+                    slot_id=build_kline_1d_incremental_slot_id(slot_time),
+                    slot_time_utc=slot_time,
+                    job_runner=self.kline_1d_job,
+                )
+        if self.config.daily_kline_1d_integrity_enabled:
+            slot_time = _due_daily_utc_time_slot(
+                current_time_utc,
+                self.config.daily_kline_1d_integrity_utc_time,
+                catch_up_window=DAILY_1D_JOB_CATCH_UP_WINDOW,
+            )
+            if slot_time is not None:
+                yield DueSchedulerJob(
+                    name=KLINE_1D_INTEGRITY_JOB_NAME,
+                    slot_id=build_kline_1d_integrity_slot_id(slot_time.date()),
+                    slot_time_utc=slot_time,
+                    job_runner=self.kline_1d_integrity_job,
                 )
         if self.config.daily_kline_integrity_enabled:
             slot_time = _due_daily_integrity_slot_time(current_time_utc, self.config)
@@ -494,6 +529,18 @@ def _default_kline_4h_job() -> Any:
     return run_kline_4h_incremental_collect_job()
 
 
+def _default_kline_1d_job() -> Any:
+    from app.scheduler.jobs.kline_1d_incremental_collect import run_kline_1d_incremental_collect_job
+
+    return run_kline_1d_incremental_collect_job()
+
+
+def _default_kline_1d_integrity_job() -> Any:
+    from app.scheduler.jobs.kline_1d_integrity_check import run_kline_1d_integrity_check_job
+
+    return run_kline_1d_integrity_check_job()
+
+
 def _default_daily_integrity_job() -> Any:
     from app.scheduler.jobs.daily_kline_integrity_check import run_daily_kline_integrity_check_job
 
@@ -523,19 +570,28 @@ def _due_daily_integrity_slot_time(
     current_time_utc: datetime,
     config: SchedulerRuntimeConfig,
 ) -> datetime | None:
+    return _due_daily_utc_time_slot(
+        current_time_utc,
+        config.daily_kline_integrity_utc_time,
+        catch_up_window=DAILY_INTEGRITY_CATCH_UP_WINDOW,
+    )
+
+
+def _due_daily_utc_time_slot(
+    current_time_utc: datetime,
+    scheduled_utc_time: Any,
+    *,
+    catch_up_window: timedelta,
+) -> datetime | None:
     scheduled = current_time_utc.replace(
-        hour=config.daily_kline_integrity_utc_time.hour,
-        minute=config.daily_kline_integrity_utc_time.minute,
+        hour=scheduled_utc_time.hour,
+        minute=scheduled_utc_time.minute,
         second=0,
         microsecond=0,
     )
     if current_time_utc < scheduled:
         scheduled -= timedelta(days=1)
-    if _is_inside_catch_up_window(
-        current_time_utc,
-        scheduled,
-        catch_up_window=DAILY_INTEGRITY_CATCH_UP_WINDOW,
-    ):
+    if _is_inside_catch_up_window(current_time_utc, scheduled, catch_up_window=catch_up_window):
         return scheduled
     return None
 
@@ -630,6 +686,28 @@ def _classify_job_result(job_name: str, result: Any) -> tuple[SchedulerSlotStatu
         if result_status == "skipped":
             return SchedulerSlotStatus.SKIPPED, "kline_incremental_skipped"
         return SchedulerSlotStatus.FAILED, "kline_incremental_failed"
+
+    if job_name == KLINE_1D_INCREMENTAL_JOB_NAME:
+        if result_status == "success":
+            return SchedulerSlotStatus.COMPLETED, "kline_1d_incremental_success"
+        if result_status == "blocked":
+            return SchedulerSlotStatus.BLOCKED, "kline_1d_incremental_blocked"
+        if result_status == "skipped":
+            return SchedulerSlotStatus.SKIPPED, "kline_1d_incremental_skipped"
+        return SchedulerSlotStatus.FAILED, "kline_1d_incremental_failed"
+
+    if job_name == KLINE_1D_INTEGRITY_JOB_NAME:
+        if alert_status in {"failed", "submit_failed", "gateway_rejected"}:
+            return SchedulerSlotStatus.FAILED, "kline_1d_integrity_alert_failed"
+        if result_status == "healthy":
+            return SchedulerSlotStatus.COMPLETED, "kline_1d_integrity_healthy"
+        if result_status in {"warning", "failed", "blocked"}:
+            return SchedulerSlotStatus.COMPLETED, f"kline_1d_integrity_{result_status}_completed"
+        if result_status == "skipped":
+            return SchedulerSlotStatus.SKIPPED, "kline_1d_integrity_skipped"
+        if exit_code not in (None, 0):
+            return SchedulerSlotStatus.FAILED, "kline_1d_integrity_failed"
+        return SchedulerSlotStatus.COMPLETED, "kline_1d_integrity_completed"
 
     if job_name == DAILY_KLINE_INTEGRITY_JOB_NAME:
         report_status = str(getattr(result, "details", {}).get("report_status", "") or "")
