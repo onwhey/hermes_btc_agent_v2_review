@@ -83,6 +83,11 @@ from app.core.constants import (
     DEFAULT_DAILY_KLINE_1D_INTEGRITY_NOTIFY_SUCCESS,
     DEFAULT_DAILY_KLINE_1D_INTEGRITY_SYMBOL,
     DEFAULT_DAILY_KLINE_1D_INTEGRITY_UTC_TIME,
+    DEFAULT_MARKET_CONTEXT_1D_LOOKBACK_COUNT,
+    DEFAULT_MARKET_CONTEXT_4H_LOOKBACK_COUNT,
+    DEFAULT_MARKET_CONTEXT_BASE_INTERVAL,
+    DEFAULT_MARKET_CONTEXT_HIGHER_INTERVAL,
+    DEFAULT_MARKET_CONTEXT_SYMBOL,
     DEFAULT_SYMBOL,
     DEFAULT_TIMEZONE,
     SENSITIVE_FIELD_NAMES,
@@ -184,6 +189,11 @@ class AppSettings:
     daily_kline_1d_integrity_notify_success: bool = DEFAULT_DAILY_KLINE_1D_INTEGRITY_NOTIFY_SUCCESS
     daily_kline_1d_integrity_lock_ttl_seconds: int = DEFAULT_DAILY_KLINE_1D_INTEGRITY_LOCK_TTL_SECONDS
     daily_kline_1d_integrity_utc_time: str = DEFAULT_DAILY_KLINE_1D_INTEGRITY_UTC_TIME
+    market_context_symbol: str = DEFAULT_MARKET_CONTEXT_SYMBOL
+    market_context_base_interval: str = DEFAULT_MARKET_CONTEXT_BASE_INTERVAL
+    market_context_higher_interval: str = DEFAULT_MARKET_CONTEXT_HIGHER_INTERVAL
+    market_context_4h_lookback_count: int = DEFAULT_MARKET_CONTEXT_4H_LOOKBACK_COUNT
+    market_context_1d_lookback_count: int = DEFAULT_MARKET_CONTEXT_1D_LOOKBACK_COUNT
     hermes_webhook_url: str = ""
     hermes_secret: str = ""
     hermes_timeout_seconds: float = DEFAULT_HERMES_TIMEOUT_SECONDS
@@ -815,6 +825,39 @@ def load_settings(
             merged_values,
             "DAILY_KLINE_1D_INTEGRITY_UTC_TIME",
             DEFAULT_DAILY_KLINE_1D_INTEGRITY_UTC_TIME,
+        ),
+        market_context_symbol=_get_config_value(
+            merged_values,
+            "MARKET_CONTEXT_SYMBOL",
+            DEFAULT_MARKET_CONTEXT_SYMBOL,
+        ),
+        market_context_base_interval=_get_config_value(
+            merged_values,
+            "MARKET_CONTEXT_BASE_INTERVAL",
+            DEFAULT_MARKET_CONTEXT_BASE_INTERVAL,
+        ),
+        market_context_higher_interval=_get_config_value(
+            merged_values,
+            "MARKET_CONTEXT_HIGHER_INTERVAL",
+            DEFAULT_MARKET_CONTEXT_HIGHER_INTERVAL,
+        ),
+        market_context_4h_lookback_count=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MARKET_CONTEXT_4H_LOOKBACK_COUNT",
+                str(DEFAULT_MARKET_CONTEXT_4H_LOOKBACK_COUNT),
+            ),
+            "MARKET_CONTEXT_4H_LOOKBACK_COUNT",
+            DEFAULT_MARKET_CONTEXT_4H_LOOKBACK_COUNT,
+        ),
+        market_context_1d_lookback_count=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MARKET_CONTEXT_1D_LOOKBACK_COUNT",
+                str(DEFAULT_MARKET_CONTEXT_1D_LOOKBACK_COUNT),
+            ),
+            "MARKET_CONTEXT_1D_LOOKBACK_COUNT",
+            DEFAULT_MARKET_CONTEXT_1D_LOOKBACK_COUNT,
         ),
         hermes_webhook_url=_get_config_value(merged_values, "HERMES_WEBHOOK_URL"),
         hermes_secret=_get_config_value(merged_values, "HERMES_SECRET"),

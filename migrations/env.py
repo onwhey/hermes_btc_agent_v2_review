@@ -23,6 +23,7 @@ from app.storage.mysql.database import build_mysql_connection_url
 from app.storage.mysql.models import alert_message as _alert_message_model  # noqa: F401
 from app.storage.mysql.models import collector_event_log as _collector_event_log_model  # noqa: F401
 from app.storage.mysql.models import data_quality_check as _data_quality_check_model  # noqa: F401
+from app.storage.mysql.models import market_context_snapshot as _market_context_snapshot_model  # noqa: F401
 from app.storage.mysql.models import market_kline_1d as _market_kline_1d_model  # noqa: F401
 from app.storage.mysql.models import market_kline_4h as _market_kline_4h_model  # noqa: F401
 

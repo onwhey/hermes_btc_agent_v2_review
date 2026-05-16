@@ -208,6 +208,41 @@ class MarketKline4hRepository:
         )
         return list(db_session.execute(stmt).scalars().all())
 
+    def list_recent(
+        self,
+        db_session: Any,
+        *,
+        symbol: str,
+        interval_value: str,
+        limit: int,
+        ascending: bool = True,
+    ) -> list[MarketKline4h]:
+        """Return recent 4h Klines for one symbol using UTC open-time ordering.
+
+        Parameters: caller-provided session, symbol, interval, positive limit, and
+        requested output ordering.
+        Return value: rows ordered ascending by default, or descending when requested.
+        Failure scenarios: database execution errors propagate.
+        External service access: none.
+        Data impact: reads only `market_kline_4h`; this method is used by the
+        stage-15 snapshot service and never modifies formal Kline rows.
+        """
+
+        _require_sqlalchemy()
+        if limit <= 0:
+            return []
+        stmt = (
+            select(MarketKline4h)
+            .where(MarketKline4h.symbol == symbol)
+            .where(MarketKline4h.interval_value == interval_value)
+            .order_by(MarketKline4h.open_time_ms.desc())
+            .limit(limit)
+        )
+        rows = list(db_session.execute(stmt).scalars().all())
+        if ascending:
+            return list(reversed(rows))
+        return rows
+
     def list_by_open_times(
         self,
         db_session: Any,
@@ -383,4 +418,3 @@ def _model_from_dto(kline: "MarketKlineDTO") -> MarketKline4h:
 def _require_sqlalchemy() -> None:
     if select is None or func is None:
         raise RuntimeError("SQLAlchemy is required for MarketKline4hRepository queries")
-
