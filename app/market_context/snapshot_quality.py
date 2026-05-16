@@ -86,6 +86,12 @@ class IntervalSnapshotContext:
 
         return _row_int(self.latest_quality_check, "id")
 
+    @property
+    def latest_quality_end_open_time_ms(self) -> int | None:
+        """Return the latest open-time boundary covered by the daily quality check."""
+
+        return _row_int(self.latest_quality_check, "end_open_time_ms")
+
 
 @dataclass(frozen=True)
 class SnapshotReadinessReport:
@@ -199,6 +205,18 @@ def _first_blocking_reason_for_interval(
         return f"{label} 最近每日复核状态缺失，快照生成被阻断。"
     if quality_status not in ACCEPTABLE_QUALITY_STATUSES:
         return f"{label} 最近每日复核状态为 {quality_status}，快照生成被阻断。"
+
+    # 每日复核通过还不够，必须确认复核覆盖到了本次 snapshot 窗口的最新 K线。
+    # 否则 snapshot 会基于尚未被最近复核确认的数据生成，后续只能 blocked，
+    # 不能自动修复、自动回补，也不能请求 Binance。
+    quality_end_open_time_ms = context.latest_quality_end_open_time_ms
+    if quality_end_open_time_ms is None:
+        return f"{label} 最近每日复核覆盖结束 open_time_ms 缺失，无法确认覆盖当前 snapshot 最新 K线。"
+    if quality_end_open_time_ms < latest_open_time_ms:
+        return (
+            f"{label} 最近每日复核仅覆盖到 open_time_ms={quality_end_open_time_ms}，"
+            f"未覆盖当前 snapshot 最新 K线 open_time_ms={latest_open_time_ms}，快照生成被阻断。"
+        )
 
     unclosed_reason = _first_unclosed_or_misaligned_reason(context, label=label, current_time_ms=current_time_ms)
     if unclosed_reason is not None:

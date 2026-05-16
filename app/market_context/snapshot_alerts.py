@@ -23,6 +23,7 @@ from app.market_context.snapshot_types import (
 )
 
 _BOUNDARY_TEXT = "本次仅生成市场事实快照：系统没有自动修复数据，没有人工改数，没有自动回补，也没有执行自动交易。"
+_SNAPSHOT_NOT_TRADING_ADVICE_TEXT = "本提醒不是交易建议，不包含任何开仓、平仓、止盈、止损或仓位建议。"
 
 
 def send_market_context_snapshot_alert_and_adjust_exit_code(
@@ -68,6 +69,7 @@ def build_market_context_snapshot_alert_event(
     reason = result.blocked_reason if is_blocked else (result.error_message or result.message)
     alert_type = AlertType.KLINE_DATA_QUALITY_ERROR if is_blocked else AlertType.SYSTEM_ERROR
     severity = AlertSeverity.WARNING if is_blocked else AlertSeverity.ERROR
+    final_trace_id = result.trace_id or request.trace_id or ""
     body = "\n".join(
         [
             f"币种周期：{request.symbol} {request.base_interval_value} + {request.higher_interval_value}",
@@ -82,7 +84,9 @@ def build_market_context_snapshot_alert_event(
             "建议：",
             "请先检查 4h / 1d 增量采集、每日复核与正式 K线连续性；如需补齐，只能走 Binance REST 手动回补流程，禁止人工改数。",
             "",
-            f"追踪ID：{request.trace_id}",
+            f"追踪ID：{final_trace_id}",
+            "",
+            _SNAPSHOT_NOT_TRADING_ADVICE_TEXT,
             "",
             f"边界声明：{_BOUNDARY_TEXT}",
         ]
@@ -100,14 +104,14 @@ def build_market_context_snapshot_alert_event(
                 "base_interval_value": request.base_interval_value,
                 "higher_interval_value": request.higher_interval_value,
                 "status": result.status.value,
-                "trace_id": request.trace_id,
+                "trace_id": final_trace_id,
                 "dry_run": request.dry_run,
                 "full_payload_in_message": False,
                 "kline_array_in_message": False,
             },
         },
         source="app.market_context.snapshot_alerts",
-        trace_id=request.trace_id,
+        trace_id=final_trace_id,
     )
 
 

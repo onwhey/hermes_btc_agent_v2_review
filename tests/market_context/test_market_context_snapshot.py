@@ -20,6 +20,7 @@ from app.market_context.snapshot_types import (
     EXIT_PARAMETER_ERROR,
     EXIT_SUCCESS,
     MarketContextSnapshotRequest,
+    MarketContextSnapshotResult,
     MarketContextSnapshotStatus,
 )
 from app.market_data.kline_constants import KLINE_1D_INTERVAL_MS, KLINE_4H_INTERVAL_MS
@@ -28,6 +29,7 @@ from scripts import build_market_context_snapshot as snapshot_cli
 CURRENT_TIME_MS = int(datetime(2026, 5, 16, 8, 10, tzinfo=timezone.utc).timestamp() * 1000)
 EXPECTED_4H_LATEST_MS = int(datetime(2026, 5, 16, 4, 0, tzinfo=timezone.utc).timestamp() * 1000)
 EXPECTED_1D_LATEST_MS = int(datetime(2026, 5, 15, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+SNAPSHOT_NOT_TRADING_ADVICE_TEXT = "本提醒不是交易建议，不包含任何开仓、平仓、止盈、止损或仓位建议。"
 
 
 class FakeSession:
@@ -50,6 +52,8 @@ class FakeSnapshotRepository:
         rows_1d: Iterable[Any] | None = None,
         quality_4h_status: str | None = "healthy",
         quality_1d_status: str | None = "healthy",
+        quality_4h_end_open_time_ms: int | None = None,
+        quality_1d_end_open_time_ms: int | None = None,
         collector_4h_status: str | None = "success",
         collector_1d_status: str | None = "success",
         fail_on_read: bool = False,
@@ -59,6 +63,8 @@ class FakeSnapshotRepository:
         self.rows_1d = list(rows_1d if rows_1d is not None else valid_1d_rows())
         self.quality_4h_status = quality_4h_status
         self.quality_1d_status = quality_1d_status
+        self.quality_4h_end_open_time_ms = quality_4h_end_open_time_ms
+        self.quality_1d_end_open_time_ms = quality_1d_end_open_time_ms
         self.collector_4h_status = collector_4h_status
         self.collector_1d_status = collector_1d_status
         self.fail_on_read = fail_on_read
@@ -91,7 +97,19 @@ class FakeSnapshotRepository:
         status = self.quality_4h_status if interval_value == "4h" else self.quality_1d_status
         if status is None:
             return None
-        return SimpleNamespace(id=301 if interval_value == "4h" else 401, status=status)
+        if interval_value == "4h":
+            end_open_time_ms = self.quality_4h_end_open_time_ms
+            rows = self.rows_4h
+        else:
+            end_open_time_ms = self.quality_1d_end_open_time_ms
+            rows = self.rows_1d
+        if end_open_time_ms is None and rows:
+            end_open_time_ms = max(int(row.open_time_ms) for row in rows)
+        return SimpleNamespace(
+            id=301 if interval_value == "4h" else 401,
+            status=status,
+            end_open_time_ms=end_open_time_ms,
+        )
 
     def create_snapshot_with_refs(self, _db_session: Any, payload: Any) -> Any:
         if self.fail_on_create:
@@ -258,6 +276,36 @@ def test_recent_quality_failure_blocks_for_4h_and_1d() -> None:
     assert "failed" in (result_1d.blocked_reason or "")
 
 
+def test_quality_check_end_open_time_must_cover_latest_snapshot_kline_for_4h_and_1d() -> None:
+    result_4h, repository_4h, _session_4h, _alert_4h = run_snapshot_with_fakes(
+        FakeSnapshotRepository(
+            quality_4h_status="healthy",
+            quality_4h_end_open_time_ms=EXPECTED_4H_LATEST_MS - KLINE_4H_INTERVAL_MS,
+        ),
+        request=snapshot_request(dry_run=True, confirm_write=False),
+    )
+    assert result_4h.status == MarketContextSnapshotStatus.BLOCKED
+    assert "4h" in (result_4h.blocked_reason or "")
+    assert "未覆盖" in (result_4h.blocked_reason or "")
+    assert repository_4h.created_payloads == []
+    assert repository_4h.wrote_4h is False
+    assert repository_4h.wrote_1d is False
+
+    result_1d, repository_1d, _session_1d, _alert_1d = run_snapshot_with_fakes(
+        FakeSnapshotRepository(
+            quality_1d_status="passed",
+            quality_1d_end_open_time_ms=EXPECTED_1D_LATEST_MS - KLINE_1D_INTERVAL_MS,
+        ),
+        request=snapshot_request(dry_run=True, confirm_write=False),
+    )
+    assert result_1d.status == MarketContextSnapshotStatus.BLOCKED
+    assert "1d" in (result_1d.blocked_reason or "")
+    assert "未覆盖" in (result_1d.blocked_reason or "")
+    assert repository_1d.created_payloads == []
+    assert repository_1d.wrote_4h is False
+    assert repository_1d.wrote_1d is False
+
+
 def test_insufficient_kline_count_blocks_for_4h_and_1d() -> None:
     result_4h, *_ = run_snapshot_with_fakes(
         FakeSnapshotRepository(rows_4h=valid_4h_rows(count=2)),
@@ -347,9 +395,12 @@ def test_failed_status_and_failed_hermes_notification_are_compact() -> None:
     assert len(alert_sender.calls) == 1
     message = alert_sender.calls[0]["message"]
     assert "failed" in message
+    assert SNAPSHOT_NOT_TRADING_ADVICE_TEXT in message
     assert "klines" not in message
     assert "open_time_ms" not in message
     assert "snapshot_payload_json" not in message
+    assert "微信发送成功" not in message
+    assert "微信已送达" not in message
 
 
 def test_blocked_hermes_notification_is_chinese_compact_and_no_full_payload_or_kline_array() -> None:
@@ -368,12 +419,38 @@ def test_blocked_hermes_notification_is_chinese_compact_and_no_full_payload_or_k
     assert "BTCUSDT 4h + 1d" in message
     assert "blocked" in message
     assert "trace-market-context-test" in message
+    assert SNAPSHOT_NOT_TRADING_ADVICE_TEXT in message
     assert "snapshot_payload_json" not in message
     assert "klines" not in message
     assert "open_time_ms" not in message
+    assert "微信发送成功" not in message
+    assert "微信已送达" not in message
     assert "寰俊鍙戦€佹垚鍔" not in message
     assert "寰俊宸查€佽揪" not in message
     assert "delivered" not in message
+
+
+def test_alert_uses_result_trace_id_before_request_trace_id() -> None:
+    request = MarketContextSnapshotRequest(
+        symbol="BTCUSDT",
+        base_interval_value="4h",
+        higher_interval_value="1d",
+        trace_id="",
+    )
+    result = MarketContextSnapshotResult(
+        status=MarketContextSnapshotStatus.BLOCKED,
+        exit_code=EXIT_BLOCKED,
+        trace_id="trace-from-result",
+        snapshot_id="snapshot-trace-test",
+        blocked_reason="4h 最近每日复核未覆盖当前 snapshot 最新 K线。",
+    )
+
+    event = snapshot_alerts.build_market_context_snapshot_alert_event(request, result)
+    message = format_alert_message(event)
+
+    assert event.trace_id == "trace-from-result"
+    assert "追踪ID：trace-from-result" in message
+    assert SNAPSHOT_NOT_TRADING_ADVICE_TEXT in message
 
 
 def test_hermes_submission_failure_adjusts_exit_code_without_changing_status() -> None:
