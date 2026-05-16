@@ -378,6 +378,9 @@ def test_incremental_success_notify_success_sends_compact_chinese_alert_without_
     assert event.severity.value == "info"
     assert "1d" in message
     assert "追踪ID" in message
+    assert "无法确认 UTC" not in message
+    assert "鏃犳硶纭" not in message
+    assert "UTC" in message
     assert "微信发送成功" not in message
     assert "微信已送达" not in message
     assert "delivered" not in message

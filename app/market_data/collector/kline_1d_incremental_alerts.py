@@ -278,10 +278,17 @@ def _failure_retry_suggestion(result: IncrementalKline1dCollectResult) -> str:
 def _format_result_range_utc(result: IncrementalKline1dCollectResult) -> str:
     start = result.details.get("requested_start_open_time_ms")
     end = result.details.get("requested_end_open_time_ms")
+    if not isinstance(start, int) or not isinstance(end, int) or start <= 0 or end <= 0:
+        reason = result.details.get("range_unavailable_reason")
+        if isinstance(reason, str) and reason.strip():
+            return f"未生成，原因：{reason.strip()}"
+        return "未生成，原因：本次未生成检查范围"
     return f"{_format_open_time_utc(start)} ~ {_format_open_time_utc(end)}"
 
 
 def _format_open_time_utc(open_time_ms: object) -> str:
+    if isinstance(open_time_ms, int):
+        return f"{timestamp_ms_to_utc_datetime(open_time_ms).strftime('%Y-%m-%d %H:%M:%S')} UTC"
     if not isinstance(open_time_ms, int):
         return "无法确认 UTC"
     return f"{timestamp_ms_to_utc_datetime(open_time_ms).strftime('%Y-%m-%d %H:%M')} UTC"

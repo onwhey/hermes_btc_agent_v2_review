@@ -94,7 +94,11 @@ def try_acquire_incremental_1d_lock(
         requested_count=0,
         trace_id=request.trace_id,
         reason=f"task lock already held: {lock_key}",
-        details={"lock_key": lock_key, "fetch_mode": "overlap_latest_db_to_expected_latest_closed_1d"},
+        details={
+            "lock_key": lock_key,
+            "fetch_mode": "overlap_latest_db_to_expected_latest_closed_1d",
+            "range_unavailable_reason": "任务锁已存在，本次跳过",
+        },
     )
     commit_if_possible(db_session)
     return IncrementalKline1dCollectResult(
@@ -103,7 +107,11 @@ def try_acquire_incremental_1d_lock(
         trace_id=request.trace_id,
         message=f"Skipped because task lock is already held: {lock_key}",
         event_log_id=record_id(event_log),
-        details={"lock_key": lock_key, "formal_write_performed": False},
+        details={
+            "lock_key": lock_key,
+            "formal_write_performed": False,
+            "range_unavailable_reason": "任务锁已存在，本次跳过",
+        },
     )
 
 
@@ -376,6 +384,8 @@ def handle_incremental_1d_success(
             "dry_run": request.dry_run,
             "formal_write_performed": (not request.dry_run and inserted_count > 0),
             "filtered_unclosed_count": outcome.filtered_unclosed_count,
+            "requested_start_open_time_ms": requested_start_open_time_ms,
+            "requested_end_open_time_ms": requested_end_open_time_ms,
         },
     )
     if request.notify_success:

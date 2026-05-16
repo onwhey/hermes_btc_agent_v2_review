@@ -607,3 +607,222 @@ tests/test_1d_kline_incremental_collector.py
 10. Hermes blocked / success 提醒。
 11. CLI 只允许人工 `trigger_source=cli`。
 12. 不使用 4h repository、不调用大模型、不访问交易私有接口。
+
+---
+
+## 13. 功能：14-4 1d scheduler 接入与每日复核
+
+### 13.1 1d 增量采集 scheduler 任务
+
+本阶段新增应用内 scheduler 任务，负责在每天 UTC 00:10（北京时间 08:10）触发 BTCUSDT 1d 增量采集。
+
+入口文件：
+
+```text
+app/scheduler/jobs/kline_1d_incremental_collect.py
+```
+
+入口方法：
+
+```text
+run_kline_1d_incremental_collect_job()
+```
+
+核心调用链路：
+
+```text
+app/scheduler/runner.py::SchedulerRunner._run_due_jobs_once
+    ↓
+app/scheduler/jobs/kline_1d_incremental_collect.py::run_kline_1d_incremental_collect_job
+    ↓
+app/market_data/collector/kline_1d_incremental_collector.py::run_incremental_1d_collection
+    ↓
+app/market_data/collector/kline_1d_incremental_flow.py
+    ↓
+app/exchange/binance/client.py::get_klines
+    ↓
+app/storage/mysql/repositories/market_kline_1d_repository.py
+```
+
+scheduler 直接调用 app service，不调用 `scripts.collect_1d_klines.py`。任务固定传入：
+
+```text
+trigger_source = scheduler
+data_source = binance_rest_by_scheduler
+interval_value = 1d
+event_type = kline_1d_incremental
+```
+
+本任务会请求 Binance REST 官方 K线接口，会读取并写入 `market_kline_1d`，会写入 `collector_event_log`，可通过 `app/alerting` 发送 Hermes。它不写 `market_kline_4h`，不读写交易相关接口，不调用大模型，不执行自动交易。
+
+### 13.2 调度时间、job key 与补跑语义
+
+1d 增量采集调度时间为 UTC 00:10，对应北京时间 08:10。
+
+scheduler slot 名称：
+
+```text
+kline_1d_incremental
+```
+
+job key 由 `app/scheduler/slot_state.py::build_kline_1d_incremental_slot_id()` 生成，包含 `kline_1d_incremental` 和本次 UTC slot 时间，不复用 4h 的 `kline_4h_incremental` key。
+
+补跑规则：
+
+1. scheduler 恢复后只补跑最近一次仍在补跑窗口内的 1d 增量 slot。
+2. 不盲目循环补跑大量历史 scheduler job。
+3. 缺失多少根日 K 由 1d 增量采集 service 根据 `market_kline_1d` 最新 open time 和理论最新已收盘日 K 计算。
+4. `market_kline_1d` 为空时不会自动初始化历史数据，任务会 blocked，并提示先执行手动 backfill。
+
+### 13.3 防重入与锁
+
+1d 增量采集继续使用 14-3 已实现的任务锁，锁 key 包含 symbol 与 interval：
+
+```text
+kline:collector:BTCUSDT:1d
+```
+
+锁已存在时返回 `KlineCollectStatus.SKIPPED`，退出码使用跳过语义，不使用质量异常退出码；不请求 Binance，不写正式表，不发送 error 告警。
+
+### 13.4 1d 每日复核任务
+
+本阶段新增 1d 每日复核 service 和 scheduler job。默认调度时间为 UTC 00:20，对应北京时间 08:20。
+
+入口文件：
+
+```text
+app/scheduler/jobs/kline_1d_integrity_check.py
+```
+
+入口方法：
+
+```text
+run_kline_1d_integrity_check_job()
+```
+
+核心 service：
+
+```text
+app/market_data/kline_integrity/kline_1d_integrity_service.py::run_daily_1d_kline_integrity_check
+```
+
+核心调用链路：
+
+```text
+app/scheduler/runner.py::SchedulerRunner._run_due_jobs_once
+    ↓
+app/scheduler/jobs/kline_1d_integrity_check.py::run_kline_1d_integrity_check_job
+    ↓
+app/market_data/kline_integrity/kline_1d_integrity_service.py::run_daily_1d_kline_integrity_check
+    ↓
+app/storage/mysql/repositories/market_kline_1d_repository.py::list_recent
+    ↓
+app/storage/mysql/repositories/data_quality_check_repository.py::create_check
+    ↓
+app/market_data/kline_integrity/kline_1d_integrity_alerts.py::build_daily_1d_kline_integrity_alert_event
+```
+
+1d 每日复核只读 `market_kline_1d`，不请求 Binance，不回补，不修复，不人工改数，不写正式 K线表，不调用大模型，不执行自动交易。它会写入 `collector_event_log` 与 `data_quality_check`，并在健康摘要或异常场景通过 `app/alerting` 统一发送 Hermes。
+
+### 13.5 1d 每日复核检查内容
+
+1d 每日复核检查最近 N 根日 K：
+
+1. `market_kline_1d` 是否已初始化。
+2. `open_time_ms` 是否按 1d 连续。
+3. 是否存在重复 `open_time_ms`。
+4. `open_time_utc` 是否落在 UTC 00:00:00。
+5. `close_time_ms` 是否等于 `open_time_ms + 86,400,000 - 1`。
+6. 是否存在未收盘日 K 误写正式表。
+7. 最新日 K 是否晚于理论最新已收盘日 K。
+8. 最新日 K 是否滞后理论最新已收盘日 K。
+9. OHLC 价格关系是否合理。
+10. open/high/low/close/volume 等关键字段是否为空、为零或为负数。
+11. 成交量、成交笔数是否出现非法负数。
+
+状态语义：
+
+1. 表为空：`blocked` / `not_initialized`，不伪装为 healthy。
+2. 正常连续且最新：`healthy`。
+3. 最新日 K 落后一根：`warning`。
+4. 缺口、重复、字段异常、未收盘误写、最新日 K 过新：`failed`。
+
+### 13.6 Hermes 通知
+
+1d 复核提醒由：
+
+```text
+app/market_data/kline_integrity/kline_1d_integrity_alerts.py
+```
+
+构造。正文中文、精简，标题明确包含 1d 日 K。健康通知不展开内部 context；异常通知只展示币种周期、检查范围、检查数量、问题摘要、数据质量检查 ID、追踪 ID 和建议动作。
+
+边界声明固定保留：
+
+```text
+本次为只读健康检查：系统没有自动修复、没有人工改数、没有自动回补，也没有执行自动交易。
+```
+
+Hermes HTTP 2xx 只代表已提交 Hermes，不代表微信最终送达。提醒正文不写“微信发送成功”或“微信已送达”。
+
+### 13.7 “无法确认 UTC”展示修复
+
+1d 增量采集结果现在稳定保留：
+
+```text
+requested_start_open_time_ms
+requested_end_open_time_ms
+range_unavailable_reason
+```
+
+成功、blocked、failed 通知优先用 requested range 渲染检查范围，例如：
+
+```text
+检查范围：2026-05-14 00:00:00 UTC ~ 2026-05-15 00:00:00 UTC
+```
+
+如果未生成请求范围，例如空表未初始化或任务锁已存在，则显示明确原因：
+
+```text
+检查范围：未生成，原因：1d 数据尚未初始化
+```
+
+或：
+
+```text
+检查范围：未生成，原因：任务锁已存在，本次跳过
+```
+
+不再展示“无法确认 UTC ~ 无法确认 UTC”。
+
+### 13.8 本阶段不负责
+
+第 14-4 不实现 MarketContextSnapshot。
+第 14-4 不修改 runtime status 展示；1d 运行状态展示留给 14-5。
+第 14-4 不实现策略框架。
+第 14-4 不实现 1m。
+第 14-4 不调用 DeepSeek、GPT、Claude 或其他大模型。
+第 14-4 不读取交易账户、不读取仓位、不执行自动交易。
+第 14-4 不修改 Hermes gateway。
+第 14-4 不新增数据库 migration。
+
+### 13.9 测试
+
+新增或扩展测试：
+
+```text
+tests/test_1d_kline_integrity_checker.py
+tests/test_runtime_scheduler_deployment.py
+tests/test_1d_kline_incremental_collector.py
+```
+
+覆盖：
+
+1. 1d scheduler job 注册与 UTC 00:10 调度。
+2. 1d scheduler 直接调用 app service，不调用 scripts。
+3. 1d job key 与 4h job key 隔离。
+4. 1d 补跑只补最近 slot。
+5. 锁已存在时 skipped，不请求 Binance、不写库、不发送 error 告警。
+6. 1d 每日复核健康、空表、缺口、重复、未收盘误写、字段异常、滞后等场景。
+7. 1d 增量成功通知不包含“无法确认 UTC”。
+8. 默认 pytest 不请求真实 Binance、不连接真实 MySQL/Redis、不发送真实 Hermes、不调用大模型。
