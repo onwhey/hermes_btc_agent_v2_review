@@ -2,12 +2,15 @@
 
 ## 1. 当前实现范围
 
-第 14 阶段当前已完成两个小步：
+第 14 阶段当前已完成五个小步：
 
 1. 14-1：创建 BTCUSDT 1d 独立正式 K线表、ORM model、基础 repository。
 2. 14-2：实现 BTCUSDT 1d 日 K 人工 CLI 回补。
+3. 14-3：实现 BTCUSDT 1d 日 K 增量采集 service。
+4. 14-4：接入 1d scheduler 增量采集，并实现 1d 每日复核。
+5. 14-5：让 `scripts.check_runtime_status` 纳入 1d 日 K 状态展示与可选摘要通知。
 
-本实现说明只描述已经落地的能力。第 14 阶段后续的 1d scheduler 增量采集、1d 每日复核、1d runtime status 展示和第 15 阶段 MarketContextSnapshot 尚未实现。
+本实现说明只描述已经落地的第 14 阶段数据基础能力。第 15 阶段 MarketContextSnapshot、策略分析、交易建议、大模型分析和自动交易仍未实现，也不属于第 14 阶段范围。
 
 ## 2. 功能：1d 独立正式 K线表
 
@@ -345,15 +348,15 @@ Hermes 发送失败：
 2. 返回 alert failed 退出码。
 3. 不重复发送，不自动重试。
 
-## 10. 本功能不负责
+## 10. 14-2 小步边界
 
-本功能不实现 1d scheduler。
+14-2 手动回补小步只负责人工 CLI 回补 1d 日 K。
 
-本功能不实现 1d 增量采集。
+1d 增量采集已在 14-3 落地。
 
-本功能不实现 1d 每日复核。
+1d scheduler 与 1d 每日复核已在 14-4 落地。
 
-本功能不修改 runtime status。
+runtime status 展示 1d 状态已在 14-5 落地。
 
 本功能不实现 MarketContextSnapshot。
 
@@ -573,11 +576,11 @@ app/market_data/collector/kline_1d_incremental_alerts.py
 
 Hermes HTTP 2xx 只代表已提交 Hermes，不代表微信最终送达。
 
-### 12.11 本阶段不负责
+### 12.11 14-3 小步边界
 
-第 14-3 不实现 1d scheduler。
-第 14-3 不实现 1d 每日复核。
-第 14-3 不修改 runtime status。
+第 14-3 只实现 1d 增量采集 service 和人工验证 CLI。
+1d scheduler 与 1d 每日复核已在 14-4 落地。
+runtime status 展示 1d 状态已在 14-5 落地。
 第 14-3 不实现 MarketContextSnapshot。
 第 14-3 不生成策略建议。
 第 14-3 不调用 DeepSeek、GPT、Claude 或其他大模型。
@@ -798,7 +801,7 @@ range_unavailable_reason
 ### 13.8 本阶段不负责
 
 第 14-4 不实现 MarketContextSnapshot。
-第 14-4 不修改 runtime status 展示；1d 运行状态展示留给 14-5。
+第 14-4 只负责 scheduler 接入与 1d 每日复核；1d 运行状态展示已在 14-5 落地。
 第 14-4 不实现策略框架。
 第 14-4 不实现 1m。
 第 14-4 不调用 DeepSeek、GPT、Claude 或其他大模型。
