@@ -16,6 +16,8 @@
 
 `migrations/versions/20260516_15_create_market_context_snapshot.py`
 
+本次小修新增 `scripts/check_kline_integrity_1d.py` 作为 1d 每日复核的人工 CLI 入口。该入口只调用既有 `app/market_data/kline_integrity/kline_1d_integrity_service.py::run_daily_1d_kline_integrity_check`，用于生成 snapshot 所需的 1d `data_quality_check` 前置记录，不绕过质量检查。
+
 ## 2. MarketContextSnapshot 职责
 
 MarketContextSnapshot 只保存某一时刻 BTCUSDT 4h + 1d 的市场事实输入，便于后续模块基于同一个 `snapshot_id` 追溯当时使用了哪些 K线。
@@ -45,6 +47,18 @@ python -m scripts.build_market_context_snapshot \
   --trigger-source cli \
   --dry-run
 ```
+
+如果 snapshot 因 1d 每日复核记录缺失而 blocked，用户可以先手动运行只读 1d 复核：
+
+```bash
+python -m scripts.check_kline_integrity_1d \
+  --symbol BTCUSDT \
+  --interval 1d \
+  --trigger-source cli \
+  --lookback-count 500
+```
+
+`scripts/check_kline_integrity_1d.py` 是 cli only；scheduler 不调用该 script。它读取 `market_kline_1d`，通过 app service 写入 `data_quality_check` 与 `collector_event_log`，不会写 `market_kline_1d` / `market_kline_4h`，不会自动修复、自动回补或人工改数，不调用 DeepSeek 或任何大模型，不执行交易。
 
 本阶段没有接入 scheduler；scheduler 不调用 scripts。
 
@@ -150,8 +164,10 @@ repository 不请求 Binance，不发送 Hermes，不读写 Redis，不写正式
 7. `open_time_ms` 是否对齐 UTC 周期边界。
 8. `close_time_ms` 是否等于 `open_time_ms + interval_ms - 1`。
 9. 相邻 K线 `open_time_ms` 是否连续。
+10. 4h 与 1d 最近每日复核记录的 `end_open_time_ms` 是否覆盖当前 snapshot 窗口最新 K线；复核缺失、失败或覆盖范围落后都会返回 blocked。
 
 连续性判断只使用 UTC 毫秒时间戳，不使用 PRC 时间。
+该检查不会自动修复、自动回补、人工改数或请求 Binance。
 
 ## 10. builder 职责
 
@@ -370,6 +386,9 @@ Hermes 异常：
 11. 不修改正式 K线表。
 12. 不生成交易建议。
 13. Hermes blocked / failed 通知为中文模板，且不输出完整 payload 或 K线数组。
+14. 1d quality 缺失时 blocked。
+15. 1d quality 为 healthy / passed 且 `end_open_time_ms` 覆盖最新 1d K线时，snapshot 可继续。
+16. 1d integrity CLI 只允许人工 `cli` 触发，不允许 scheduler 通过 script 触发。
 
 默认测试使用 fake repository、fake session 和 fake alert sender，不访问真实 MySQL、Redis、Binance、Hermes 或大模型。
 

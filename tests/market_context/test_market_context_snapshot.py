@@ -25,6 +25,7 @@ from app.market_context.snapshot_types import (
 )
 from app.market_data.kline_constants import KLINE_1D_INTERVAL_MS, KLINE_4H_INTERVAL_MS
 from scripts import build_market_context_snapshot as snapshot_cli
+from scripts import check_kline_integrity_1d as integrity_1d_cli
 
 CURRENT_TIME_MS = int(datetime(2026, 5, 16, 8, 10, tzinfo=timezone.utc).timestamp() * 1000)
 EXPECTED_4H_LATEST_MS = int(datetime(2026, 5, 16, 4, 0, tzinfo=timezone.utc).timestamp() * 1000)
@@ -276,6 +277,38 @@ def test_recent_quality_failure_blocks_for_4h_and_1d() -> None:
     assert "failed" in (result_1d.blocked_reason or "")
 
 
+def test_1d_quality_check_missing_blocks_without_kline_write_or_binance() -> None:
+    result, repository, _session, _alert = run_snapshot_with_fakes(
+        FakeSnapshotRepository(quality_1d_status=None),
+        request=snapshot_request(dry_run=True, confirm_write=False),
+    )
+
+    assert result.status == MarketContextSnapshotStatus.BLOCKED
+    assert result.exit_code == EXIT_BLOCKED
+    assert "1d" in (result.blocked_reason or "")
+    assert repository.created_payloads == []
+    assert repository.wrote_4h is False
+    assert repository.wrote_1d is False
+
+
+def test_1d_quality_healthy_covering_latest_1d_allows_snapshot_to_continue() -> None:
+    result, repository, session, alert_sender = run_snapshot_with_fakes(
+        FakeSnapshotRepository(
+            quality_1d_status="healthy",
+            quality_1d_end_open_time_ms=EXPECTED_1D_LATEST_MS,
+        ),
+        request=snapshot_request(dry_run=True, confirm_write=False),
+    )
+
+    assert result.status == MarketContextSnapshotStatus.CREATED
+    assert result.exit_code == EXIT_SUCCESS
+    assert repository.created_payloads == []
+    assert session.commits == 0
+    assert alert_sender.calls == []
+    assert repository.wrote_4h is False
+    assert repository.wrote_1d is False
+
+
 def test_quality_check_end_open_time_must_cover_latest_snapshot_kline_for_4h_and_1d() -> None:
     result_4h, repository_4h, _session_4h, _alert_4h = run_snapshot_with_fakes(
         FakeSnapshotRepository(
@@ -488,6 +521,7 @@ def test_market_context_sources_do_not_request_binance_modify_kline_tables_or_us
 
     source = "\n".join(inspect.getsource(module) for module in modules)
     source += Path("scripts/build_market_context_snapshot.py").read_text(encoding="utf-8")
+    source += Path("scripts/check_kline_integrity_1d.py").read_text(encoding="utf-8")
     forbidden_terms = [
         "BinanceRestClient",
         "get_klines(",
@@ -511,6 +545,12 @@ def test_market_context_sources_do_not_request_binance_modify_kline_tables_or_us
 
 def test_market_context_cli_rejects_scheduler_trigger_before_service() -> None:
     exit_code = snapshot_cli.main(["--trigger-source", "scheduler", "--dry-run"])
+
+    assert exit_code != EXIT_SUCCESS
+
+
+def test_1d_integrity_cli_is_manual_only_before_service() -> None:
+    exit_code = integrity_1d_cli.main(["--trigger-source", "scheduler"])
 
     assert exit_code != EXIT_SUCCESS
 
