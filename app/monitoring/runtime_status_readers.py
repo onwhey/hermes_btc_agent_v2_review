@@ -13,11 +13,15 @@ from typing import Any, Callable
 
 from app.core.config import AppSettings
 from app.market_data.collector.types import COLLECTOR_EVENT_TYPE
+from app.market_data.collector.kline_1d_incremental_types import KLINE_1D_INCREMENTAL_EVENT_TYPE
+from app.market_data.kline_constants import KLINE_1D_INTERVAL_VALUE, KLINE_4H_INTERVAL_VALUE
+from app.market_data.kline_integrity.kline_1d_integrity_types import CHECK_TYPE_DAILY_KLINE_1D_INTEGRITY
 from app.market_data.kline_quality.types import CHECK_TYPE_DAILY_KLINE_INTEGRITY
 from app.storage.mysql.models.alert_message import AlertMessage
 from app.storage.mysql.models.collector_event_log import CollectorEventLog
 from app.storage.mysql.models.data_quality_check import DataQualityCheck
 from app.storage.mysql.models.market_kline_4h import MarketKline4h
+from app.storage.mysql.models.market_kline_1d import MarketKline1d
 from app.storage.mysql.session import session_scope
 
 try:
@@ -62,11 +66,12 @@ class DefaultRuntimeMySqlReader:
 
     def get_latest_kline(self, *, symbol: str, interval_value: str) -> Any | None:
         def _read(session: Any) -> Any | None:
+            model = _kline_model_for_interval(interval_value)
             stmt = (
-                select(MarketKline4h)
-                .where(MarketKline4h.symbol == symbol)
-                .where(MarketKline4h.interval_value == interval_value)
-                .order_by(MarketKline4h.open_time_ms.desc())
+                select(model)
+                .where(model.symbol == symbol)
+                .where(model.interval_value == interval_value)
+                .order_by(model.open_time_ms.desc())
                 .limit(1)
             )
             return session.execute(stmt).scalar_one_or_none()
@@ -75,11 +80,12 @@ class DefaultRuntimeMySqlReader:
 
     def list_recent_klines(self, *, symbol: str, interval_value: str, limit: int) -> list[Any]:
         def _read(session: Any) -> list[Any]:
+            model = _kline_model_for_interval(interval_value)
             stmt = (
-                select(MarketKline4h)
-                .where(MarketKline4h.symbol == symbol)
-                .where(MarketKline4h.interval_value == interval_value)
-                .order_by(MarketKline4h.open_time_ms.desc())
+                select(model)
+                .where(model.symbol == symbol)
+                .where(model.interval_value == interval_value)
+                .order_by(model.open_time_ms.desc())
                 .limit(limit)
             )
             return list(session.execute(stmt).scalars().all())
@@ -88,11 +94,12 @@ class DefaultRuntimeMySqlReader:
 
     def get_latest_collector_event(self, *, symbol: str, interval_value: str, since_utc: Any) -> Any | None:
         def _read(session: Any) -> Any | None:
+            event_type = _collector_event_type_for_interval(interval_value)
             stmt = (
                 select(CollectorEventLog)
                 .where(CollectorEventLog.symbol == symbol)
                 .where(CollectorEventLog.interval_value == interval_value)
-                .where(CollectorEventLog.event_type == COLLECTOR_EVENT_TYPE)
+                .where(CollectorEventLog.event_type == event_type)
                 .where(CollectorEventLog.started_at_utc >= since_utc)
                 .order_by(CollectorEventLog.started_at_utc.desc())
                 .limit(1)
@@ -103,11 +110,12 @@ class DefaultRuntimeMySqlReader:
 
     def get_latest_daily_quality_check(self, *, symbol: str, interval_value: str, since_utc: Any) -> Any | None:
         def _read(session: Any) -> Any | None:
+            check_type = _daily_check_type_for_interval(interval_value)
             stmt = (
                 select(DataQualityCheck)
                 .where(DataQualityCheck.symbol == symbol)
                 .where(DataQualityCheck.interval_value == interval_value)
-                .where(DataQualityCheck.check_type == CHECK_TYPE_DAILY_KLINE_INTEGRITY)
+                .where(DataQualityCheck.check_type == check_type)
                 .where(DataQualityCheck.created_at_utc >= since_utc)
                 .order_by(DataQualityCheck.created_at_utc.desc())
                 .limit(1)
@@ -136,3 +144,27 @@ class DefaultRuntimeMySqlReader:
             return [SimpleNamespace(**dict(row._mapping)) for row in session.execute(stmt).all()]
 
         return self._query(_read)
+
+
+def _kline_model_for_interval(interval_value: str) -> Any:
+    if interval_value == KLINE_1D_INTERVAL_VALUE:
+        return MarketKline1d
+    if interval_value == KLINE_4H_INTERVAL_VALUE:
+        return MarketKline4h
+    raise ValueError(f"unsupported runtime status interval_value={interval_value}")
+
+
+def _collector_event_type_for_interval(interval_value: str) -> str:
+    if interval_value == KLINE_1D_INTERVAL_VALUE:
+        return KLINE_1D_INCREMENTAL_EVENT_TYPE
+    if interval_value == KLINE_4H_INTERVAL_VALUE:
+        return COLLECTOR_EVENT_TYPE
+    raise ValueError(f"unsupported collector interval_value={interval_value}")
+
+
+def _daily_check_type_for_interval(interval_value: str) -> str:
+    if interval_value == KLINE_1D_INTERVAL_VALUE:
+        return CHECK_TYPE_DAILY_KLINE_1D_INTEGRITY
+    if interval_value == KLINE_4H_INTERVAL_VALUE:
+        return CHECK_TYPE_DAILY_KLINE_INTEGRITY
+    raise ValueError(f"unsupported daily integrity interval_value={interval_value}")

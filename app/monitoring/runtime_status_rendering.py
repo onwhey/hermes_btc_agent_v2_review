@@ -16,7 +16,7 @@ from app.alerting.templates import WECHAT_VISIBLE_BODY_DETAIL_KEY
 from app.alerting.types import AlertEvent, AlertSeverity, AlertType
 from app.core.config import AppSettings
 from app.core.time_utils import format_datetime_with_timezone, utc_aware_to_prc_aware
-from app.market_data.kline_constants import DEFAULT_KLINE_SYMBOL, KLINE_4H_INTERVAL_VALUE
+from app.market_data.kline_constants import DEFAULT_KLINE_SYMBOL, KLINE_1D_INTERVAL_VALUE, KLINE_4H_INTERVAL_VALUE
 from app.monitoring.runtime_status_types import LEVEL_LABELS, RuntimeStatusLevel, RuntimeStatusReport
 
 LEGACY_ALERT_STATUS_VALUES = {"sent", "failed", "delivered", "weixin_success"}
@@ -49,7 +49,11 @@ def render_runtime_status_console(report: RuntimeStatusReport) -> str:
             )
             lines.append(f"- 最近 100 根 K线：{count_label}")
         lines.append(f"- 最近一次 4h 增量采集：{_collector_status_label(report.mysql.latest_collector_status)}")
-        lines.append(f"- 最近一次每日 K线复核：{_daily_quality_status_label(report.mysql.latest_daily_quality_status)}")
+        lines.append(f"- 最近一次 4h 每日复核：{_daily_quality_status_label(report.mysql.latest_daily_quality_status)}")
+        lines.append(f"- 最新 {DEFAULT_KLINE_SYMBOL} {KLINE_1D_INTERVAL_VALUE} 日 K：{_format_1d_latest(report)}")
+        lines.append(f"- 1d 数据新鲜度：{_kline_1d_freshness_label(report)}")
+        lines.append(f"- 最近一次 1d 增量采集：{_collector_status_label(report.mysql.latest_1d_collector_status, report.mysql.latest_1d_collector_message)}")
+        lines.append(f"- 最近一次 1d 每日复核：{_daily_1d_quality_status_label(report)}")
     else:
         lines.append(f"- MySQL：{report.mysql.error_message or '连接失败'}")
 
@@ -158,7 +162,14 @@ def _build_runtime_status_alert_body(report: RuntimeStatusReport) -> str:
     ]
     if issue_lines:
         body.extend(["", "关键问题：", *issue_lines])
-    body.extend(["", f"追踪ID：{report.trace_id}", "本提醒不是交易建议，系统没有执行自动交易。"])
+    body.extend(
+        [
+            "",
+            f"追踪ID：{report.trace_id}",
+            "本检查只读，不修复、不回补、不写正式 K线表，也不执行自动交易。",
+            "本提醒不是交易建议，系统没有执行自动交易。",
+        ]
+    )
     return "\n".join(body)
 
 
@@ -229,20 +240,64 @@ def _alert_status_summary(report: RuntimeStatusReport) -> str:
     return summary
 
 
-def _collector_status_label(status: str | None) -> str:
+def _collector_status_label(status: str | None, message: str | None = None) -> str:
     if status in {"success", "completed", "healthy"}:
         return "成功"
+    if status == "skipped":
+        if message and ("lock" in message.lower() or "锁" in message):
+            return "跳过：任务锁已存在"
+        return f"跳过：{message}" if message else "跳过"
     if status in {"failed", "blocked", "error", "critical"}:
-        return "异常"
+        return f"异常：{message}" if message else "异常"
+    if status == "partial_success":
+        return "部分成功"
     return "未知" if not status else str(status)
 
 
 def _daily_quality_status_label(status: str | None) -> str:
     if status in {"healthy", "passed", "success"}:
         return "健康"
+    if status in {"warning", "blocked", "not_initialized"}:
+        return "警告"
     if status in {"failed", "error", "critical", "unhealthy"}:
         return "异常"
     return "未知" if not status else str(status)
+
+
+def _daily_1d_quality_status_label(report: RuntimeStatusReport) -> str:
+    status = report.mysql.latest_1d_daily_quality_status
+    message = report.mysql.latest_1d_daily_quality_message
+    if status is None:
+        if report.mysql.latest_kline_1d_open_time_utc is None:
+            return "暂无记录 / 未初始化"
+        return "暂无记录"
+    label = _daily_quality_status_label(status)
+    if status in {"warning", "blocked", "not_initialized"} and message:
+        return f"{label}：{message}"
+    if status in {"failed", "error", "critical", "unhealthy"} and message:
+        return f"{label}：{message}"
+    return label
+
+
+def _format_1d_latest(report: RuntimeStatusReport) -> str:
+    latest = report.mysql.latest_kline_1d_open_time_utc
+    if latest is None:
+        return "未初始化，需先执行手动 1d 回补"
+    return _format_utc_prc(latest)
+
+
+def _kline_1d_freshness_label(report: RuntimeStatusReport) -> str:
+    latest = report.mysql.latest_kline_1d_open_time_utc
+    expected = report.mysql.expected_latest_kline_1d_open_time_utc
+    if latest is None:
+        return "未初始化，scheduler 不会自动初始化历史日 K"
+    if expected is None:
+        return "无法确认理论最新已收盘日 K"
+    if latest > expected:
+        return "异常，疑似未收盘日 K 误写正式表"
+    if latest == expected:
+        return "正常"
+    return f"滞后，理论最新已收盘日 K 为 {format_datetime_with_timezone(expected)}"
 
 
 def _overall_sentence(level: RuntimeStatusLevel) -> str:
@@ -269,11 +324,23 @@ def _service_summary(report: RuntimeStatusReport) -> str:
 
 
 def _data_summary(report: RuntimeStatusReport) -> str:
-    latest = (
+    latest_4h = (
         format_datetime_with_timezone(report.mysql.latest_kline_open_time_utc)
         if report.mysql.latest_kline_open_time_utc
         else "未知"
     )
-    collector = _collector_status_label(report.mysql.latest_collector_status)
-    daily = _daily_quality_status_label(report.mysql.latest_daily_quality_status)
-    return f"最新 {DEFAULT_KLINE_SYMBOL} {KLINE_4H_INTERVAL_VALUE} K线为 {latest}，最近采集{collector}，每日 K线复核{daily}。"
+    latest_1d = (
+        format_datetime_with_timezone(report.mysql.latest_kline_1d_open_time_utc)
+        if report.mysql.latest_kline_1d_open_time_utc
+        else "未初始化，需先执行手动 1d 回补"
+    )
+    collector_4h = _collector_status_label(report.mysql.latest_collector_status)
+    daily_4h = _daily_quality_status_label(report.mysql.latest_daily_quality_status)
+    collector_1d = _collector_status_label(report.mysql.latest_1d_collector_status, report.mysql.latest_1d_collector_message)
+    daily_1d = _daily_1d_quality_status_label(report)
+    return (
+        f"4h：最新 {DEFAULT_KLINE_SYMBOL} {KLINE_4H_INTERVAL_VALUE} K线为 {latest_4h}，"
+        f"最近采集{collector_4h}，每日复核{daily_4h}。\n"
+        f"1d：最新 {DEFAULT_KLINE_SYMBOL} {KLINE_1D_INTERVAL_VALUE} 日 K 为 {latest_1d}，"
+        f"最近增量采集{collector_1d}，每日复核{daily_1d}。"
+    )

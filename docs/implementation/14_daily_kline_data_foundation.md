@@ -826,3 +826,153 @@ tests/test_1d_kline_incremental_collector.py
 6. 1d 每日复核健康、空表、缺口、重复、未收盘误写、字段异常、滞后等场景。
 7. 1d 增量成功通知不包含“无法确认 UTC”。
 8. 默认 pytest 不请求真实 Binance、不连接真实 MySQL/Redis、不发送真实 Hermes、不调用大模型。
+
+---
+
+## 14. 功能：14-5 runtime status 纳入 1d 日 K 状态
+
+### 14.1 发起方式
+
+用户手动执行：
+
+```text
+python -m scripts.check_runtime_status
+python -m scripts.check_runtime_status --send-alert
+```
+
+该脚本仍然是人工只读检查入口，不允许 scheduler 调用。
+
+### 14.2 入口文件
+
+```text
+scripts/check_runtime_status.py
+```
+
+入口方法：
+
+```text
+main()
+```
+
+### 14.3 核心调用链路
+
+```text
+scripts/check_runtime_status.py::main
+    ↓
+app/monitoring/runtime_status.py::collect_runtime_status
+    ↓
+app/monitoring/runtime_status_readers.py::DefaultRuntimeMySqlReader
+    ↓
+app/storage/mysql/models/market_kline_4h.py::MarketKline4h
+app/storage/mysql/models/market_kline_1d.py::MarketKline1d
+app/storage/mysql/models/collector_event_log.py::CollectorEventLog
+app/storage/mysql/models/data_quality_check.py::DataQualityCheck
+    ↓
+app/monitoring/runtime_status_rendering.py::render_runtime_status_console
+```
+
+用户显式传入 `--send-alert` 时，额外调用：
+
+```text
+app/monitoring/runtime_status_rendering.py::send_runtime_status_alert
+    ↓
+app/alerting/service.py::send_alert
+```
+
+### 14.4 新增 1d 展示内容
+
+运行状态报告在原有 4h 信息基础上新增：
+
+1. 最新 `BTCUSDT 1d` 日 K open time，并展示 UTC / 北京时间。
+2. `1d` 数据新鲜度：正常、未初始化、滞后、异常。
+3. 最近一次 `1d` 增量采集状态，来源于 `collector_event_log`，`event_type=kline_1d_incremental`，`interval_value=1d`。
+4. 最近一次 `1d` 每日复核状态，来源于 `data_quality_check`，`check_type=daily_kline_1d_integrity`，`interval_value=1d`。
+
+示例控制台文案：
+
+```text
+数据状态：
+- 最新 BTCUSDT 4h K线：2026-05-15 04:00 UTC / 2026-05-15 12:00 北京时间
+- 最近 100 根 K线：已读取 100 根，连续性以每日 K线复核为准
+- 最近一次 4h 增量采集：成功
+- 最近一次 4h 每日复核：健康
+- 最新 BTCUSDT 1d 日 K：2026-05-14 00:00 UTC / 2026-05-14 08:00 北京时间
+- 1d 数据新鲜度：正常
+- 最近一次 1d 增量采集：成功
+- 最近一次 1d 每日复核：健康
+```
+
+### 14.5 1d 状态语义
+
+1. `not_initialized`：`market_kline_1d` 无最新记录，显示“未初始化，需先执行手动 1d 回补”。如果 1d scheduler 已启用，运行状态至少为 warning；如果最近 1d 增量事件已 blocked，则按事件状态升为 error。
+2. `healthy`：最新 1d 日 K 等于理论最新已收盘日 K，最近 1d 增量采集成功或未出现失败，最近 1d 每日复核健康。
+3. `stale`：最新 1d 日 K 落后理论最新已收盘日 K。落后一根为 warning，落后多根为 error，严重滞后为 critical。
+4. `error`：最新 1d 日 K 晚于理论最新已收盘日 K、最近 1d 增量采集 failed / blocked、最近 1d 每日复核 failed / critical，或正式表存在未收盘误写、缺口、重复、字段异常等。
+5. `skipped`：如果最近 1d 增量采集因任务锁已存在而 skipped，显示“跳过：任务锁已存在”，按 notice 处理，不作为 K线质量 error。
+
+理论最新已收盘 1d 日 K 的计算复用 14-3 已实现的 `expected_latest_closed_1d_open_time()`，运行状态检查只用当前 UTC 时间换算，不请求 Binance。
+
+### 14.6 只读边界
+
+本功能只读：
+
+1. 不写 `market_kline_1d`。
+2. 不写 `market_kline_4h`。
+3. 不触发 Binance REST。
+4. 不触发 backfill。
+5. 不触发 1d collector。
+6. 不触发 scheduler job。
+7. 不触发 1d 每日复核 service。
+8. 不修改 `collector_event_log`。
+9. 不修改 `data_quality_check`。
+10. 不修复、不回补、不人工改数、不执行自动交易。
+
+`--send-alert` 只发送运行状态摘要，允许沿用现有告警链路写入 `alert_message` 发送记录；Hermes HTTP 2xx 只代表已提交 Hermes，不代表微信最终送达。
+
+### 14.7 --send-alert 摘要
+
+运行状态摘要正文同步包含 4h 与 1d：
+
+```text
+数据状态：
+4h：最新 BTCUSDT 4h K线为 ...，最近采集成功，每日复核健康。
+1d：最新 BTCUSDT 1d 日 K 为 ...，最近增量采集成功，每日复核健康。
+```
+
+如果 1d 异常，对应问题进入“关键问题”前 1 到 3 条摘要。正文不展开完整 SQL 结果、Redis key 列表或内部 dict，不写“微信发送成功”或“微信已送达”。
+
+固定保留边界说明：
+
+```text
+本检查只读，不修复、不回补、不写正式 K线表，也不执行自动交易。
+```
+
+### 14.8 本阶段不负责
+
+第 14-5 不实现 MarketContextSnapshot。
+第 14-5 不实现策略分析。
+第 14-5 不实现 1m。
+第 14-5 不请求 Binance。
+第 14-5 不修改 scheduler 触发时间。
+第 14-5 不修改 Hermes gateway。
+第 14-5 不新增数据库 migration。
+
+第 15 阶段才会基于 4h + 1d 构建 MarketContextSnapshot；第 15 不允许临时请求 Binance REST 拉取 1d，只能读取第 14 阶段维护好的 `market_kline_1d`。
+
+### 14.9 测试
+
+新增或扩展测试：
+
+```text
+tests/test_runtime_status.py
+```
+
+覆盖：
+
+1. 1d 健康状态出现在控制台和 `--send-alert` 摘要。
+2. 1d 未初始化时显示需要先手动回补，不自动初始化。
+3. 1d 滞后时进入关键问题，总体结论不再保持正常。
+4. 1d 增量采集 failed / blocked 能独立显示，不误写为 4h 异常。
+5. 1d 每日复核 failed / critical 能独立显示。
+6. 1d 因任务锁 skipped 时按 notice 处理，不作为质量 error。
+7. 默认 pytest 不请求真实 Binance、不连接真实 MySQL/Redis、不发送真实 Hermes、不调用大模型。
