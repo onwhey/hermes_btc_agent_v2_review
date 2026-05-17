@@ -332,7 +332,7 @@ class StrategySignalService:
             return replace(
                 result,
                 run_row_id=getattr(run_row, "id", None),
-                message=f"{result.message} Strategy signal run/result rows have been written.",
+                message=f"{result.message} {_strategy_persistence_success_message(result)}",
             )
         except Exception as exc:  # noqa: BLE001 - persistence errors become structured failures.
             _rollback_if_possible(db_session)
@@ -449,6 +449,14 @@ def _exit_code_for_run_status(status: StrategyRunStatus) -> int:
     if status == StrategyRunStatus.BLOCKED:
         return EXIT_BLOCKED
     return EXIT_FAILED
+
+
+def _strategy_persistence_success_message(result: StrategySignalRunResult) -> str:
+    """Describe exactly which strategy persistence rows were written."""
+
+    if result.signals:
+        return "策略信号运行记录和结果记录已写入。"
+    return "策略信号运行审计记录已写入，未写入策略结果记录。"
 
 
 def _commit_if_possible(db_session: Any) -> None:

@@ -652,6 +652,8 @@ def test_signal_service_confirm_write_persists_run_and_independent_results() -> 
     )
 
     assert result.exit_code == EXIT_SUCCESS
+    assert "策略信号运行记录和结果记录已写入。" in result.message
+    assert "Strategy signal run/result rows have been written" not in result.message
     assert session.commits == 1
     assert len(session.added) == 3
     run_row = session.added[0]
@@ -666,6 +668,48 @@ def test_signal_service_confirm_write_persists_run_and_independent_results() -> 
         assert json.loads(row.metrics_json) is not None
         assert "open_position" not in row.metrics_json
         assert row.snapshot_id == "MCS-BTCUSDT-4H-1D-created"
+
+
+def test_signal_service_confirm_write_blocked_persists_only_run_audit_message() -> None:
+    session = FakeSession()
+    resolver = FakeResolver(
+        SnapshotResolveResult(
+            status=StrategyRunStatus.BLOCKED,
+            snapshot_id=None,
+            message="当前没有可复用的最新 MarketContextSnapshot，策略信号运行被阻断。",
+            blocked_reason="snapshot_creation_requires_confirm_write",
+            trace_id="trace-test",
+        )
+    )
+    service = StrategySignalService(
+        snapshot_resolver=resolver,  # type: ignore[arg-type]
+        input_builder=FakeInputBuilder(),
+        runner=FakeRunner(),
+        result_repository=StrategySignalResultRepository(),
+    )
+
+    result = service.run_strategy_signals(
+        session,
+        request=StrategySignalRunRequest(
+            ensure_latest_snapshot=True,
+            trigger_source="cli",
+            dry_run=False,
+            confirm_write=True,
+            trace_id="trace-test",
+            current_time_ms=CURRENT_TIME_MS,
+        ),
+    )
+
+    assert result.status == StrategyRunStatus.BLOCKED
+    assert result.exit_code == EXIT_BLOCKED
+    assert result.signals == ()
+    assert session.commits == 1
+    assert len(session.added) == 1
+    run_row = session.added[0]
+    assert run_row.run_id == result.run_id
+    assert run_row.status == StrategyRunStatus.BLOCKED.value
+    assert "策略信号运行审计记录已写入，未写入策略结果记录。" in result.message
+    assert "Strategy signal run/result rows have been written" not in result.message
 
 
 def test_signal_service_ensure_latest_snapshot_uses_resolver_and_blocks_when_snapshot_blocked() -> None:

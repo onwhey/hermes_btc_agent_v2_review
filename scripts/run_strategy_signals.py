@@ -11,10 +11,12 @@ otherwise use `--dry-run`.
 Calls: `app/strategy/signal_service.py::run_strategy_signals`.
 Business logic: lives in `app/strategy`, not in this script.
 Database impact: delegated to the service. Dry-run writes no strategy signal
-tables and must not create a MarketContextSnapshot. In confirm-write
-non-dry-run mode, when ensure-latest-snapshot has no reusable snapshot, the
-delegated resolver may call the stage-15 snapshot service to create a
-MarketContextSnapshot prerequisite.
+tables and must not create a MarketContextSnapshot. In dry-run,
+ensure-latest-snapshot may only reuse an existing latest created snapshot; if
+none exists, the service returns blocked. In confirm-write non-dry-run mode,
+when ensure-latest-snapshot has no reusable snapshot, the delegated resolver may
+call the stage-15 snapshot service to create a MarketContextSnapshot
+prerequisite.
 Redis impact: none.
 Hermes impact: none in stage 16.
 Formal Kline impact: this script is not allowed to modify `market_kline_4h` or

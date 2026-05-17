@@ -346,7 +346,7 @@ python -m scripts.run_strategy_signals \
 
 1. `--snapshot-id` 与 `--ensure-latest-snapshot` 二选一。
 2. 有合格快照则复用。
-3. 无合格快照才调用快照服务生成。
+3. 无合格快照时，dry-run 或未确认写入返回 blocked；只有非 dry-run 且 `confirm_write=True` 时才调用快照服务生成。
 4. 快照生成 blocked / failed 时策略运行 blocked。
 5. 不允许回退旧快照。
 
@@ -1584,7 +1584,7 @@ Codex 完成后，输出总结必须包含：
 1. 可以基于一个 `created` 状态的 `MarketContextSnapshot` 构造策略输入。
 2. 可以通过 `ensure_latest_snapshot` 拿到最新合格快照。
 3. 有合格快照时会复用，不重复生成。
-4. 无合格快照时会调用快照服务生成。
+4. 无合格快照时，只有非 dry-run 且 `confirm_write=True` 才会调用快照服务生成；dry-run 会 blocked。
 5. 快照 blocked / failed 时策略运行 blocked。
 6. 不允许用旧快照运行实时策略。
 7. 策略输入来自 snapshot 还原的 K线窗口。

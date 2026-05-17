@@ -269,7 +269,7 @@ updated_at_utc
 6. 调用 `StrategyInputBuilder.build_input_from_snapshot()`。
 7. 调用 `StrategyRunner.run_strategies()`。
 8. dry-run 只返回结果，不写 `strategy_signal_run` / `strategy_signal_result`。
-9. confirm-write 写入 run 和 result 表。
+9. confirm-write 写入 run 审计记录；如果已经产生策略信号，则同时写入 result 表。blocked 且没有策略信号时只写 run 审计记录。
 10. 捕获异常并返回 structured failed / blocked 结果。
 
 本 service 不请求外部接口，不读取 Redis，不写入 Redis，不发送 Hermes，不调用 DeepSeek 或任何大模型，不读取账户，不读取持仓，不修改正式 K线表。
@@ -288,7 +288,7 @@ confirm-write：
 
 1. 非 dry-run 写入必须显式传入 `--confirm-write`。
 2. 写入 `strategy_signal_run`。
-3. 对每个策略写入一条 `strategy_signal_result`。
+3. 对每个已经产生的策略信号写入一条 `strategy_signal_result`；如果策略运行在快照或输入阶段 blocked、没有产生 signals，则只写 `strategy_signal_run` 审计记录。
 4. repository 不 commit，commit/rollback 由 service 控制。
 5. 如果 ensure-latest 没有可复用 snapshot，才允许调用第 15 阶段 snapshot service 懒生成 MarketContextSnapshot。
 6. 持久化失败时回滚并返回 `status=failed`。
