@@ -33,6 +33,9 @@ CURRENT_TIME_MS = int(datetime(2026, 5, 16, 8, 10, tzinfo=timezone.utc).timestam
 EXPECTED_4H_LATEST_MS = int(datetime(2026, 5, 16, 4, 0, tzinfo=timezone.utc).timestamp() * 1000)
 EXPECTED_1D_LATEST_MS = int(datetime(2026, 5, 15, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
 SNAPSHOT_NOT_TRADING_ADVICE_TEXT = "本提醒不是交易建议，不包含任何开仓、平仓、止盈、止损或仓位建议。"
+DEFAULT_QUALITY_CREATED_AT_UTC = datetime(2026, 5, 16, 7, 30, tzinfo=timezone.utc)
+STALE_QUALITY_CREATED_AT_UTC = datetime(2026, 5, 14, 1, 0, tzinfo=timezone.utc)
+_UNSET = object()
 
 
 class FakeSession:
@@ -55,8 +58,10 @@ class FakeSnapshotRepository:
         rows_1d: Iterable[Any] | None = None,
         quality_4h_status: str | None = "healthy",
         quality_1d_status: str | None = "healthy",
-        quality_4h_end_open_time_ms: int | None = None,
-        quality_1d_end_open_time_ms: int | None = None,
+        quality_4h_end_open_time_ms: int | None | object = _UNSET,
+        quality_1d_end_open_time_ms: int | None | object = _UNSET,
+        quality_4h_created_at_utc: datetime | None | object = _UNSET,
+        quality_1d_created_at_utc: datetime | None | object = _UNSET,
         collector_4h_status: str | None = "success",
         collector_1d_status: str | None = "success",
         fail_on_read: bool = False,
@@ -68,6 +73,8 @@ class FakeSnapshotRepository:
         self.quality_1d_status = quality_1d_status
         self.quality_4h_end_open_time_ms = quality_4h_end_open_time_ms
         self.quality_1d_end_open_time_ms = quality_1d_end_open_time_ms
+        self.quality_4h_created_at_utc = quality_4h_created_at_utc
+        self.quality_1d_created_at_utc = quality_1d_created_at_utc
         self.collector_4h_status = collector_4h_status
         self.collector_1d_status = collector_1d_status
         self.fail_on_read = fail_on_read
@@ -103,16 +110,23 @@ class FakeSnapshotRepository:
             return None
         if interval_value == "4h":
             end_open_time_ms = self.quality_4h_end_open_time_ms
+            created_at_utc = self.quality_4h_created_at_utc
             rows = self.rows_4h
         else:
             end_open_time_ms = self.quality_1d_end_open_time_ms
+            created_at_utc = self.quality_1d_created_at_utc
             rows = self.rows_1d
-        if end_open_time_ms is None and rows:
+        if end_open_time_ms is _UNSET and rows:
             end_open_time_ms = max(int(row.open_time_ms) for row in rows)
+        elif end_open_time_ms is _UNSET:
+            end_open_time_ms = None
+        if created_at_utc is _UNSET:
+            created_at_utc = DEFAULT_QUALITY_CREATED_AT_UTC
         return SimpleNamespace(
             id=301 if interval_value == "4h" else 401,
             status=status,
             end_open_time_ms=end_open_time_ms,
+            created_at_utc=created_at_utc,
         )
 
     def create_snapshot(self, _db_session: Any, payload: Any) -> Any:
@@ -462,6 +476,25 @@ def test_recent_quality_failure_blocks_for_4h_and_1d() -> None:
     assert "failed" in (result_1d.blocked_reason or "")
 
 
+def test_recent_quality_warning_or_error_still_blocks() -> None:
+    for status in ("warning", "error"):
+        result_4h, *_ = run_snapshot_with_fakes(
+            FakeSnapshotRepository(quality_4h_status=status),
+            request=snapshot_request(dry_run=True, confirm_write=False),
+        )
+        assert result_4h.status == MarketContextSnapshotStatus.BLOCKED
+        assert "4h" in (result_4h.blocked_reason or "")
+        assert status in (result_4h.blocked_reason or "")
+
+        result_1d, *_ = run_snapshot_with_fakes(
+            FakeSnapshotRepository(quality_1d_status=status),
+            request=snapshot_request(dry_run=True, confirm_write=False),
+        )
+        assert result_1d.status == MarketContextSnapshotStatus.BLOCKED
+        assert "1d" in (result_1d.blocked_reason or "")
+        assert status in (result_1d.blocked_reason or "")
+
+
 def test_1d_quality_check_missing_blocks_without_kline_write_or_binance() -> None:
     result, repository, _session, _alert = run_snapshot_with_fakes(
         FakeSnapshotRepository(quality_1d_status=None),
@@ -471,6 +504,37 @@ def test_1d_quality_check_missing_blocks_without_kline_write_or_binance() -> Non
     assert result.status == MarketContextSnapshotStatus.BLOCKED
     assert result.exit_code == EXIT_BLOCKED
     assert "1d" in (result.blocked_reason or "")
+    assert repository.created_payloads == []
+    assert repository.wrote_4h is False
+    assert repository.wrote_1d is False
+
+
+def test_quality_created_at_missing_blocks_without_kline_write_or_binance() -> None:
+    result, repository, _session, _alert = run_snapshot_with_fakes(
+        FakeSnapshotRepository(quality_4h_created_at_utc=None),
+        request=snapshot_request(dry_run=True, confirm_write=False),
+    )
+
+    assert result.status == MarketContextSnapshotStatus.BLOCKED
+    assert result.exit_code == EXIT_BLOCKED
+    assert "4h" in (result.blocked_reason or "")
+    assert "创建时间缺失" in (result.blocked_reason or "")
+    assert repository.created_payloads == []
+    assert repository.wrote_4h is False
+    assert repository.wrote_1d is False
+
+
+def test_quality_created_at_older_than_30_hours_blocks() -> None:
+    result, repository, _session, _alert = run_snapshot_with_fakes(
+        FakeSnapshotRepository(quality_4h_created_at_utc=STALE_QUALITY_CREATED_AT_UTC),
+        request=snapshot_request(dry_run=True, confirm_write=False),
+    )
+
+    assert result.status == MarketContextSnapshotStatus.BLOCKED
+    assert result.exit_code == EXIT_BLOCKED
+    assert "4h" in (result.blocked_reason or "")
+    assert "已过期" in (result.blocked_reason or "")
+    assert "30" in (result.blocked_reason or "")
     assert repository.created_payloads == []
     assert repository.wrote_4h is False
     assert repository.wrote_1d is False
@@ -494,34 +558,45 @@ def test_1d_quality_healthy_covering_latest_1d_allows_snapshot_to_continue() -> 
     assert repository.wrote_1d is False
 
 
-def test_quality_check_end_open_time_must_cover_latest_snapshot_kline_for_4h_and_1d() -> None:
-    result_4h, repository_4h, _session_4h, _alert_4h = run_snapshot_with_fakes(
+def test_quality_check_end_open_time_can_lag_snapshot_latest_4h_when_record_is_fresh() -> None:
+    result, repository, session, alert_sender = run_snapshot_with_fakes(
         FakeSnapshotRepository(
             quality_4h_status="healthy",
             quality_4h_end_open_time_ms=EXPECTED_4H_LATEST_MS - KLINE_4H_INTERVAL_MS,
+            quality_4h_created_at_utc=DEFAULT_QUALITY_CREATED_AT_UTC,
         ),
         request=snapshot_request(dry_run=True, confirm_write=False),
     )
-    assert result_4h.status == MarketContextSnapshotStatus.BLOCKED
-    assert "4h" in (result_4h.blocked_reason or "")
-    assert "未覆盖" in (result_4h.blocked_reason or "")
-    assert repository_4h.created_payloads == []
-    assert repository_4h.wrote_4h is False
-    assert repository_4h.wrote_1d is False
 
-    result_1d, repository_1d, _session_1d, _alert_1d = run_snapshot_with_fakes(
+    assert result.status == MarketContextSnapshotStatus.CREATED
+    assert result.exit_code == EXIT_SUCCESS
+    assert repository.created_payloads == []
+    assert session.commits == 0
+    assert alert_sender.calls == []
+    assert repository.wrote_4h is False
+    assert repository.wrote_1d is False
+
+
+def test_quality_check_end_open_time_can_be_missing_when_record_is_fresh() -> None:
+    result, repository, session, alert_sender = run_snapshot_with_fakes(
         FakeSnapshotRepository(
-            quality_1d_status="passed",
-            quality_1d_end_open_time_ms=EXPECTED_1D_LATEST_MS - KLINE_1D_INTERVAL_MS,
+            quality_4h_status="passed",
+            quality_1d_status="healthy",
+            quality_4h_end_open_time_ms=None,
+            quality_1d_end_open_time_ms=None,
+            quality_4h_created_at_utc=DEFAULT_QUALITY_CREATED_AT_UTC,
+            quality_1d_created_at_utc=DEFAULT_QUALITY_CREATED_AT_UTC,
         ),
         request=snapshot_request(dry_run=True, confirm_write=False),
     )
-    assert result_1d.status == MarketContextSnapshotStatus.BLOCKED
-    assert "1d" in (result_1d.blocked_reason or "")
-    assert "未覆盖" in (result_1d.blocked_reason or "")
-    assert repository_1d.created_payloads == []
-    assert repository_1d.wrote_4h is False
-    assert repository_1d.wrote_1d is False
+
+    assert result.status == MarketContextSnapshotStatus.CREATED
+    assert result.exit_code == EXIT_SUCCESS
+    assert repository.created_payloads == []
+    assert session.commits == 0
+    assert alert_sender.calls == []
+    assert repository.wrote_4h is False
+    assert repository.wrote_1d is False
 
 
 def test_insufficient_kline_count_blocks_for_4h_and_1d() -> None:
@@ -745,7 +820,7 @@ def test_alert_uses_result_trace_id_before_request_trace_id() -> None:
         exit_code=EXIT_BLOCKED,
         trace_id="trace-from-result",
         snapshot_id="snapshot-trace-test",
-        blocked_reason="4h 最近每日复核未覆盖当前 snapshot 最新 K线。",
+        blocked_reason="4h 最近每日复核记录已过期，超过 30 小时，快照生成被阻断。",
     )
 
     event = snapshot_alerts.build_market_context_snapshot_alert_event(request, result)

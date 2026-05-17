@@ -89,6 +89,8 @@ scripts/run_strategy_signals.py::main
 
 策略只能使用 `StrategyEvaluationInput`，不得自行查询最新 K线、请求 Binance、修复数据或写数据库。
 
+第 16 阶段不重新解释第 15 阶段门禁。第 15 阶段的每日完整复核是低频整体健康背景：状态必须为 `passed` / `healthy` 且记录不能过旧，但不要求 `end_open_time_ms` 覆盖当前最新 4h K线。第 16 阶段只消费已经合格的 snapshot，不自行绕过、放宽或加强第 15 阶段的 K线门禁。
+
 ## 5. BaseStrategy / Registry / Runner
 
 `BaseStrategy` 定义统一接口：

@@ -167,13 +167,13 @@ repository 不请求 Binance，不发送 Hermes，不读写 Redis，不写正式
 1. 4h 和 1d 是否已初始化。
 2. 最新 4h / 1d 是否滞后理论最新已收盘 K线。
 3. 最近采集事件是否存在失败或阻断状态。
-4. 最近每日复核是否为 `passed` 或 `healthy`。
+4. 最近每日复核是否为 `passed` 或 `healthy`，且复核记录创建时间不超过默认 30 小时。
 5. K线数量是否满足 lookback。
 6. 所有 K线是否已收盘。
 7. `open_time_ms` 是否对齐 UTC 周期边界。
 8. `close_time_ms` 是否等于 `open_time_ms + interval_ms - 1`。
 9. 相邻 K线 `open_time_ms` 是否连续。
-10. 4h 与 1d 最近每日复核记录的 `end_open_time_ms` 是否覆盖当前 snapshot 窗口最新 K线；复核缺失、失败或覆盖范围落后都会返回 blocked。
+10. 最近每日复核作为低频整体健康背景，不要求 `end_open_time_ms` 覆盖当前 snapshot 最新 4h K线；复核缺失、状态异常、创建时间缺失或记录超过 30 小时会返回 blocked。
 
 连续性判断只使用 UTC 毫秒时间戳，不使用 PRC 时间。
 该检查不会自动修复、自动回补、人工改数或请求 Binance。
@@ -404,7 +404,7 @@ Hermes 异常：
 12. 不生成交易建议。
 13. Hermes blocked / failed 通知为中文模板，且不输出完整 payload 或 K线数组。
 14. 1d quality 缺失时 blocked。
-15. 1d quality 为 healthy / passed 且 `end_open_time_ms` 覆盖最新 1d K线时，snapshot 可继续。
+15. 每日复核为 healthy / passed 且 `created_at_utc` 在 30 小时内时，snapshot 可继续；不要求每日复核 `end_open_time_ms` 覆盖当前最新 4h K线。
 16. 1d integrity CLI 只允许人工 `cli` 触发，不允许 scheduler 通过 script 触发。
 17. confirm-write 成功时 payload 不包含完整 K线数组或 OHLCV 明细。
 18. 不再写入或依赖逐根引用表。
