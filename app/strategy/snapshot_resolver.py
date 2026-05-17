@@ -45,7 +45,8 @@ class SnapshotResolver:
     External service access: none in this resolver; the called snapshot service
     also must not request Binance in stage 15.
     Data impact: may call stage-15 snapshot service to write a snapshot main row
-    when no reusable snapshot exists. It never writes formal Kline tables.
+    only for non-dry-run confirm-write requests when no reusable snapshot
+    exists. It never writes formal Kline tables.
     """
 
     def __init__(
@@ -66,15 +67,18 @@ class SnapshotResolver:
         higher_interval_value: str,
         lookback_base_count: int,
         lookback_higher_count: int,
+        dry_run: bool,
+        confirm_write: bool,
         current_time_ms: int | None,
         trace_id: str,
     ) -> SnapshotResolveResult:
         """Return a reusable latest snapshot_id or lazily create one.
 
         This method never falls back to an older snapshot. If no reusable
-        snapshot covers the theoretical latest closed Klines, it calls the
-        stage-15 snapshot service. A blocked/failed snapshot generation blocks
-        strategy execution.
+        snapshot covers the theoretical latest closed Klines, it creates a new
+        stage-15 snapshot only for non-dry-run confirm-write requests. Dry-run
+        and unconfirmed requests are blocked without any database write side
+        effect.
         """
 
         if base_interval_value != KLINE_4H_INTERVAL_VALUE or higher_interval_value != KLINE_1D_INTERVAL_VALUE:
@@ -111,6 +115,18 @@ class SnapshotResolver:
                 snapshot_id=str(getattr(reusable_snapshot, "snapshot_id")),
                 message="已复用覆盖最新已收盘 K线的 MarketContextSnapshot。",
                 reused_existing_snapshot=True,
+                trace_id=trace_id,
+            )
+
+        if dry_run or not confirm_write:
+            return SnapshotResolveResult(
+                status=StrategyRunStatus.BLOCKED,
+                snapshot_id=None,
+                message=(
+                    "当前没有可复用的最新 MarketContextSnapshot，"
+                    "dry-run 或未确认写入模式不会创建新快照，策略信号运行被阻断。"
+                ),
+                blocked_reason="snapshot_creation_requires_confirm_write",
                 trace_id=trace_id,
             )
 
@@ -255,4 +271,3 @@ __all__ = [
     "SnapshotResolver",
     "create_default_snapshot_resolver",
 ]
-

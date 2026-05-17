@@ -10,9 +10,10 @@ Required args: `--trigger-source cli` plus exactly one of `--snapshot-id` or
 otherwise use `--dry-run`.
 Calls: `app/strategy/signal_service.py::run_strategy_signals`.
 Business logic: lives in `app/strategy`, not in this script.
-Database impact: delegated to the service. It may write only strategy signal
-tables on confirm-write. When ensure-latest-snapshot has no reusable snapshot,
-the delegated resolver may call the stage-15 snapshot service to create a
+Database impact: delegated to the service. Dry-run writes no strategy signal
+tables and must not create a MarketContextSnapshot. In confirm-write
+non-dry-run mode, when ensure-latest-snapshot has no reusable snapshot, the
+delegated resolver may call the stage-15 snapshot service to create a
 MarketContextSnapshot prerequisite.
 Redis impact: none.
 Hermes impact: none in stage 16.

@@ -93,7 +93,7 @@ StrategySignal
 ↓
 有合格快照则复用
 ↓
-没有合格快照则调用 MarketContextSnapshotService 生成
+没有合格快照且非 dry-run、confirm-write 时才调用 MarketContextSnapshotService 生成
 ↓
 生成成功才运行策略
 ↓
@@ -133,6 +133,33 @@ StrategySignal
 
 ## 4. ensure_latest_snapshot 机制
 
+### 4.0 dry-run 与 confirm-write 边界（审查修正）
+
+`ensure_latest_snapshot` 必须先查找是否存在可复用的最新 `created` 状态快照。
+
+如果存在可复用快照，直接复用该 `snapshot_id`，不创建新的 `MarketContextSnapshot`。
+
+如果不存在可复用快照：
+
+```text
+dry-run = true
+    -> 返回 blocked
+    -> blocked_reason = snapshot_creation_requires_confirm_write
+    -> 不调用 MarketContextSnapshotService
+    -> 不写 market_context_snapshot
+
+confirm_write = false
+    -> 返回 blocked
+    -> blocked_reason = snapshot_creation_requires_confirm_write
+    -> 不调用 MarketContextSnapshotService
+    -> 不写 market_context_snapshot
+
+dry-run = false 且 confirm_write = true
+    -> 才允许调用 MarketContextSnapshotService 懒生成 MarketContextSnapshot
+```
+
+dry-run 绝不能产生数据库写入副作用：不写 `strategy_signal_run`，不写 `strategy_signal_result`，也不得通过 `ensure_latest_snapshot` 间接创建 `MarketContextSnapshot`。
+
 第 16 阶段必须实现 `ensure_latest_snapshot` 机制。
 
 它的职责是：
@@ -149,7 +176,7 @@ StrategySignal
 2. 计算当前理论上应使用的最新已收盘 higher 周期 K线 open_time。
 3. 查询是否已有可复用快照。
 4. 如果存在合格快照，直接复用。
-5. 如果不存在合格快照，调用 `MarketContextSnapshotService` 生成。
+5. 如果不存在合格快照，dry-run 或未确认写入时返回 blocked；只有非 dry-run 且 `confirm_write=True` 时才调用 `MarketContextSnapshotService` 生成。
 6. 如果生成结果为 `created`，继续运行策略。
 7. 如果生成结果为 `blocked` 或 `failed`，策略运行直接 `blocked`。
 8. 不允许回退使用旧快照。
@@ -208,7 +235,7 @@ blocked_reason = snapshot_not_ready
 如果没有：
 
 ```text
-再调用 MarketContextSnapshotService
+非 dry-run 且 confirm-write 时再调用 MarketContextSnapshotService
 ```
 
 这样避免：
@@ -413,7 +440,7 @@ higher_interval_value = 1d -> 使用第 15 阶段 1d 字段
 
 1. 查询已有 created 状态快照。
 2. 复用合格快照。
-3. 调用 `MarketContextSnapshotService` 生成快照。
+3. 在非 dry-run 且 confirm-write 时调用 `MarketContextSnapshotService` 生成快照。
 4. 在快照 blocked / failed 时返回策略运行 blocked。
 
 它不允许：
@@ -813,7 +840,7 @@ app/strategy/snapshot_resolver.py
 
 1. 实现 `ensure_latest_snapshot`。
 2. 先查可复用快照。
-3. 没有合格快照时调用 `MarketContextSnapshotService`。
+3. 没有合格快照时，dry-run / 未确认写入返回 blocked，非 dry-run 且 confirm-write 才调用 `MarketContextSnapshotService`。
 4. 处理 snapshot blocked / failed。
 5. 返回可用 snapshot_id 或 blocked 结果。
 6. 不运行策略。
@@ -1161,7 +1188,7 @@ python -m scripts.run_strategy_signals \
 要求：
 
 1. `--snapshot-id` 与 `--ensure-latest-snapshot` 二选一。
-2. `--dry-run` 不写策略结果表。
+2. `--dry-run` 不写策略结果表，也不得通过 ensure-latest 间接创建 MarketContextSnapshot。
 3. `--confirm-write` 才允许写入。
 4. CLI 只解析参数并调用 app service。
 5. CLI 不直接查表。
@@ -1188,7 +1215,7 @@ app/strategy/signal_service.py
 3. 如果使用 `ensure_latest_snapshot`，先确保最新合格快照。
 4. 调用 `StrategyInputBuilder` 构造输入。
 5. 调用 `StrategyRunner` 运行策略。
-6. dry-run 时只返回结果，不写库。
+6. dry-run 时只返回结果，不写策略库，也不懒生成 MarketContextSnapshot。
 7. confirm-write 时写入 `strategy_signal_run` 和 `strategy_signal_result`。
 8. 捕获异常并返回结构化结果。
 

@@ -39,6 +39,7 @@ class VolatilityRiskStrategy(BaseStrategy):
         """Evaluate recent volatility risk without producing an action instruction."""
 
         rows = tuple(input_data.base_klines)
+        debug_info = _build_debug_info(self, input_data)
         if len(rows) < self.min_required_base_klines:
             return StrategySignal(
                 strategy_name=self.strategy_name,
@@ -53,6 +54,7 @@ class VolatilityRiskStrategy(BaseStrategy):
                     f"要求 {self.min_required_base_klines} 根，实际 {len(rows)} 根。"
                 ),
                 metrics={"actual_base_count": len(rows), "required_base_count": self.min_required_base_klines},
+                debug_info=debug_info,
                 trace_id=input_data.trace_id,
             )
 
@@ -98,11 +100,7 @@ class VolatilityRiskStrategy(BaseStrategy):
                 "percentile_rank": str(percentile_rank),
                 "lookback_period": self.lookback_period,
             },
-            debug_info={
-                "snapshot_id": input_data.snapshot_id,
-                "base_interval_value": input_data.base_interval_value,
-                "strategy_boundary": "risk_signal_only",
-            },
+            debug_info=debug_info,
             trace_id=input_data.trace_id,
         )
 
@@ -125,5 +123,21 @@ def _percentile_rank(values: tuple[Decimal, ...], value: Decimal) -> Decimal:
     return Decimal(less_or_equal) / Decimal(len(values))
 
 
-__all__ = ["VolatilityRiskStrategy"]
+def _build_debug_info(strategy: VolatilityRiskStrategy, input_data: StrategyEvaluationInput) -> dict[str, Any]:
+    """Return replay metadata for the actual volatility strategy configuration."""
 
+    return {
+        "snapshot_id": input_data.snapshot_id,
+        "base_interval_value": input_data.base_interval_value,
+        "higher_interval_value": input_data.higher_interval_value,
+        "strategy_boundary": "risk_signal_only",
+        "strategy_config": {
+            "lookback_period": strategy.lookback_period,
+            "min_required_base_klines": strategy.min_required_base_klines,
+            "high_volatility_percentile": str(strategy.high_volatility_percentile),
+            "extreme_volatility_percentile": str(strategy.extreme_volatility_percentile),
+        },
+    }
+
+
+__all__ = ["VolatilityRiskStrategy"]

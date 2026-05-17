@@ -18,10 +18,10 @@ from typing import Any
 from app.storage.mysql.base import Base
 
 try:
-    from sqlalchemy import BigInteger, DateTime, Index, Numeric, String, Text, UniqueConstraint
+    from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Numeric, String, Text, UniqueConstraint
     from sqlalchemy.orm import Mapped, mapped_column
 except ImportError:  # pragma: no cover - dependencies are managed by pyproject.
-    BigInteger = DateTime = Index = Numeric = String = Text = UniqueConstraint = None  # type: ignore[assignment]
+    BigInteger = DateTime = ForeignKey = Index = Numeric = String = Text = UniqueConstraint = None  # type: ignore[assignment]
     Mapped = Any  # type: ignore[assignment]
     mapped_column = None  # type: ignore[assignment]
 
@@ -90,7 +90,11 @@ if mapped_column is not None:
         )
 
         id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-        run_id: Mapped[str] = mapped_column(String(128), nullable=False)
+        run_id: Mapped[str] = mapped_column(
+            String(128),
+            ForeignKey("strategy_signal_run.run_id"),
+            nullable=False,
+        )
         snapshot_id: Mapped[str] = mapped_column(String(128), nullable=False)
         symbol: Mapped[str] = mapped_column(String(32), nullable=False)
         base_interval_value: Mapped[str] = mapped_column(String(16), nullable=False)

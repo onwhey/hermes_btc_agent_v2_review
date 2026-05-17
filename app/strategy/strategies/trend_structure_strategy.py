@@ -38,6 +38,7 @@ class TrendStructureStrategy(BaseStrategy):
         """Evaluate trend structure without producing a trade instruction."""
 
         rows = tuple(input_data.base_klines)
+        debug_info = _build_debug_info(self, input_data)
         if len(rows) < self.min_required_base_klines:
             return StrategySignal(
                 strategy_name=self.strategy_name,
@@ -52,6 +53,7 @@ class TrendStructureStrategy(BaseStrategy):
                     f"要求 {self.min_required_base_klines} 根，实际 {len(rows)} 根。"
                 ),
                 metrics={"actual_base_count": len(rows), "required_base_count": self.min_required_base_klines},
+                debug_info=debug_info,
                 trace_id=input_data.trace_id,
             )
 
@@ -138,11 +140,7 @@ class TrendStructureStrategy(BaseStrategy):
                 "recent_range_position": str(recent_position),
                 "base_kline_count": len(rows),
             },
-            debug_info={
-                "snapshot_id": input_data.snapshot_id,
-                "base_interval_value": input_data.base_interval_value,
-                "strategy_boundary": "independent_signal_only",
-            },
+            debug_info=debug_info,
             trace_id=input_data.trace_id,
         )
 
@@ -163,5 +161,20 @@ def _range_position(value: Decimal, low: Decimal, high: Decimal) -> Decimal:
     return (value - low) / (high - low)
 
 
-__all__ = ["TrendStructureStrategy"]
+def _build_debug_info(strategy: TrendStructureStrategy, input_data: StrategyEvaluationInput) -> dict[str, Any]:
+    """Return replay metadata for the actual trend strategy configuration."""
 
+    return {
+        "snapshot_id": input_data.snapshot_id,
+        "base_interval_value": input_data.base_interval_value,
+        "higher_interval_value": input_data.higher_interval_value,
+        "strategy_boundary": "independent_signal_only",
+        "strategy_config": {
+            "ma_short_period": strategy.ma_short_period,
+            "ma_mid_period": strategy.ma_mid_period,
+            "min_required_base_klines": strategy.min_required_base_klines,
+        },
+    }
+
+
+__all__ = ["TrendStructureStrategy"]

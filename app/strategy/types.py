@@ -160,8 +160,9 @@ class StrategySignalRunRequest:
     """Input request for `StrategySignalService`.
 
     Exactly one of `snapshot_id` or `ensure_latest_snapshot` must be supplied.
-    Dry-runs never write strategy signal tables. Non-dry-run persistence requires
-    `confirm_write=True`.
+    Dry-runs never write strategy signal tables and do not lazily create
+    MarketContextSnapshot rows through ensure-latest. Non-dry-run persistence
+    requires `confirm_write=True`.
     """
 
     snapshot_id: str | None = None

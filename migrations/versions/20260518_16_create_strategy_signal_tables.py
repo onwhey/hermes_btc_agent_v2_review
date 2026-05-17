@@ -77,6 +77,11 @@ def upgrade() -> None:
         sa.Column("trace_id", sa.String(length=128), nullable=False),
         sa.Column("created_at_utc", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at_utc", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["run_id"],
+            ["strategy_signal_run.run_id"],
+            name="fk_strategy_signal_result_run_id",
+        ),
     )
     op.create_index("idx_strategy_signal_result_run_id", "strategy_signal_result", ["run_id"])
     op.create_index("idx_strategy_signal_result_snapshot_id", "strategy_signal_result", ["snapshot_id"])

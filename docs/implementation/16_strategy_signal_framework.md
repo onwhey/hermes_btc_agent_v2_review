@@ -38,7 +38,7 @@ scripts/run_strategy_signals.py::main
 1. 先计算当前理论最新已收盘 base / higher K线 open_time_ms。
 2. 查询是否已有覆盖该窗口的 `status=created` 快照。
 3. 如果快照可还原且质量状态合格，直接复用。
-4. 如果没有合格快照，调用第 15 阶段 `MarketContextSnapshotService` 生成。
+4. 如果没有合格快照，只有在非 dry-run 且 `confirm_write=True` 时才调用第 15 阶段 `MarketContextSnapshotService` 生成。
 5. 如果生成结果为 blocked / failed，策略运行直接 blocked。
 6. 不允许回退使用旧快照。
 
@@ -63,7 +63,8 @@ scripts/run_strategy_signals.py::main
 写入数据库表：
 
 1. 默认不写。
-2. 无可复用快照时，会调用第 15 阶段 `build_market_context_snapshot()`，由第 15 阶段服务在 confirm-write 模式下写入 `market_context_snapshot`。
+2. 无可复用快照时，dry-run 或 `confirm_write=False` 会返回 blocked，不调用第 15 阶段服务，也不写 `market_context_snapshot`。
+3. 无可复用快照且非 dry-run、`confirm_write=True` 时，才会调用第 15 阶段 `build_market_context_snapshot()`，由第 15 阶段服务写入 `market_context_snapshot`。
 
 不请求外部接口，不读取 Redis，不写入 Redis，不发送 Hermes，不调用 DeepSeek 或任何大模型，不读取账户，不读取持仓，不修改正式 K线表。
 
@@ -278,7 +279,8 @@ dry-run：
 1. 不写 `strategy_signal_run`。
 2. 不写 `strategy_signal_result`。
 3. 会执行 snapshot 校验、输入构建和策略计算。
-4. 如果使用 ensure-latest 且当前没有可复用 snapshot，resolver 会调用第 15 阶段 snapshot service 生成前置 MarketContextSnapshot；这是策略输入的事实快照，不是策略结果表。
+4. 如果使用 ensure-latest 且当前有可复用 snapshot，resolver 会复用该 snapshot 并继续 dry-run。
+5. 如果使用 ensure-latest 且当前没有可复用 snapshot，resolver 返回 blocked，不调用第 15 阶段 snapshot service，也不创建 MarketContextSnapshot。
 
 confirm-write：
 
@@ -286,7 +288,8 @@ confirm-write：
 2. 写入 `strategy_signal_run`。
 3. 对每个策略写入一条 `strategy_signal_result`。
 4. repository 不 commit，commit/rollback 由 service 控制。
-5. 持久化失败时回滚并返回 `status=failed`。
+5. 如果 ensure-latest 没有可复用 snapshot，才允许调用第 15 阶段 snapshot service 懒生成 MarketContextSnapshot。
+6. 持久化失败时回滚并返回 `status=failed`。
 
 ## 10. CLI 入口
 
@@ -316,6 +319,8 @@ python -m scripts.run_strategy_signals \
 ```
 
 CLI 只解析参数、创建 request、打开 session、调用 `app/strategy/signal_service.py::run_strategy_signals` 并输出摘要。CLI 不直接查表、不直接写表、不请求 Binance、不调用大模型、不发送 Hermes、不生成最终交易建议。
+
+注意：`--dry-run --ensure-latest-snapshot` 只允许复用已有最新合格快照；如果没有可复用快照，会返回 blocked，不会懒生成 MarketContextSnapshot。只有非 dry-run 且显式 `--confirm-write` 时，ensure-latest 才允许创建新的 MarketContextSnapshot。
 
 ## 11. 配置
 

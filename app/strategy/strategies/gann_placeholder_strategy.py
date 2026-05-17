@@ -28,7 +28,7 @@ class GannPlaceholderStrategy(BaseStrategy):
     strategy_version = "placeholder_v1"
 
     def __init__(self, config: Mapping[str, Any] | None = None) -> None:
-        _ = config
+        self._strategy_config = dict(config or {})
 
     def evaluate(self, input_data: StrategyEvaluationInput) -> StrategySignal:
         """Return `not_implemented` without pretending to perform Gann analysis."""
@@ -45,11 +45,14 @@ class GannPlaceholderStrategy(BaseStrategy):
             metrics={},
             debug_info={
                 "snapshot_id": input_data.snapshot_id,
-                "strategy_boundary": "placeholder_only",
+                "base_interval_value": input_data.base_interval_value,
+                "higher_interval_value": input_data.higher_interval_value,
+                "strategy_boundary": "independent_signal_only",
+                "implementation_status": "placeholder",
+                "strategy_config": self._strategy_config,
             },
             trace_id=input_data.trace_id,
         )
 
 
 __all__ = ["GannPlaceholderStrategy"]
-

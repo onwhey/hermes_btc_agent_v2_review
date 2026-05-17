@@ -62,7 +62,8 @@ class StrategySignalService:
     failure, strategy config failure, strategy exceptions, or persistence
     errors are returned as structured run results.
     External service access: none directly. The resolver may call the stage-15
-    snapshot service, which reads MySQL and may write only MarketContextSnapshot.
+    snapshot service only for non-dry-run confirm-write requests, which reads
+    MySQL and may write only MarketContextSnapshot.
     Data impact: dry-run writes no strategy signal rows; confirm-write writes
     only strategy signal tables. Formal Kline tables are never modified.
     """
@@ -132,6 +133,8 @@ class StrategySignalService:
                     higher_interval_value=request.higher_interval_value,
                     lookback_base_count=request.lookback_base_count,
                     lookback_higher_count=request.lookback_higher_count,
+                    dry_run=request.dry_run,
+                    confirm_write=request.confirm_write,
                     current_time_ms=request.current_time_ms,
                     trace_id=trace_id,
                 )

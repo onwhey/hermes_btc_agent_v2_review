@@ -190,6 +190,15 @@ class FakeResolver:
         return self.result
 
 
+class FailingResultRepository:
+    def __init__(self) -> None:
+        self.create_calls = 0
+
+    def create_strategy_signal_run_with_results(self, *_args: Any, **_kwargs: Any) -> None:
+        self.create_calls += 1
+        raise AssertionError("dry-run must not write strategy signal tables")
+
+
 class PassingStrategy(BaseStrategy):
     strategy_name = "passing"
     strategy_version = "v1"
@@ -335,6 +344,8 @@ def test_snapshot_resolver_reuses_latest_created_snapshot_without_generation() -
         higher_interval_value="1d",
         lookback_base_count=180,
         lookback_higher_count=365,
+        dry_run=True,
+        confirm_write=False,
         current_time_ms=CURRENT_TIME_MS,
         trace_id="trace-test",
     )
@@ -345,6 +356,35 @@ def test_snapshot_resolver_reuses_latest_created_snapshot_without_generation() -
     assert result.created_new_snapshot is False
     assert repository.reusable_calls == 1
     assert repository.restore_calls == [snapshot.snapshot_id]
+
+
+def test_snapshot_resolver_blocks_dry_run_without_reusable_snapshot_and_without_generation() -> None:
+    repository = FakeSnapshotRepository()
+    service_calls: list[Any] = []
+
+    def fail_snapshot_service(**kwargs: Any) -> Any:
+        service_calls.append(kwargs)
+        raise AssertionError("dry-run must not create MarketContextSnapshot")
+
+    resolver = SnapshotResolver(snapshot_repository=repository, snapshot_service=fail_snapshot_service)
+    result = resolver.ensure_latest_snapshot(
+        FakeSession(),
+        symbol="BTCUSDT",
+        base_interval_value="4h",
+        higher_interval_value="1d",
+        lookback_base_count=180,
+        lookback_higher_count=365,
+        dry_run=True,
+        confirm_write=False,
+        current_time_ms=CURRENT_TIME_MS,
+        trace_id="trace-test",
+    )
+
+    assert result.status == StrategyRunStatus.BLOCKED
+    assert result.snapshot_id is None
+    assert result.blocked_reason == "snapshot_creation_requires_confirm_write"
+    assert "不会创建新快照" in result.message
+    assert service_calls == []
 
 
 def test_snapshot_resolver_generates_snapshot_when_no_reusable_snapshot() -> None:
@@ -376,6 +416,8 @@ def test_snapshot_resolver_generates_snapshot_when_no_reusable_snapshot() -> Non
         higher_interval_value="1d",
         lookback_base_count=180,
         lookback_higher_count=365,
+        dry_run=False,
+        confirm_write=True,
         current_time_ms=CURRENT_TIME_MS,
         trace_id="trace-test",
     )
@@ -418,6 +460,8 @@ def test_snapshot_resolver_blocks_when_snapshot_build_is_blocked_without_old_fal
         higher_interval_value="1d",
         lookback_base_count=180,
         lookback_higher_count=365,
+        dry_run=False,
+        confirm_write=True,
         current_time_ms=CURRENT_TIME_MS,
         trace_id="trace-test",
     )
@@ -509,14 +553,40 @@ def test_initial_strategies_emit_independent_signals_without_trade_fields() -> N
     input_data = build_strategy_input()
 
     signals = (
-        TrendStructureStrategy({"min_required_base_klines": 120}).evaluate(input_data),
-        VolatilityRiskStrategy({"lookback_period": 30}).evaluate(input_data),
-        GannPlaceholderStrategy().evaluate(input_data),
+        TrendStructureStrategy(
+            {"ma_short_period": 18, "ma_mid_period": 54, "min_required_base_klines": 120}
+        ).evaluate(input_data),
+        VolatilityRiskStrategy(
+            {
+                "lookback_period": 28,
+                "min_required_base_klines": 120,
+                "high_volatility_percentile": "0.75",
+                "extreme_volatility_percentile": "0.92",
+            }
+        ).evaluate(input_data),
+        GannPlaceholderStrategy({"placeholder_note": "stage_16_only"}).evaluate(input_data),
     )
 
     assert signals[0].strategy_status in {StrategySignalStatus.SUCCESS, StrategySignalStatus.NO_SIGNAL}
     assert signals[1].strategy_status == StrategySignalStatus.SUCCESS
     assert signals[2].strategy_status == StrategySignalStatus.NOT_IMPLEMENTED
+    assert signals[0].debug_info["strategy_config"] == {
+        "ma_short_period": 18,
+        "ma_mid_period": 54,
+        "min_required_base_klines": 120,
+    }
+    assert signals[0].debug_info["snapshot_id"] == input_data.snapshot_id
+    assert signals[0].debug_info["higher_interval_value"] == "1d"
+    assert signals[1].debug_info["strategy_config"] == {
+        "lookback_period": 28,
+        "min_required_base_klines": 120,
+        "high_volatility_percentile": "0.75",
+        "extreme_volatility_percentile": "0.92",
+    }
+    assert signals[1].debug_info["snapshot_id"] == input_data.snapshot_id
+    assert signals[2].debug_info["strategy_boundary"] == "independent_signal_only"
+    assert signals[2].debug_info["implementation_status"] == "placeholder"
+    assert signals[2].debug_info["strategy_config"] == {"placeholder_note": "stage_16_only"}
     assert all(signal.reason_text for signal in signals)
     assert all(any(ord(char) > 127 for char in signal.reason_text) for signal in signals)
     serialized = json.dumps([signal.__dict__ for signal in signals], ensure_ascii=False, default=str)
@@ -536,10 +606,11 @@ def test_initial_strategies_emit_independent_signals_without_trade_fields() -> N
 
 def test_signal_service_dry_run_does_not_write_strategy_tables() -> None:
     session = FakeSession()
+    result_repository = FailingResultRepository()
     service = StrategySignalService(
         input_builder=FakeInputBuilder(),
         runner=FakeRunner(),
-        result_repository=StrategySignalResultRepository(),
+        result_repository=result_repository,
     )
 
     result = service.run_strategy_signals(
@@ -558,6 +629,7 @@ def test_signal_service_dry_run_does_not_write_strategy_tables() -> None:
     assert session.added == []
     assert session.commits == 0
     assert session.rollbacks == 0
+    assert result_repository.create_calls == 0
 
 
 def test_signal_service_confirm_write_persists_run_and_independent_results() -> None:
@@ -630,6 +702,8 @@ def test_signal_service_ensure_latest_snapshot_uses_resolver_and_blocks_when_sna
     assert result.exit_code == EXIT_BLOCKED
     assert result.blocked_reason == "snapshot_not_ready"
     assert len(resolver.calls) == 1
+    assert resolver.calls[0]["dry_run"] is True
+    assert resolver.calls[0]["confirm_write"] is False
     assert session.added == []
 
 
@@ -667,6 +741,8 @@ def test_signal_service_ensure_latest_snapshot_success_continues_to_runner() -> 
 
     assert result.status == StrategyRunStatus.PARTIAL_SUCCESS
     assert input_builder.calls[0]["snapshot_id"] == "MCS-BTCUSDT-4H-1D-latest"
+    assert resolver.calls[0]["dry_run"] is True
+    assert resolver.calls[0]["confirm_write"] is False
     assert len(runner.calls) == 1
 
 
@@ -749,6 +825,25 @@ def test_cli_only_parses_arguments_and_calls_app_service(monkeypatch: Any) -> No
     assert request.lookback_base_count == 200
     assert request.lookback_higher_count == 400
     assert request.dry_run is True
+
+
+def test_strategy_signal_result_run_id_has_model_foreign_key() -> None:
+    from app.storage.mysql.models.strategy_signal import StrategySignalResult
+
+    foreign_keys = tuple(StrategySignalResult.__table__.c.run_id.foreign_keys)
+
+    assert any(foreign_key.target_fullname == "strategy_signal_run.run_id" for foreign_key in foreign_keys)
+
+
+def test_strategy_signal_migration_declares_run_id_foreign_key_without_cascade() -> None:
+    migration_text = Path("migrations/versions/20260518_16_create_strategy_signal_tables.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ForeignKeyConstraint" in migration_text
+    assert "fk_strategy_signal_result_run_id" in migration_text
+    assert "strategy_signal_run.run_id" in migration_text
+    assert "ondelete" not in migration_text.lower()
 
 
 def test_strategy_modules_do_not_import_exchange_alerting_or_kline_write_apis() -> None:
