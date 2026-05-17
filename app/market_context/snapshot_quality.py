@@ -173,6 +173,24 @@ def check_market_context_snapshot_readiness(
     )
 
 
+def calculate_expected_latest_closed_open_time_ms(*, interval_value: str, current_time_ms: int) -> int:
+    """Return the theoretical latest closed Kline open time for snapshot users.
+
+    Parameters: interval value and current UTC milliseconds.
+    Return value: latest closed open_time_ms for supported intervals.
+    Failure scenarios: unsupported interval raises `ValueError`.
+    External service access: none.
+    Data impact: none. This helper centralizes stage-15 time rules so strategy
+    code does not duplicate UTC boundary calculations.
+    """
+
+    if interval_value == KLINE_4H_INTERVAL_VALUE:
+        return _expected_latest_closed_4h_open_time_ms(current_time_ms)
+    if interval_value == KLINE_1D_INTERVAL_VALUE:
+        return _expected_latest_closed_1d_open_time_ms(current_time_ms)
+    raise ValueError(f"unsupported interval_value={interval_value}")
+
+
 def _first_blocking_reason_for_interval(
     context: IntervalSnapshotContext,
     *,
@@ -305,5 +323,6 @@ def _ensure_utc(value: datetime) -> datetime:
 __all__ = [
     "IntervalSnapshotContext",
     "SnapshotReadinessReport",
+    "calculate_expected_latest_closed_open_time_ms",
     "check_market_context_snapshot_readiness",
 ]

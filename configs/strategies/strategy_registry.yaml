@@ -1,0 +1,7 @@
+enabled_strategies:
+  - trend_structure
+  - volatility_risk
+  - gann_placeholder
+
+default_base_interval: 4h
+default_higher_interval: 1d

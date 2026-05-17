@@ -1,0 +1,9 @@
+strategy_name: trend_structure
+strategy_version: v1
+enabled: true
+base_interval_value: 4h
+higher_interval_value: 1d
+ma_short_period: 20
+ma_mid_period: 60
+min_required_base_klines: 120
+min_required_higher_klines: 120

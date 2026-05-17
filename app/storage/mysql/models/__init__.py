@@ -1,9 +1,11 @@
-"""MySQL ORM model 包边界。
+"""MySQL ORM model package boundary.
 
-本包属于 `app/storage/mysql` 存储层，负责放置 SQLAlchemy ORM model。
-本包不负责执行 migration，不直接发送 Hermes，不读写 Redis，不请求 Binance，
-不调用 DeepSeek，不涉及任何交易执行。
-已包含 `alert_message`、`market_kline_4h`、`market_kline_1d`、
-`data_quality_check`、`collector_event_log`、`market_context_snapshot`
-等数据底座和事实快照模型。
+This package belongs to `app/storage/mysql`. It groups SQLAlchemy ORM model
+modules for Alembic metadata import and repository usage.
+It does not execute migrations, send Hermes, read/write Redis, request Binance,
+call DeepSeek, or perform trading.
+
+Current model modules include alert messages, formal 4h/1d Kline tables,
+quality checks, collector event logs, MarketContextSnapshot, and stage-16
+strategy signal run/result tables.
 """

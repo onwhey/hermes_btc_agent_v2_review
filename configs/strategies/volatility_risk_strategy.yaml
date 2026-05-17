@@ -1,0 +1,8 @@
+strategy_name: volatility_risk
+strategy_version: v1
+enabled: true
+base_interval_value: 4h
+higher_interval_value: 1d
+lookback_period: 30
+high_volatility_percentile: 0.80
+extreme_volatility_percentile: 0.95

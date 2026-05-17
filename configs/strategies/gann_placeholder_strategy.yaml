@@ -1,0 +1,5 @@
+strategy_name: gann_placeholder
+strategy_version: placeholder_v1
+enabled: true
+base_interval_value: 4h
+higher_interval_value: 1d
