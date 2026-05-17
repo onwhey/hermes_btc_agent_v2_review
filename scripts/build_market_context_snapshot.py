@@ -10,7 +10,7 @@ otherwise use `--dry-run`.
 Calls: `app/market_context/snapshot_service.py::build_market_context_snapshot`.
 Business logic: lives in `app/market_context`, not in this script.
 Database impact: delegated to the service; may write only `market_context_snapshot`
-and `market_context_snapshot_kline_ref` when confirm-write is supplied.
+when confirm-write is supplied.
 Redis impact: none.
 Hermes impact: delegated to the service, and only when `--notify-on-blocked` or
 `--notify-on-failed` is explicitly supplied.
@@ -102,4 +102,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

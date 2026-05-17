@@ -1,9 +1,8 @@
 """SQLAlchemy models for MarketContextSnapshot persistence.
 
 This file belongs to `app/storage/mysql/models`.
-It defines only the market-context snapshot metadata and Kline-reference ORM
-tables for stage 15. It is called by Alembic metadata, the market-context
-repository, and tests.
+It defines only the market-context snapshot window-index ORM table for stage 15.
+It is called by Alembic metadata, the market-context repository, and tests.
 It does not request Binance, read/write Redis, send Hermes, call DeepSeek,
 generate strategy advice, modify formal Kline tables, or perform trading.
 """
@@ -90,50 +89,6 @@ if mapped_column is not None:
         created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
         updated_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    class MarketContextSnapshotKlineRef(Base):
-        """ORM mapping for one Kline reference used by a market snapshot.
-
-        Parameters: field values point to either a formal 4h or 1d Kline row.
-        Return value: SQLAlchemy ORM object.
-        Failure scenarios: database uniqueness errors occur if duplicate refs are
-        inserted for one snapshot and interval.
-        External service access: none.
-        Data impact: records references only; it never copies or edits OHLCV data.
-        """
-
-        __tablename__ = "market_context_snapshot_kline_ref"
-        __table_args__ = (
-            Index("idx_market_context_snapshot_kline_ref_snapshot_id", "snapshot_id"),
-            Index(
-                "idx_market_context_snapshot_kline_ref_symbol_interval_open",
-                "symbol",
-                "interval_value",
-                "open_time_ms",
-            ),
-            UniqueConstraint(
-                "snapshot_id",
-                "interval_value",
-                "sequence_no",
-                name="uq_market_context_snapshot_ref_sequence",
-            ),
-            UniqueConstraint(
-                "snapshot_id",
-                "interval_value",
-                "open_time_ms",
-                name="uq_market_context_snapshot_ref_open_time",
-            ),
-        )
-
-        id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-        snapshot_id: Mapped[str] = mapped_column(String(128), nullable=False)
-        symbol: Mapped[str] = mapped_column(String(32), nullable=False)
-        interval_value: Mapped[str] = mapped_column(String(16), nullable=False)
-        market_kline_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-        open_time_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
-        open_time_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-        sequence_no: Mapped[int] = mapped_column(BigInteger, nullable=False)
-        created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
 else:
 
     @dataclass
@@ -172,17 +127,3 @@ else:
         trace_id: str = ""
         created_at_utc: datetime | None = None
         updated_at_utc: datetime | None = None
-
-    @dataclass
-    class MarketContextSnapshotKlineRef:  # type: ignore[no-redef]
-        """Fallback value object used only when SQLAlchemy is unavailable."""
-
-        id: int | None = None
-        snapshot_id: str = ""
-        symbol: str = ""
-        interval_value: str = ""
-        market_kline_id: int = 0
-        open_time_ms: int = 0
-        open_time_utc: datetime | None = None
-        sequence_no: int = 0
-        created_at_utc: datetime | None = None

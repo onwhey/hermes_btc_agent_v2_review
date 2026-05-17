@@ -12,6 +12,7 @@ from typing import Any, Iterable
 from app.alerting.service import format_alert_message
 from app.alerting.types import AlertSendResult, AlertSendStatus
 from app.market_context import snapshot_alerts, snapshot_builder, snapshot_quality, snapshot_repository, snapshot_service
+from app.market_context.snapshot_repository import MarketContextSnapshotRepository
 from app.market_context.snapshot_service import build_market_context_snapshot
 from app.market_context.snapshot_types import (
     EXIT_ALERT_FAILED,
@@ -20,6 +21,7 @@ from app.market_context.snapshot_types import (
     EXIT_PARAMETER_ERROR,
     EXIT_SUCCESS,
     MarketContextSnapshotRequest,
+    MarketContextSnapshotRestoreError,
     MarketContextSnapshotResult,
     MarketContextSnapshotStatus,
 )
@@ -73,6 +75,7 @@ class FakeSnapshotRepository:
         self.created_payloads: list[Any] = []
         self.wrote_4h = False
         self.wrote_1d = False
+        self.kline_ref_write_count = 0
 
     def list_recent_4h_klines(self, _db_session: Any, *, symbol: str, limit: int) -> list[Any]:
         if self.fail_on_read:
@@ -112,9 +115,10 @@ class FakeSnapshotRepository:
             end_open_time_ms=end_open_time_ms,
         )
 
-    def create_snapshot_with_refs(self, _db_session: Any, payload: Any) -> Any:
+    def create_snapshot(self, _db_session: Any, payload: Any) -> Any:
         if self.fail_on_create:
             raise RuntimeError("snapshot write failed")
+        assert not hasattr(payload, "refs")
         self.created_payloads.append(payload)
         return SimpleNamespace(id=len(self.created_payloads), snapshot_id=payload.snapshot_id)
 
@@ -150,19 +154,102 @@ class FakeAlertSender:
         return self.result
 
 
+class FakeRestoreExecuteResult:
+    def __init__(self, snapshot_row: Any | None) -> None:
+        self.snapshot_row = snapshot_row
+
+    def scalar_one_or_none(self) -> Any | None:
+        return self.snapshot_row
+
+
+class FakeRestoreSession:
+    def __init__(self, snapshot_row: Any | None) -> None:
+        self.snapshot_row = snapshot_row
+        self.execute_calls = 0
+        self.add_calls = 0
+
+    def execute(self, _stmt: Any) -> FakeRestoreExecuteResult:
+        self.execute_calls += 1
+        return FakeRestoreExecuteResult(self.snapshot_row)
+
+    def add(self, _row: Any) -> None:
+        self.add_calls += 1
+        raise AssertionError("restore must be read-only")
+
+
+class FakeRangeKline4hRepository:
+    def __init__(self, rows: Iterable[Any]) -> None:
+        self.rows = list(rows)
+        self.calls: list[dict[str, Any]] = []
+
+    def list_by_time_range(
+        self,
+        _db_session: Any,
+        *,
+        symbol: str,
+        interval_value: str,
+        start_open_time_ms: int,
+        end_open_time_ms: int,
+    ) -> list[Any]:
+        self.calls.append(
+            {
+                "symbol": symbol,
+                "interval_value": interval_value,
+                "start_open_time_ms": start_open_time_ms,
+                "end_open_time_ms": end_open_time_ms,
+            }
+        )
+        return [
+            row
+            for row in sorted(self.rows, key=lambda item: item.open_time_ms)
+            if row.symbol == symbol
+            and row.interval_value == interval_value
+            and start_open_time_ms <= row.open_time_ms <= end_open_time_ms
+        ]
+
+
+class FakeRangeKline1dRepository:
+    def __init__(self, rows: Iterable[Any]) -> None:
+        self.rows = list(rows)
+        self.calls: list[dict[str, Any]] = []
+
+    def list_by_time_range(
+        self,
+        _db_session: Any,
+        *,
+        symbol: str,
+        start_open_time_ms: int,
+        end_open_time_ms: int,
+    ) -> list[Any]:
+        self.calls.append(
+            {
+                "symbol": symbol,
+                "start_open_time_ms": start_open_time_ms,
+                "end_open_time_ms": end_open_time_ms,
+            }
+        )
+        return [
+            row
+            for row in sorted(self.rows, key=lambda item: item.open_time_ms)
+            if row.symbol == symbol and start_open_time_ms <= row.open_time_ms <= end_open_time_ms
+        ]
+
+
 def snapshot_request(
     *,
     dry_run: bool = False,
     confirm_write: bool = True,
     notify_on_blocked: bool = False,
     notify_on_failed: bool = False,
+    lookback_4h_count: int = 3,
+    lookback_1d_count: int = 3,
 ) -> MarketContextSnapshotRequest:
     return MarketContextSnapshotRequest(
         symbol="BTCUSDT",
         base_interval_value="4h",
         higher_interval_value="1d",
-        lookback_4h_count=3,
-        lookback_1d_count=3,
+        lookback_4h_count=lookback_4h_count,
+        lookback_1d_count=lookback_1d_count,
         dry_run=dry_run,
         confirm_write=confirm_write,
         notify_on_blocked=notify_on_blocked,
@@ -191,17 +278,17 @@ def run_snapshot_with_fakes(
     return result, fake_repository, fake_session, fake_alert_sender
 
 
-def test_snapshot_generation_success_writes_snapshot_refs_and_fact_payload_only() -> None:
+def test_snapshot_generation_success_writes_window_index_and_summary_payload_only() -> None:
     result, repository, session, alert_sender = run_snapshot_with_fakes()
 
     assert result.status == MarketContextSnapshotStatus.CREATED
     assert result.exit_code == EXIT_SUCCESS
-    assert result.kline_ref_count == 6
     assert len(repository.created_payloads) == 1
     assert session.commits == 1
     assert alert_sender.calls == []
     assert repository.wrote_4h is False
     assert repository.wrote_1d is False
+    assert repository.kline_ref_write_count == 0
 
     payload = repository.created_payloads[0]
     payload_json = json.loads(payload.snapshot_payload_json)
@@ -209,10 +296,94 @@ def test_snapshot_generation_success_writes_snapshot_refs_and_fact_payload_only(
     assert payload_json["symbol"] == "BTCUSDT"
     assert payload_json["base_interval"] == "4h"
     assert payload_json["higher_interval"] == "1d"
-    assert len(payload_json["klines"]["4h"]) == 3
-    assert len(payload_json["klines"]["1d"]) == 3
-    assert len(payload.refs) == 6
+    assert payload.lookback_4h_count == 3
+    assert payload.lookback_1d_count == 3
+    assert payload.actual_4h_count == 3
+    assert payload.actual_1d_count == 3
+    assert payload.start_4h_open_time_ms == EXPECTED_4H_LATEST_MS - (2 * KLINE_4H_INTERVAL_MS)
+    assert payload.end_4h_open_time_ms == EXPECTED_4H_LATEST_MS
+    assert payload.start_1d_open_time_ms == EXPECTED_1D_LATEST_MS - (2 * KLINE_1D_INTERVAL_MS)
+    assert payload.end_1d_open_time_ms == EXPECTED_1D_LATEST_MS
+    assert payload.latest_4h_quality_check_id == 301
+    assert payload.latest_1d_quality_check_id == 401
+    assert payload_json["lookback_4h_count"] == 3
+    assert payload_json["lookback_1d_count"] == 3
+    assert payload_json["actual_4h_count"] == 3
+    assert payload_json["actual_1d_count"] == 3
+    assert payload_json["start_4h_open_time_ms"] == payload.start_4h_open_time_ms
+    assert payload_json["end_4h_open_time_ms"] == payload.end_4h_open_time_ms
+    assert payload_json["start_1d_open_time_ms"] == payload.start_1d_open_time_ms
+    assert payload_json["end_1d_open_time_ms"] == payload.end_1d_open_time_ms
+    assert "klines" not in payload_json
+    assert "kline_refs" not in payload_json
+    payload_text = payload.snapshot_payload_json
+    for ohlcv_key in (
+        "open_price",
+        "high_price",
+        "low_price",
+        "close_price",
+        "volume",
+        "quote_volume",
+        "trade_count",
+    ):
+        assert ohlcv_key not in payload_text
+    assert not hasattr(payload, "refs")
     assert_no_trading_advice_terms(payload.snapshot_payload_json)
+
+
+def test_config_default_and_cli_override_lookback_counts(monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        snapshot_cli,
+        "get_settings",
+        lambda: SimpleNamespace(
+            market_context_symbol="BTCUSDT",
+            market_context_base_interval="4h",
+            market_context_higher_interval="1d",
+            market_context_4h_lookback_count=7,
+            market_context_1d_lookback_count=11,
+        ),
+    )
+
+    parser = snapshot_cli.build_arg_parser()
+    default_args = parser.parse_args(["--trigger-source", "cli", "--dry-run"])
+    override_args = parser.parse_args(
+        [
+            "--trigger-source",
+            "cli",
+            "--dry-run",
+            "--lookback-4h",
+            "5",
+            "--lookback-1d",
+            "9",
+        ]
+    )
+
+    assert default_args.lookback_4h == 7
+    assert default_args.lookback_1d == 11
+    assert override_args.lookback_4h == 5
+    assert override_args.lookback_1d == 9
+
+
+def test_snapshot_records_actual_configured_lookback_counts() -> None:
+    result, repository, _session, _alert_sender = run_snapshot_with_fakes(
+        FakeSnapshotRepository(
+            rows_4h=valid_4h_rows(count=4),
+            rows_1d=valid_1d_rows(count=2),
+        ),
+        request=snapshot_request(lookback_4h_count=4, lookback_1d_count=2),
+    )
+
+    assert result.status == MarketContextSnapshotStatus.CREATED
+    payload = repository.created_payloads[0]
+    payload_json = json.loads(payload.snapshot_payload_json)
+    assert payload.lookback_4h_count == 4
+    assert payload.lookback_1d_count == 2
+    assert payload.actual_4h_count == 4
+    assert payload.actual_1d_count == 2
+    assert payload_json["lookback_4h_count"] == 4
+    assert payload_json["lookback_1d_count"] == 2
+    assert payload_json["actual_4h_count"] == 4
+    assert payload_json["actual_1d_count"] == 2
 
 
 def test_4h_uninitialized_returns_blocked_without_writing_or_binance() -> None:
@@ -397,17 +568,101 @@ def test_non_continuous_kline_window_blocks_for_4h_and_1d() -> None:
     assert "1d" in (result_1d.blocked_reason or "")
 
 
-def test_dry_run_does_not_write_snapshot_or_kline_ref_and_does_not_alert_by_default() -> None:
+def test_dry_run_does_not_write_snapshot_and_does_not_alert_by_default() -> None:
     result, repository, session, alert_sender = run_snapshot_with_fakes(
         request=snapshot_request(dry_run=True, confirm_write=False)
     )
 
     assert result.status == MarketContextSnapshotStatus.CREATED
     assert result.exit_code == EXIT_SUCCESS
-    assert result.kline_ref_count == 0
     assert repository.created_payloads == []
     assert session.commits == 0
     assert alert_sender.calls == []
+    assert "kline_refs" not in "\n".join(snapshot_cli.format_market_context_snapshot_result_lines(result))
+
+
+def test_restore_snapshot_by_id_returns_4h_and_1d_windows_from_formal_tables() -> None:
+    rows_4h = valid_4h_rows()
+    rows_1d = valid_1d_rows()
+    snapshot_row = build_snapshot_row_from_rows(rows_4h=rows_4h, rows_1d=rows_1d)
+    session = FakeRestoreSession(snapshot_row)
+    repo_4h = FakeRangeKline4hRepository(rows_4h)
+    repo_1d = FakeRangeKline1dRepository(rows_1d)
+    repository = MarketContextSnapshotRepository(
+        kline_4h_repository=repo_4h,
+        kline_1d_repository=repo_1d,
+    )
+
+    restored = repository.restore_snapshot_kline_windows(session, snapshot_id=snapshot_row.snapshot_id)
+
+    assert restored.snapshot is snapshot_row
+    assert [row.open_time_ms for row in restored.rows_4h] == [row.open_time_ms for row in rows_4h]
+    assert [row.open_time_ms for row in restored.rows_1d] == [row.open_time_ms for row in rows_1d]
+    assert len(restored.rows_4h) == snapshot_row.actual_4h_count
+    assert len(restored.rows_1d) == snapshot_row.actual_1d_count
+    assert repo_4h.calls[0]["start_open_time_ms"] == snapshot_row.start_4h_open_time_ms
+    assert repo_4h.calls[0]["end_open_time_ms"] == snapshot_row.end_4h_open_time_ms
+    assert repo_1d.calls[0]["start_open_time_ms"] == snapshot_row.start_1d_open_time_ms
+    assert repo_1d.calls[0]["end_open_time_ms"] == snapshot_row.end_1d_open_time_ms
+    assert session.add_calls == 0
+
+
+def test_restore_snapshot_uses_recorded_counts_not_current_config() -> None:
+    rows_4h = valid_4h_rows(count=2)
+    rows_1d = valid_1d_rows(count=2)
+    snapshot_row = build_snapshot_row_from_rows(rows_4h=rows_4h, rows_1d=rows_1d)
+    snapshot_row.lookback_4h_count = 240
+    snapshot_row.lookback_1d_count = 730
+    outside_4h_rows = valid_4h_rows(count=2, latest_open_ms=rows_4h[0].open_time_ms - KLINE_4H_INTERVAL_MS)
+    outside_1d_rows = valid_1d_rows(count=2, latest_open_ms=rows_1d[0].open_time_ms - KLINE_1D_INTERVAL_MS)
+    repository = MarketContextSnapshotRepository(
+        kline_4h_repository=FakeRangeKline4hRepository(outside_4h_rows + rows_4h),
+        kline_1d_repository=FakeRangeKline1dRepository(outside_1d_rows + rows_1d),
+    )
+
+    restored = repository.restore_snapshot_kline_windows(
+        FakeRestoreSession(snapshot_row),
+        snapshot_id=snapshot_row.snapshot_id,
+    )
+
+    assert len(restored.rows_4h) == 2
+    assert len(restored.rows_1d) == 2
+
+
+def test_restore_snapshot_fails_when_4h_count_mismatch() -> None:
+    rows_4h = valid_4h_rows()
+    rows_1d = valid_1d_rows()
+    snapshot_row = build_snapshot_row_from_rows(rows_4h=rows_4h, rows_1d=rows_1d)
+    snapshot_row.actual_4h_count = 4
+    repository = MarketContextSnapshotRepository(
+        kline_4h_repository=FakeRangeKline4hRepository(rows_4h),
+        kline_1d_repository=FakeRangeKline1dRepository(rows_1d),
+    )
+
+    try:
+        repository.restore_snapshot_kline_windows(FakeRestoreSession(snapshot_row), snapshot_id=snapshot_row.snapshot_id)
+    except MarketContextSnapshotRestoreError as exc:
+        assert "4h restore count mismatch" in str(exc)
+    else:
+        raise AssertionError("restore must fail when 4h actual_count does not match restored rows")
+
+
+def test_restore_snapshot_fails_when_1d_count_mismatch() -> None:
+    rows_4h = valid_4h_rows()
+    rows_1d = valid_1d_rows()
+    snapshot_row = build_snapshot_row_from_rows(rows_4h=rows_4h, rows_1d=rows_1d)
+    snapshot_row.actual_1d_count = 4
+    repository = MarketContextSnapshotRepository(
+        kline_4h_repository=FakeRangeKline4hRepository(rows_4h),
+        kline_1d_repository=FakeRangeKline1dRepository(rows_1d),
+    )
+
+    try:
+        repository.restore_snapshot_kline_windows(FakeRestoreSession(snapshot_row), snapshot_id=snapshot_row.snapshot_id)
+    except MarketContextSnapshotRestoreError as exc:
+        assert "1d restore count mismatch" in str(exc)
+    else:
+        raise AssertionError("restore must fail when 1d actual_count does not match restored rows")
 
 
 def test_failed_status_and_failed_hermes_notification_are_compact() -> None:
@@ -522,6 +777,9 @@ def test_market_context_sources_do_not_request_binance_modify_kline_tables_or_us
     source = "\n".join(inspect.getsource(module) for module in modules)
     source += Path("scripts/build_market_context_snapshot.py").read_text(encoding="utf-8")
     source += Path("scripts/check_kline_integrity_1d.py").read_text(encoding="utf-8")
+    assert "market_context_snapshot_kline_ref" not in source
+    assert "MarketContextSnapshotKlineRef" not in source
+    assert "kline_ref_count" not in source
     forbidden_terms = [
         "BinanceRestClient",
         "get_klines(",
@@ -579,13 +837,18 @@ def test_market_context_service_rejects_scheduler_trigger_in_stage_15() -> None:
     assert repository.created_payloads == []
 
 
-def test_market_context_migration_defines_only_snapshot_tables() -> None:
+def test_market_context_migration_removes_obsolete_kline_ref_table_without_longtext() -> None:
     migration_text = Path("migrations/versions/20260516_15_create_market_context_snapshot.py").read_text(
         encoding="utf-8"
     )
+    cleanup_migration_text = Path(
+        "migrations/versions/20260517_15_remove_market_context_snapshot_kline_ref.py"
+    ).read_text(encoding="utf-8")
 
     assert '"market_context_snapshot"' in migration_text
-    assert '"market_context_snapshot_kline_ref"' in migration_text
+    assert '"market_context_snapshot_kline_ref"' in cleanup_migration_text
+    assert "op.drop_table" in cleanup_migration_text
+    assert "LONGTEXT" not in cleanup_migration_text.upper()
     assert "market_kline_4h" not in migration_text
     assert "market_kline_1d" not in migration_text
     assert "op.add_column" not in migration_text
@@ -597,6 +860,26 @@ def valid_4h_rows(*, count: int = 3, latest_open_ms: int = EXPECTED_4H_LATEST_MS
 
 def valid_1d_rows(*, count: int = 3, latest_open_ms: int = EXPECTED_1D_LATEST_MS) -> list[Any]:
     return build_kline_rows("1d", KLINE_1D_INTERVAL_MS, count=count, latest_open_ms=latest_open_ms)
+
+
+def build_snapshot_row_from_rows(*, rows_4h: list[Any], rows_1d: list[Any]) -> Any:
+    return SimpleNamespace(
+        id=901,
+        snapshot_id="MCS-BTCUSDT-4H-1D-RESTORE-TEST",
+        symbol="BTCUSDT",
+        base_interval_value="4h",
+        higher_interval_value="1d",
+        status="created",
+        start_4h_open_time_ms=rows_4h[0].open_time_ms,
+        end_4h_open_time_ms=rows_4h[-1].open_time_ms,
+        actual_4h_count=len(rows_4h),
+        start_1d_open_time_ms=rows_1d[0].open_time_ms,
+        end_1d_open_time_ms=rows_1d[-1].open_time_ms,
+        actual_1d_count=len(rows_1d),
+        lookback_4h_count=len(rows_4h),
+        lookback_1d_count=len(rows_1d),
+        trace_id="restore-trace",
+    )
 
 
 def build_kline_rows(interval_value: str, interval_ms: int, *, count: int, latest_open_ms: int) -> list[Any]:

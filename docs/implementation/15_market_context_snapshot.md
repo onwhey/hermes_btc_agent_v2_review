@@ -6,9 +6,9 @@
 
 1. `snapshot_types.py`：请求、结果、状态、持久化 DTO 和 CLI 摘要格式。
 2. `snapshot_service.py`：对外主入口，编排读取、质量检查、payload 构建、持久化和可选告警。
-3. `snapshot_repository.py`：读取正式 4h / 1d K线、采集事件、质量复核记录，并只写 snapshot 表。
+3. `snapshot_repository.py`：读取正式 4h / 1d K线、采集事件、质量复核记录，只写 snapshot 主表，并提供只读快照还原校验。
 4. `snapshot_quality.py`：检查初始化、新鲜度、复核状态、数量、已收盘和连续性。
-5. `snapshot_builder.py`：组装市场事实 payload 和 K线引用。
+5. `snapshot_builder.py`：组装市场事实摘要 payload，不复制完整 K线数组。
 6. `snapshot_alerts.py`：为 blocked / failed 生成中文 Hermes 固定模板提醒。
 7. `scripts/build_market_context_snapshot.py`：人工 CLI 入口，只解析参数并调用 service。
 
@@ -20,7 +20,14 @@
 
 ## 2. MarketContextSnapshot 职责
 
-MarketContextSnapshot 只保存某一时刻 BTCUSDT 4h + 1d 的市场事实输入，便于后续模块基于同一个 `snapshot_id` 追溯当时使用了哪些 K线。
+MarketContextSnapshot 只保存某一时刻 BTCUSDT 4h + 1d 的 K线窗口索引，便于后续模块基于同一个 `snapshot_id` 追溯当时使用了哪一段正式 K线。
+
+MarketContextSnapshot 不是第二份 K线库，不复制完整 OHLCV 明细。正式 K线事实源仍然只有：
+
+1. `market_kline_4h`
+2. `market_kline_1d`
+
+后续策略层如果需要完整 K线，应通过 snapshot 中的 `symbol + interval + start/end open_time_ms` 回查正式 K线表，并校验查询数量等于 snapshot 记录的 `actual_count`。
 
 本阶段 MarketContextSnapshot 不生成策略结论，不生成交易建议，不调用大模型，不请求 Binance，不读取账户，不读取持仓，不修改正式 K线表，不执行自动交易。
 
@@ -97,7 +104,7 @@ app/market_context/snapshot_quality.py::check_market_context_snapshot_readiness
 app/market_context/snapshot_builder.py::build_market_context_snapshot_payload
 app/market_context/snapshot_builder.py::build_blocked_snapshot_payload
     ↓
-app/market_context/snapshot_repository.py::create_snapshot_with_refs
+app/market_context/snapshot_repository.py::create_snapshot
     ↓
 app/market_context/snapshot_alerts.py::send_market_context_snapshot_alert_and_adjust_exit_code
 ```
@@ -130,7 +137,8 @@ MARKET_CONTEXT_1D_LOOKBACK_COUNT=365
 写入数据库表：
 
 1. `market_context_snapshot`
-2. `market_context_snapshot_kline_ref`
+
+本阶段不写入 `market_context_snapshot_kline_ref`，也不复制完整 K线数据。
 
 本功能不请求外部接口。
 本功能不读取 Redis。
@@ -147,7 +155,8 @@ MARKET_CONTEXT_1D_LOOKBACK_COUNT=365
 1. 通过现有 4h / 1d repository 读取最近 K线窗口。
 2. 读取对应周期最近一次采集事件。
 3. 读取对应周期最近一次每日复核记录。
-4. 写入 snapshot 主表和 kline_ref 引用表。
+4. 写入 snapshot 主表。
+5. 根据 snapshot_id 只读还原 4h / 1d K线窗口，并校验数量和排序。
 
 repository 不请求 Binance，不发送 Hermes，不读写 Redis，不写正式 K线表，不 commit；commit 由 service 控制。
 
@@ -171,7 +180,7 @@ repository 不请求 Binance，不发送 Hermes，不读写 Redis，不写正式
 
 ## 10. builder 职责
 
-`snapshot_builder.py` 负责把已通过质量检查的 4h + 1d K线转换为可持久化 payload。
+`snapshot_builder.py` 负责把已通过质量检查的 4h + 1d K线窗口转换为可持久化摘要 payload。
 
 created payload 包含：
 
@@ -181,21 +190,21 @@ created payload 包含：
 4. `higher_interval`
 5. `generated_at_utc`
 6. 最新 4h / 1d open time
-7. `lookback`
-8. `actual_count`
-9. `data_freshness`
-10. `quality`
-11. `kline_ranges`
-12. `kline_refs`
-13. `klines`
-14. `source_tables`
+7. `lookback_4h_count`
+8. `lookback_1d_count`
+9. `actual_4h_count`
+10. `actual_1d_count`
+11. 4h / 1d 起止 open_time UTC 与 ms
+12. 最新 4h / 1d 质量状态、质量记录 ID 和采集事件 ID
+13. `source_tables`
+14. `restore_contract`
 15. `trigger_source`
 16. `trace_id`
 17. `boundary`
 
-`klines` 只包含市场事实字段，例如 id、open_time、OHLCV、成交笔数和 taker buy 字段。payload 不包含做多、做空、开仓、平仓、止盈、止损、仓位、杠杆或任何策略结论。
+created payload 不包含完整 `klines` 数组，不包含每根 K线的 OHLCV 明细，也不包含逐根 `kline_refs`。payload 不包含做多、做空、开仓、平仓、止盈、止损、仓位、杠杆或任何策略结论。
 
-blocked payload 是精简结构，不包含完整 payload，也不包含 K线数组。
+blocked / failed payload 也是精简结构，不包含完整 payload，也不包含 K线数组。
 
 ## 11. 表结构
 
@@ -248,35 +257,27 @@ updated_at_utc
 2. `(status, created_at_utc)`
 3. `(trace_id)`
 
-### 11.2 market_context_snapshot_kline_ref
+### 11.2 不再使用逐根 kline_ref 表
 
-引用表字段：
+本阶段不再使用 `market_context_snapshot_kline_ref` 逐根保存引用。
 
-```text
-id
-snapshot_id
-symbol
-interval_value
-market_kline_id
-open_time_ms
-open_time_utc
-sequence_no
-created_at_utc
-```
+MarketContextSnapshot 是 K线窗口索引，不是第二份 K线库。快照通过以下主表字段还原窗口：
 
-唯一键：
+1. `symbol`
+2. `base_interval_value`
+3. `higher_interval_value`
+4. `start_4h_open_time_ms`
+5. `end_4h_open_time_ms`
+6. `actual_4h_count`
+7. `start_1d_open_time_ms`
+8. `end_1d_open_time_ms`
+9. `actual_1d_count`
 
-1. `UNIQUE(snapshot_id, interval_value, sequence_no)`
-2. `UNIQUE(snapshot_id, interval_value, open_time_ms)`
-
-主要索引：
-
-1. `(snapshot_id)`
-2. `(symbol, interval_value, open_time_ms)`
+关键证据 K线如果未来需要，应在策略层单独设计 evidence 表，不属于第 15 阶段。
 
 ## 12. 状态说明
 
-`created`：4h + 1d 输入全部通过前置检查，且非 dry-run + confirm-write 时会写入主表和引用表。
+`created`：4h + 1d 输入全部通过前置检查，且非 dry-run + confirm-write 时会写入 snapshot 主表。
 
 `blocked`：数据前置条件不满足，例如未初始化、数据滞后、复核失败、数量不足、未收盘或不连续。blocked 不代表系统自动修复，也不代表自动回补。
 
@@ -290,14 +291,14 @@ dry-run：
 1. 执行同样的读取和质量检查。
 2. 可以返回 created 或 blocked 摘要。
 3. 不写入 `market_context_snapshot`。
-4. 不写入 `market_context_snapshot_kline_ref`。
+4. 不写入任何逐根 K线引用表。
 5. 默认不发送 Hermes，除非显式开启通知参数。
 
 confirm-write：
 
 1. 非 dry-run 写入必须显式传入。
-2. created 时写入主表和 kline_ref。
-3. blocked 时可写入 blocked 主表记录，但不写入 kline_ref。
+2. created 时写入 snapshot 主表。
+3. blocked 时可写入 blocked 主表记录。
 4. 写入失败返回 failed。
 
 ## 14. Hermes 通知
@@ -330,7 +331,23 @@ failed 通知触发条件：
 8. Hermes 失败只调整 exit_code，不改变原始 snapshot 状态。
 9. 不调用 DeepSeek 或任何大模型。
 
-## 15. 异常处理
+## 15. 只读快照还原校验
+
+`snapshot_repository.py::restore_snapshot_kline_windows` 提供只读还原能力：
+
+1. 根据 `snapshot_id` 读取 `market_context_snapshot`。
+2. 使用 snapshot 中记录的 `symbol + start_4h_open_time_ms + end_4h_open_time_ms` 查询 `market_kline_4h`。
+3. 使用 snapshot 中记录的 `symbol + start_1d_open_time_ms + end_1d_open_time_ms` 查询 `market_kline_1d`。
+4. 校验 4h 查询数量等于 `actual_4h_count`。
+5. 校验 1d 查询数量等于 `actual_1d_count`。
+6. 校验 4h / 1d 查询结果按 `open_time_ms` 升序。
+7. 数量不一致或窗口字段缺失时抛出 `MarketContextSnapshotRestoreError`。
+
+该能力只读，不写 `market_kline_4h`，不写 `market_kline_1d`，不修复、不回补、不请求 Binance，不生成策略判断。
+
+后续策略层如果需要完整 K线，应基于 snapshot 的范围回查正式 K线表，并校验数量。旧 snapshot 的还原基于表内记录的 start/end/count，不重新读取当前配置，因此不会受后续 lookback 配置变更影响。
+
+## 16. 异常处理
 
 参数非法：
 
@@ -350,7 +367,7 @@ Hermes 异常：
 
 本阶段不允许 partial_success；任何 created payload 写入失败都返回 failed。
 
-## 16. 本阶段明确没有实现
+## 17. 本阶段明确没有实现
 
 本阶段没有实现策略模块。
 本阶段没有新增 `app/strategy/`。
@@ -365,7 +382,7 @@ Hermes 异常：
 本阶段没有修改正式 K线表。
 本阶段没有让 scheduler 调用 scripts。
 
-## 17. 测试
+## 18. 测试
 
 对应测试目录：
 
@@ -389,6 +406,13 @@ Hermes 异常：
 14. 1d quality 缺失时 blocked。
 15. 1d quality 为 healthy / passed 且 `end_open_time_ms` 覆盖最新 1d K线时，snapshot 可继续。
 16. 1d integrity CLI 只允许人工 `cli` 触发，不允许 scheduler 通过 script 触发。
+17. confirm-write 成功时 payload 不包含完整 K线数组或 OHLCV 明细。
+18. 不再写入或依赖逐根 kline_ref 表。
+19. 根据 snapshot_id 可以还原 4h / 1d 窗口。
+20. 还原数量必须等于 snapshot 记录的 actual_count。
+21. 还原数量不一致时返回明确错误。
+22. CLI 默认 lookback 来自配置，且 `--lookback-4h` / `--lookback-1d` 可覆盖。
+23. snapshot 主表与 payload 记录本次实际 lookback 与 actual_count。
 
 默认测试使用 fake repository、fake session 和 fake alert sender，不访问真实 MySQL、Redis、Binance、Hermes 或大模型。
 

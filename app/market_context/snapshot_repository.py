@@ -1,8 +1,8 @@
 """Repository for MarketContextSnapshot storage and read-only context queries.
 
 This file belongs to `app/market_context`. It coordinates storage-layer reads
-for formal 4h/1d Klines, latest collector and quality rows, and writes only the
-stage-15 snapshot tables through a caller-provided session.
+for formal 4h/1d Klines, latest collector and quality rows, writes only the
+stage-15 snapshot main table, and provides read-only snapshot restoration checks.
 It does not request Binance, write formal Kline tables, write Redis, send
 Hermes, call DeepSeek or other large language models, generate trading advice,
 read private trading state, or perform trading.
@@ -14,7 +14,11 @@ import json
 from typing import Any, Mapping
 
 from app.core.time_utils import now_utc, timestamp_ms_to_utc_datetime
-from app.market_context.snapshot_types import SnapshotKlineRef, SnapshotPersistencePayload
+from app.market_context.snapshot_types import (
+    MarketContextSnapshotRestoreError,
+    RestoredMarketContextSnapshot,
+    SnapshotPersistencePayload,
+)
 from app.market_data.collector.kline_1d_incremental_types import KLINE_1D_INCREMENTAL_EVENT_TYPE
 from app.market_data.collector.types import COLLECTOR_EVENT_TYPE
 from app.market_data.kline_constants import KLINE_1D_INTERVAL_VALUE, KLINE_4H_INTERVAL_VALUE
@@ -22,10 +26,7 @@ from app.market_data.kline_integrity.kline_1d_integrity_types import CHECK_TYPE_
 from app.market_data.kline_quality.types import CHECK_TYPE_DAILY_KLINE_INTEGRITY
 from app.storage.mysql.models.collector_event_log import CollectorEventLog
 from app.storage.mysql.models.data_quality_check import DataQualityCheck
-from app.storage.mysql.models.market_context_snapshot import (
-    MarketContextSnapshot,
-    MarketContextSnapshotKlineRef,
-)
+from app.storage.mysql.models.market_context_snapshot import MarketContextSnapshot
 from app.storage.mysql.repositories.market_kline_1d_repository import (
     MarketKline1dRepository,
     create_default_market_kline_1d_repository,
@@ -49,7 +50,7 @@ class MarketContextSnapshotRepository:
     Failure scenarios: database errors propagate to the caller.
     External service access: none.
     Data impact: reads formal Kline/event/quality tables and writes only
-    `market_context_snapshot` plus `market_context_snapshot_kline_ref`.
+    `market_context_snapshot`.
     """
 
     def __init__(
@@ -125,18 +126,18 @@ class MarketContextSnapshotRepository:
         )
         return db_session.execute(stmt).scalar_one_or_none()
 
-    def create_snapshot_with_refs(
+    def create_snapshot(
         self,
         db_session: Any,
         payload: SnapshotPersistencePayload,
     ) -> MarketContextSnapshot:
-        """Persist one snapshot and its Kline-reference rows.
+        """Persist one snapshot main row.
 
         Parameters: caller-owned session and fully prepared persistence payload.
         Return value: created snapshot ORM row.
         Failure scenarios: database insert/unique errors propagate.
         External service access: none.
-        Data impact: writes only snapshot tables; it never writes `market_kline_4h`
+        Data impact: writes only the snapshot main table; it never writes `market_kline_4h`
         or `market_kline_1d`, and never commits.
         """
 
@@ -175,22 +176,71 @@ class MarketContextSnapshotRepository:
             updated_at_utc=created_at_utc,
         )
         db_session.add(snapshot)
-        for ref in payload.refs:
-            db_session.add(
-                MarketContextSnapshotKlineRef(
-                    snapshot_id=payload.snapshot_id,
-                    symbol=ref.symbol,
-                    interval_value=ref.interval_value,
-                    market_kline_id=ref.market_kline_id,
-                    open_time_ms=ref.open_time_ms,
-                    open_time_utc=timestamp_ms_to_utc_datetime(ref.open_time_ms),
-                    sequence_no=ref.sequence_no,
-                    created_at_utc=created_at_utc,
-                )
-            )
         if hasattr(db_session, "flush"):
             db_session.flush()
         return snapshot
+
+    def get_snapshot_by_snapshot_id(self, db_session: Any, *, snapshot_id: str) -> MarketContextSnapshot | None:
+        """Read one snapshot row by `snapshot_id` without modifying any table."""
+
+        _require_sqlalchemy()
+        stmt = select(MarketContextSnapshot).where(MarketContextSnapshot.snapshot_id == snapshot_id).limit(1)
+        return db_session.execute(stmt).scalar_one_or_none()
+
+    def restore_snapshot_kline_windows(
+        self,
+        db_session: Any,
+        *,
+        snapshot_id: str,
+    ) -> RestoredMarketContextSnapshot:
+        """Restore formal 4h/1d Kline windows recorded by a snapshot.
+
+        Parameters: caller-owned session and snapshot business id.
+        Return value: snapshot row plus formal 4h/1d rows ordered by `open_time_ms`.
+        Failure scenarios: missing snapshot, missing range fields, unordered rows,
+        or count mismatches raise `MarketContextSnapshotRestoreError`.
+        External service access: none.
+        Data impact: read-only. This method never writes Kline tables, never repairs
+        data, never requests Binance, and never performs strategy judgment.
+        """
+
+        snapshot = self.get_snapshot_by_snapshot_id(db_session, snapshot_id=snapshot_id)
+        if snapshot is None:
+            raise MarketContextSnapshotRestoreError(f"snapshot_id={snapshot_id} not found")
+
+        rows_4h = tuple(
+            self._kline_4h_repository.list_by_time_range(
+                db_session,
+                symbol=str(_required_snapshot_value(snapshot, "symbol")),
+                interval_value=KLINE_4H_INTERVAL_VALUE,
+                start_open_time_ms=_required_snapshot_int(snapshot, "start_4h_open_time_ms"),
+                end_open_time_ms=_required_snapshot_int(snapshot, "end_4h_open_time_ms"),
+            )
+        )
+        rows_1d = tuple(
+            self._kline_1d_repository.list_by_time_range(
+                db_session,
+                symbol=str(_required_snapshot_value(snapshot, "symbol")),
+                start_open_time_ms=_required_snapshot_int(snapshot, "start_1d_open_time_ms"),
+                end_open_time_ms=_required_snapshot_int(snapshot, "end_1d_open_time_ms"),
+            )
+        )
+
+        _ensure_rows_sorted_by_open_time(rows_4h, label="4h")
+        _ensure_rows_sorted_by_open_time(rows_1d, label="1d")
+        _ensure_restore_count(
+            rows_4h,
+            expected_count=_required_snapshot_int(snapshot, "actual_4h_count"),
+            label="4h",
+            snapshot_id=snapshot_id,
+        )
+        _ensure_restore_count(
+            rows_1d,
+            expected_count=_required_snapshot_int(snapshot, "actual_1d_count"),
+            label="1d",
+            snapshot_id=snapshot_id,
+        )
+        return RestoredMarketContextSnapshot(snapshot=snapshot, rows_4h=rows_4h, rows_1d=rows_1d)
 
 
 def create_default_market_context_snapshot_repository() -> MarketContextSnapshotRepository:
@@ -225,6 +275,49 @@ def _normalize_json_text(value: str | Mapping[str, object]) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(dict(value), ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _required_snapshot_value(snapshot: Any, field_name: str) -> Any:
+    value = getattr(snapshot, field_name, None)
+    if value is None:
+        raise MarketContextSnapshotRestoreError(f"snapshot {field_name} is required for restoration")
+    return value
+
+
+def _required_snapshot_int(snapshot: Any, field_name: str) -> int:
+    value = _required_snapshot_value(snapshot, field_name)
+    return int(value)
+
+
+def _row_open_time_ms(row: Any) -> int:
+    value = getattr(row, "open_time_ms", None)
+    if value is None:
+        raise MarketContextSnapshotRestoreError("restored Kline row missing open_time_ms")
+    return int(value)
+
+
+def _ensure_rows_sorted_by_open_time(rows: tuple[Any, ...], *, label: str) -> None:
+    previous_open_time_ms: int | None = None
+    for row in rows:
+        current_open_time_ms = _row_open_time_ms(row)
+        if previous_open_time_ms is not None and current_open_time_ms < previous_open_time_ms:
+            raise MarketContextSnapshotRestoreError(f"{label} restored rows are not ordered by open_time_ms")
+        previous_open_time_ms = current_open_time_ms
+
+
+def _ensure_restore_count(
+    rows: tuple[Any, ...],
+    *,
+    expected_count: int,
+    label: str,
+    snapshot_id: str,
+) -> None:
+    actual_count = len(rows)
+    if actual_count != expected_count:
+        raise MarketContextSnapshotRestoreError(
+            f"{label} restore count mismatch for snapshot_id={snapshot_id}: "
+            f"expected {expected_count}, actual {actual_count}"
+        )
 
 
 def _require_sqlalchemy() -> None:

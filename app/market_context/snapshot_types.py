@@ -15,6 +15,10 @@ from enum import Enum
 from typing import Any, Mapping
 from uuid import uuid4
 
+from app.core.constants import (
+    DEFAULT_MARKET_CONTEXT_1D_LOOKBACK_COUNT,
+    DEFAULT_MARKET_CONTEXT_4H_LOOKBACK_COUNT,
+)
 from app.market_data.kline_constants import (
     DEFAULT_KLINE_SYMBOL,
     KLINE_1D_INTERVAL_VALUE,
@@ -23,8 +27,6 @@ from app.market_data.kline_constants import (
 )
 
 MARKET_CONTEXT_EVENT_SOURCE = "app.market_context.snapshot_service"
-DEFAULT_MARKET_CONTEXT_4H_LOOKBACK_COUNT = 180
-DEFAULT_MARKET_CONTEXT_1D_LOOKBACK_COUNT = 365
 MIN_MARKET_CONTEXT_4H_LOOKBACK_COUNT = 1
 MIN_MARKET_CONTEXT_1D_LOOKBACK_COUNT = 1
 
@@ -49,7 +51,7 @@ class MarketContextSnapshotRequest:
 
     Parameters: caller must explicitly provide trigger source, dry-run/write
     mode, and 4h/1d lookback counts. Real snapshot persistence requires
-    `confirm_write=True`; dry-runs never write snapshot or Kline-reference rows.
+    `confirm_write=True`; dry-runs never write snapshot rows.
     """
 
     symbol: str = DEFAULT_KLINE_SYMBOL
@@ -68,20 +70,8 @@ class MarketContextSnapshotRequest:
 
 
 @dataclass(frozen=True)
-class SnapshotKlineRef:
-    """One formal Kline referenced by a market context snapshot."""
-
-    symbol: str
-    interval_value: str
-    market_kline_id: int
-    open_time_ms: int
-    open_time_utc_text: str
-    sequence_no: int
-
-
-@dataclass(frozen=True)
 class SnapshotPersistencePayload:
-    """Repository input containing snapshot metadata, payload JSON, and refs."""
+    """Repository input containing snapshot window metadata and summary JSON."""
 
     snapshot_id: str
     status: MarketContextSnapshotStatus
@@ -110,7 +100,24 @@ class SnapshotPersistencePayload:
     created_by: str = "cli"
     trigger_source: str = TRIGGER_SOURCE_CLI
     trace_id: str = ""
-    refs: tuple[SnapshotKlineRef, ...] = ()
+
+
+class MarketContextSnapshotRestoreError(RuntimeError):
+    """Raised when a snapshot_id cannot restore its recorded Kline windows."""
+
+
+@dataclass(frozen=True)
+class RestoredMarketContextSnapshot:
+    """Read-only restoration result for one snapshot_id.
+
+    The rows come from formal Kline tables using the snapshot's recorded
+    `symbol + start/end open_time_ms + actual_count`. This object is not a
+    strategy input evaluator and never writes data.
+    """
+
+    snapshot: Any
+    rows_4h: tuple[Any, ...]
+    rows_1d: tuple[Any, ...]
 
 
 @dataclass(frozen=True)
@@ -131,7 +138,6 @@ class MarketContextSnapshotResult:
     latest_4h_open_time_utc: str | None = None
     latest_1d_open_time_utc: str | None = None
     snapshot_row_id: int | None = None
-    kline_ref_count: int = 0
     alert_status: str | None = None
     details: Mapping[str, Any] = field(default_factory=dict)
 
@@ -158,8 +164,7 @@ def format_market_context_snapshot_result_lines(result: MarketContextSnapshotRes
         (
             "counts="
             f"lookback_4h:{result.lookback_4h_count},actual_4h:{result.actual_4h_count},"
-            f"lookback_1d:{result.lookback_1d_count},actual_1d:{result.actual_1d_count},"
-            f"kline_refs:{result.kline_ref_count}"
+            f"lookback_1d:{result.lookback_1d_count},actual_1d:{result.actual_1d_count}"
         ),
         f"latest_4h_open_time_utc={result.latest_4h_open_time_utc or ''}",
         f"latest_1d_open_time_utc={result.latest_1d_open_time_utc or ''}",
@@ -185,9 +190,10 @@ __all__ = [
     "MIN_MARKET_CONTEXT_4H_LOOKBACK_COUNT",
     "MARKET_CONTEXT_EVENT_SOURCE",
     "MarketContextSnapshotRequest",
+    "MarketContextSnapshotRestoreError",
     "MarketContextSnapshotResult",
     "MarketContextSnapshotStatus",
-    "SnapshotKlineRef",
+    "RestoredMarketContextSnapshot",
     "SnapshotPersistencePayload",
     "format_market_context_snapshot_result_lines",
 ]

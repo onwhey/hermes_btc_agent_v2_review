@@ -26,7 +26,7 @@ app/market_context/snapshot_repository.py::get_latest_daily_quality_check
 app/market_context/snapshot_quality.py::check_market_context_snapshot_readiness
     ↓
 app/market_context/snapshot_builder.py::build_market_context_snapshot_payload
-app/market_context/snapshot_repository.py::create_snapshot_with_refs
+app/market_context/snapshot_repository.py::create_snapshot
     ↓
 app/market_context/snapshot_alerts.py::send_market_context_snapshot_alert_and_adjust_exit_code
 """
@@ -199,7 +199,7 @@ def build_market_context_snapshot(
                     created_by=request.created_by,
                     trace_id=trace_id,
                 )
-                snapshot_row = active_repository.create_snapshot_with_refs(db_session, blocked_payload)
+                snapshot_row = active_repository.create_snapshot(db_session, blocked_payload)
                 _commit_if_possible(db_session)
                 result = replace(
                     result,
@@ -226,16 +226,14 @@ def build_market_context_snapshot(
             readiness=readiness,
             snapshot_id=snapshot_id,
             trace_id=trace_id,
-            kline_ref_count=len(created_payload.refs),
         )
         if request.dry_run:
             return replace(
                 result,
-                message="dry-run 已完成市场上下文快照生成校验，未写入快照表或 kline_ref 表。",
-                kline_ref_count=0,
+                message="dry-run 已完成市场上下文快照生成校验，未写入快照表。",
             )
 
-        snapshot_row = active_repository.create_snapshot_with_refs(db_session, created_payload)
+        snapshot_row = active_repository.create_snapshot(db_session, created_payload)
         _commit_if_possible(db_session)
         return replace(
             result,
@@ -319,7 +317,6 @@ def _build_created_snapshot_result(
     readiness: SnapshotReadinessReport,
     snapshot_id: str,
     trace_id: str,
-    kline_ref_count: int,
 ) -> MarketContextSnapshotResult:
     """Build a compact created result that does not expose the full payload."""
 
@@ -335,7 +332,6 @@ def _build_created_snapshot_result(
         actual_1d_count=readiness.higher_context.actual_count,
         latest_4h_open_time_utc=_open_time_text(readiness.base_context.latest_open_time_ms),
         latest_1d_open_time_utc=_open_time_text(readiness.higher_context.latest_open_time_ms),
-        kline_ref_count=kline_ref_count,
         details={
             "dry_run": request.dry_run,
             "confirm_write": request.confirm_write,
@@ -368,7 +364,6 @@ def _build_blocked_snapshot_result(
         actual_1d_count=readiness.higher_context.actual_count,
         latest_4h_open_time_utc=_open_time_text(readiness.base_context.latest_open_time_ms),
         latest_1d_open_time_utc=_open_time_text(readiness.higher_context.latest_open_time_ms),
-        kline_ref_count=0,
         details={
             "dry_run": request.dry_run,
             "confirm_write": request.confirm_write,
@@ -427,7 +422,7 @@ def _try_persist_failed_snapshot_record(
             trace_id=trace_id,
             current_time_ms=current_time_ms,
         )
-        snapshot_row = repository.create_snapshot_with_refs(db_session, failed_payload)
+        snapshot_row = repository.create_snapshot(db_session, failed_payload)
         _commit_if_possible(db_session)
         return getattr(snapshot_row, "id", None)
     except Exception:  # noqa: BLE001 - this path preserves the original failed result.
