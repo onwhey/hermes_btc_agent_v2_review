@@ -138,7 +138,7 @@ MARKET_CONTEXT_1D_LOOKBACK_COUNT=365
 
 1. `market_context_snapshot`
 
-本阶段不写入 `market_context_snapshot_kline_ref`，也不复制完整 K线数据。
+本阶段不写入逐根快照引用表，也不复制完整 K线数据。
 
 本功能不请求外部接口。
 本功能不读取 Redis。
@@ -202,7 +202,7 @@ created payload 包含：
 16. `trace_id`
 17. `boundary`
 
-created payload 不包含完整 `klines` 数组，不包含每根 K线的 OHLCV 明细，也不包含逐根 `kline_refs`。payload 不包含做多、做空、开仓、平仓、止盈、止损、仓位、杠杆或任何策略结论。
+created payload 不包含完整 `klines` 数组，不包含每根 K线的 OHLCV 明细，也不包含逐根 K线引用列表。payload 不包含做多、做空、开仓、平仓、止盈、止损、仓位、杠杆或任何策略结论。
 
 blocked / failed payload 也是精简结构，不包含完整 payload，也不包含 K线数组。
 
@@ -257,9 +257,9 @@ updated_at_utc
 2. `(status, created_at_utc)`
 3. `(trace_id)`
 
-### 11.2 不再使用逐根 kline_ref 表
+### 11.2 不再使用逐根引用表
 
-本阶段不再使用 `market_context_snapshot_kline_ref` 逐根保存引用。
+本阶段不再使用逐根快照引用表逐根保存引用。
 
 MarketContextSnapshot 是 K线窗口索引，不是第二份 K线库。快照通过以下主表字段还原窗口：
 
@@ -407,7 +407,7 @@ Hermes 异常：
 15. 1d quality 为 healthy / passed 且 `end_open_time_ms` 覆盖最新 1d K线时，snapshot 可继续。
 16. 1d integrity CLI 只允许人工 `cli` 触发，不允许 scheduler 通过 script 触发。
 17. confirm-write 成功时 payload 不包含完整 K线数组或 OHLCV 明细。
-18. 不再写入或依赖逐根 kline_ref 表。
+18. 不再写入或依赖逐根引用表。
 19. 根据 snapshot_id 可以还原 4h / 1d 窗口。
 20. 还原数量必须等于 snapshot 记录的 actual_count。
 21. 还原数量不一致时返回明确错误。

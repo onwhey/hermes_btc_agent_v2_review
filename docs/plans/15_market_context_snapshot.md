@@ -471,9 +471,9 @@ INDEX(status, created_at_utc)
 INDEX(trace_id)
 ```
 
-### 10.2 不再使用逐根 kline_ref 表
+### 10.2 不再使用逐根引用表
 
-本阶段不再创建或写入 `market_context_snapshot_kline_ref`。
+本阶段不再创建或写入逐根快照引用表。
 
 原因：
 
@@ -807,7 +807,7 @@ GannStrategy
 3. 最近复核健康。
 4. 生成 `status=created`。
 5. 写入 `market_context_snapshot`。
-6. 不写入 `market_context_snapshot_kline_ref`。
+6. 不写入逐根快照引用表。
 7. payload 中包含 4h 与 1d 窗口摘要。
 8. 不包含策略字段。
 9. 不请求 Binance。
@@ -1017,7 +1017,7 @@ docs/implementation/15_market_context_snapshot.md
 5. builder 职责。
 6. quality checker 职责。
 7. snapshot 表结构说明。
-8. 明确本阶段不再使用逐根 kline_ref 表。
+8. 明确本阶段不再使用逐根引用表。
 9. payload 字段说明。
 10. created / blocked / failed 状态说明。
 11. dry-run 与 confirm-write 行为说明。

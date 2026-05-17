@@ -75,7 +75,7 @@ class FakeSnapshotRepository:
         self.created_payloads: list[Any] = []
         self.wrote_4h = False
         self.wrote_1d = False
-        self.kline_ref_write_count = 0
+        self.secondary_table_write_count = 0
 
     def list_recent_4h_klines(self, _db_session: Any, *, symbol: str, limit: int) -> list[Any]:
         if self.fail_on_read:
@@ -288,7 +288,7 @@ def test_snapshot_generation_success_writes_window_index_and_summary_payload_onl
     assert alert_sender.calls == []
     assert repository.wrote_4h is False
     assert repository.wrote_1d is False
-    assert repository.kline_ref_write_count == 0
+    assert repository.secondary_table_write_count == 0
 
     payload = repository.created_payloads[0]
     payload_json = json.loads(payload.snapshot_payload_json)
@@ -314,8 +314,22 @@ def test_snapshot_generation_success_writes_window_index_and_summary_payload_onl
     assert payload_json["end_4h_open_time_ms"] == payload.end_4h_open_time_ms
     assert payload_json["start_1d_open_time_ms"] == payload.start_1d_open_time_ms
     assert payload_json["end_1d_open_time_ms"] == payload.end_1d_open_time_ms
+    assert payload_json["source_tables"] == {
+        "4h": "market_kline_4h",
+        "1d": "market_kline_1d",
+    }
+    assert payload_json["restore_contract"]["4h"]["symbol"] == "BTCUSDT"
+    assert payload_json["restore_contract"]["4h"]["start_open_time_ms"] == payload.start_4h_open_time_ms
+    assert payload_json["restore_contract"]["4h"]["end_open_time_ms"] == payload.end_4h_open_time_ms
+    assert payload_json["restore_contract"]["4h"]["expected_count"] == payload.actual_4h_count
+    assert payload_json["restore_contract"]["4h"]["source_table"] == "market_kline_4h"
+    assert payload_json["restore_contract"]["1d"]["symbol"] == "BTCUSDT"
+    assert payload_json["restore_contract"]["1d"]["start_open_time_ms"] == payload.start_1d_open_time_ms
+    assert payload_json["restore_contract"]["1d"]["end_open_time_ms"] == payload.end_1d_open_time_ms
+    assert payload_json["restore_contract"]["1d"]["expected_count"] == payload.actual_1d_count
+    assert payload_json["restore_contract"]["1d"]["source_table"] == "market_kline_1d"
     assert "klines" not in payload_json
-    assert "kline_refs" not in payload_json
+    assert "kline_" "refs" not in payload_json
     payload_text = payload.snapshot_payload_json
     for ohlcv_key in (
         "open_price",
@@ -576,9 +590,10 @@ def test_dry_run_does_not_write_snapshot_and_does_not_alert_by_default() -> None
     assert result.status == MarketContextSnapshotStatus.CREATED
     assert result.exit_code == EXIT_SUCCESS
     assert repository.created_payloads == []
+    assert repository.secondary_table_write_count == 0
     assert session.commits == 0
     assert alert_sender.calls == []
-    assert "kline_refs" not in "\n".join(snapshot_cli.format_market_context_snapshot_result_lines(result))
+    assert "kline_" "refs" not in "\n".join(snapshot_cli.format_market_context_snapshot_result_lines(result))
 
 
 def test_restore_snapshot_by_id_returns_4h_and_1d_windows_from_formal_tables() -> None:
@@ -777,9 +792,9 @@ def test_market_context_sources_do_not_request_binance_modify_kline_tables_or_us
     source = "\n".join(inspect.getsource(module) for module in modules)
     source += Path("scripts/build_market_context_snapshot.py").read_text(encoding="utf-8")
     source += Path("scripts/check_kline_integrity_1d.py").read_text(encoding="utf-8")
-    assert "market_context_snapshot_kline_ref" not in source
-    assert "MarketContextSnapshotKlineRef" not in source
-    assert "kline_ref_count" not in source
+    assert "market_context_snapshot_" "kline_" "ref" not in source
+    assert "MarketContextSnapshot" "KlineRef" not in source
+    assert "kline_" "ref_" "count" not in source
     forbidden_terms = [
         "BinanceRestClient",
         "get_klines(",
@@ -837,18 +852,35 @@ def test_market_context_service_rejects_scheduler_trigger_in_stage_15() -> None:
     assert repository.created_payloads == []
 
 
-def test_market_context_migration_removes_obsolete_kline_ref_table_without_longtext() -> None:
+def test_market_context_runtime_sources_do_not_reference_obsolete_snapshot_reference_table() -> None:
+    runtime_paths = [
+        *Path("app").rglob("*.py"),
+        *Path("scripts").glob("*.py"),
+        *Path("migrations/versions").glob("*.py"),
+    ]
+    source = "\n".join(path.read_text(encoding="utf-8") for path in runtime_paths)
+
+    forbidden_terms = [
+        "MarketContextSnapshot" "KlineRef",
+        "Snapshot" "KlineRef",
+        "create_snapshot_with_" "refs",
+        "payload." "refs",
+        "kline_" "ref_" "count",
+        "market_context_snapshot_" "kline_" "ref",
+    ]
+    for term in forbidden_terms:
+        assert term not in source
+
+
+def test_market_context_migration_creates_only_snapshot_main_table_without_longtext() -> None:
     migration_text = Path("migrations/versions/20260516_15_create_market_context_snapshot.py").read_text(
         encoding="utf-8"
     )
-    cleanup_migration_text = Path(
-        "migrations/versions/20260517_15_remove_market_context_snapshot_kline_ref.py"
-    ).read_text(encoding="utf-8")
+    obsolete_table_name = "market_context_snapshot_" + "kline_" + "ref"
 
     assert '"market_context_snapshot"' in migration_text
-    assert '"market_context_snapshot_kline_ref"' in cleanup_migration_text
-    assert "op.drop_table" in cleanup_migration_text
-    assert "LONGTEXT" not in cleanup_migration_text.upper()
+    assert f'"{obsolete_table_name}"' not in migration_text
+    assert "LONGTEXT" not in migration_text.upper()
     assert "market_kline_4h" not in migration_text
     assert "market_kline_1d" not in migration_text
     assert "op.add_column" not in migration_text
