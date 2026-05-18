@@ -1,0 +1,490 @@
+﻿from __future__ import annotations
+
+import inspect
+import json
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from decimal import Decimal
+from types import SimpleNamespace
+from typing import Any, Mapping
+
+from app.alerting.types import AlertSendResult, AlertSendStatus
+from app.core.config import AppSettings
+from app.strategy.aggregation.service import StrategyAggregationService
+from app.strategy.aggregation.types import (
+    CandidateDirection,
+    ConflictLevel,
+    RiskGateStatus,
+    StrategyAggregationRequest,
+    StrategyAggregationStatus,
+)
+from scripts import run_strategy_aggregation as aggregation_cli
+
+
+class FakeSession:
+    def __init__(self) -> None:
+        self.commits = 0
+        self.rollbacks = 0
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+class FakeAggregationRepository:
+    def __init__(
+        self,
+        *,
+        strategy_run: Any | None = None,
+        results: tuple[Any, ...] = (),
+        restored_snapshot: Any | None = None,
+        existing: Any | None = None,
+    ) -> None:
+        self.strategy_run = strategy_run
+        self.results = results
+        self.restored_snapshot = restored_snapshot
+        self.existing = existing
+        self.aggregation_rows: list[Any] = []
+        self.material_rows: list[Any] = []
+        self.restore_calls: list[str] = []
+        self.result_calls = 0
+
+    def get_existing_aggregation(self, _db_session: Any, **_kwargs: Any) -> Any | None:
+        return self.existing
+
+    def get_strategy_signal_run(self, _db_session: Any, *, run_id: str) -> Any | None:
+        if self.strategy_run and self.strategy_run.run_id == run_id:
+            return self.strategy_run
+        return None
+
+    def list_strategy_signal_results(self, _db_session: Any, *, run_id: str) -> tuple[Any, ...]:
+        self.result_calls += 1
+        return self.results if self.strategy_run and self.strategy_run.run_id == run_id else ()
+
+    def restore_snapshot_kline_windows(self, _db_session: Any, *, snapshot_id: str) -> Any:
+        self.restore_calls.append(snapshot_id)
+        if self.restored_snapshot is None:
+            raise RuntimeError("missing snapshot")
+        return self.restored_snapshot
+
+    def get_material_pack_by_aggregation_run_id(self, _db_session: Any, *, aggregation_run_id: str) -> Any | None:
+        for row in self.material_rows:
+            if row.aggregation_run_id == aggregation_run_id:
+                return row
+        return None
+
+    def create_aggregation_run(self, _db_session: Any, *, payload: Any) -> Any:
+        row = SimpleNamespace(**payload.__dict__)
+        row.id = len(self.aggregation_rows) + 1
+        self.aggregation_rows.append(row)
+        return row
+
+    def create_material_pack(self, _db_session: Any, *, payload: Any) -> Any:
+        row = SimpleNamespace(**payload.__dict__)
+        row.id = len(self.material_rows) + 1
+        self.material_rows.append(row)
+        return row
+
+    def record_hermes_result(self, _db_session: Any, aggregation_row: Any, **kwargs: Any) -> Any:
+        for key, value in kwargs.items():
+            setattr(aggregation_row, key, value)
+        return aggregation_row
+
+
+class FakeAlertSender:
+    def __init__(self) -> None:
+        self.calls: list[Any] = []
+
+    def __call__(self, event: Any, **_kwargs: Any) -> AlertSendResult:
+        self.calls.append(event)
+        return AlertSendResult(
+            status=AlertSendStatus.SUBMITTED_TO_HERMES,
+            message="submitted",
+            submitted_at_utc=utc_at(18, 12),
+            attempted_real_send=True,
+        )
+
+
+def utc_at(day: int, hour: int) -> datetime:
+    return datetime(2026, 5, day, hour, tzinfo=timezone.utc)
+
+
+def ms(value: datetime) -> int:
+    return int(value.timestamp() * 1000)
+
+
+def kline_rows(count: int, *, interval_ms: int = 14_400_000, interval_value: str = "4h") -> tuple[Any, ...]:
+    start_ms = ms(datetime(2026, 5, 1, tzinfo=timezone.utc))
+    pattern = [Decimal("100"), Decimal("150"), Decimal("220"), Decimal("170"), Decimal("130")]
+    rows: list[Any] = []
+    for index in range(count):
+        cycle = index // len(pattern)
+        close = Decimal("60000") + Decimal(cycle * 260) + pattern[index % len(pattern)]
+        open_time_ms = start_ms + index * interval_ms
+        rows.append(
+            SimpleNamespace(
+                symbol="BTCUSDT",
+                interval_value=interval_value,
+                open_time_ms=open_time_ms,
+                open_time_utc=datetime.fromtimestamp(open_time_ms / 1000, tz=timezone.utc),
+                open_price=close - Decimal("8"),
+                high_price=close + Decimal("40"),
+                low_price=close - Decimal("45"),
+                close_price=close,
+                volume=Decimal("1000") + Decimal(index),
+            )
+        )
+    return tuple(rows)
+
+
+def restored_snapshot(*, future_base_row: bool = False) -> Any:
+    rows_4h = list(kline_rows(40, interval_ms=14_400_000, interval_value="4h"))
+    rows_1d = list(kline_rows(10, interval_ms=86_400_000, interval_value="1d"))
+    snapshot_end_4h = rows_4h[-1].open_time_ms
+    if future_base_row:
+        future = SimpleNamespace(**rows_4h[-1].__dict__)
+        future.open_time_ms = rows_4h[-1].open_time_ms + 14_400_000
+        future.open_time_utc = datetime.fromtimestamp(future.open_time_ms / 1000, tz=timezone.utc)
+        rows_4h.append(future)
+    snapshot = SimpleNamespace(
+        snapshot_id="MCS-stage18",
+        symbol="BTCUSDT",
+        base_interval_value="4h",
+        higher_interval_value="1d",
+        start_4h_open_time_ms=rows_4h[0].open_time_ms,
+        end_4h_open_time_ms=snapshot_end_4h,
+        start_1d_open_time_ms=rows_1d[0].open_time_ms,
+        end_1d_open_time_ms=rows_1d[-1].open_time_ms,
+        actual_4h_count=40,
+        actual_1d_count=10,
+    )
+    return SimpleNamespace(snapshot=snapshot, rows_4h=tuple(rows_4h), rows_1d=tuple(rows_1d))
+
+
+def strategy_run(*, status: str = "success", run_id: str = "SSR-stage18", snapshot_id: str | None = "MCS-stage18") -> Any:
+    return SimpleNamespace(
+        run_id=run_id,
+        snapshot_id=snapshot_id,
+        symbol="BTCUSDT",
+        base_interval_value="4h",
+        higher_interval_value="1d",
+        status=status,
+        strategy_count=3,
+        success_count=2,
+        failed_count=0,
+        invalid_count=0,
+        not_implemented_count=1,
+    )
+
+
+def signal(
+    name: str,
+    *,
+    status: str = "success",
+    direction: str = "neutral",
+    risk: str = "medium",
+    strength: str = "0.50",
+) -> Any:
+    return SimpleNamespace(
+        id=len(name),
+        strategy_name=name,
+        strategy_version="v1",
+        strategy_status=status,
+        direction_bias=direction,
+        risk_level=risk,
+        signal_strength=Decimal(strength),
+        reason_codes_json=json.dumps([f"{name}_code"], ensure_ascii=False),
+        reason_text=f"{name} deterministic strategy signal.",
+        metrics_json=json.dumps({"metric": "1"}, ensure_ascii=False),
+        debug_json="{}",
+        error_message=None,
+    )
+
+
+def service_with_repo(repo: FakeAggregationRepository, *, settings: AppSettings | None = None, alert: FakeAlertSender | None = None) -> StrategyAggregationService:
+    return StrategyAggregationService(settings=settings or AppSettings(), repository=repo, alert_sender=alert or FakeAlertSender())
+
+
+def run_request(*, confirm: bool = False) -> StrategyAggregationRequest:
+    return StrategyAggregationRequest(
+        strategy_signal_run_id="SSR-stage18",
+        trigger_source="cli",
+        dry_run=not confirm,
+        confirm_write=confirm,
+        trace_id="trace-stage18",
+    )
+
+
+def test_success_and_partial_strategy_signal_runs_can_aggregate_long_candidate() -> None:
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(status="partial_success"),
+        results=(
+            signal("trend_structure", direction="bullish_bias", risk="low", strength="0.80"),
+            signal("volatility_risk", direction="not_applicable", risk="medium", strength="0.30"),
+            signal("gann_placeholder", status="not_implemented", direction="not_applicable", risk="not_applicable"),
+        ),
+        restored_snapshot=restored_snapshot(),
+    )
+    result = service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request())
+
+    assert result.status == StrategyAggregationStatus.PARTIAL_SUCCESS
+    assert result.candidate_direction == CandidateDirection.LONG
+    assert result.risk_gate_status in {RiskGateStatus.PASS, RiskGateStatus.CAUTION}
+    assert result.effective_strategy_count == 2
+
+
+def test_blocked_and_failed_strategy_signal_runs_are_not_allowed() -> None:
+    for status in ("blocked", "failed"):
+        repo = FakeAggregationRepository(strategy_run=strategy_run(status=status))
+        result = service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request())
+
+        assert result.status == StrategyAggregationStatus.BLOCKED
+        assert result.error_code == "strategy_signal_run_status_not_allowed"
+        assert repo.restore_calls == []
+
+
+def test_empty_results_and_missing_snapshot_are_blocked() -> None:
+    missing_snapshot_repo = FakeAggregationRepository(strategy_run=strategy_run(snapshot_id=None))
+    empty_results_repo = FakeAggregationRepository(strategy_run=strategy_run(), results=())
+
+    missing_snapshot = service_with_repo(missing_snapshot_repo).run_strategy_aggregation(FakeSession(), request=run_request())
+    empty_results = service_with_repo(empty_results_repo).run_strategy_aggregation(FakeSession(), request=run_request())
+
+    assert missing_snapshot.status == StrategyAggregationStatus.BLOCKED
+    assert missing_snapshot.error_code == "strategy_signal_run_snapshot_missing"
+    assert empty_results.status == StrategyAggregationStatus.BLOCKED
+    assert empty_results.error_code == "strategy_signal_result_empty"
+
+
+def test_short_candidate_and_conflict_level_rules() -> None:
+    short_repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(
+            signal("trend_structure", direction="bearish_bias", risk="low", strength="0.80"),
+            signal("volatility_risk", direction="not_applicable", risk="low", strength="0.20"),
+        ),
+        restored_snapshot=restored_snapshot(),
+    )
+    conflict_repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(
+            signal("trend_structure", direction="bullish_bias", risk="low", strength="0.70"),
+            signal("least_resistance", direction="bearish_bias", risk="low", strength="0.72"),
+        ),
+        restored_snapshot=restored_snapshot(),
+    )
+
+    short_result = service_with_repo(short_repo).run_strategy_aggregation(FakeSession(), request=run_request())
+    conflict_result = service_with_repo(conflict_repo).run_strategy_aggregation(FakeSession(), request=run_request())
+
+    assert short_result.candidate_direction == CandidateDirection.SHORT
+    assert conflict_result.conflict_level == ConflictLevel.HIGH
+    assert conflict_result.candidate_direction == CandidateDirection.WAIT
+
+
+def test_extreme_risk_blocks_direction_to_wait_or_stop_trading() -> None:
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(
+            signal("trend_structure", direction="bullish_bias", risk="low", strength="0.90"),
+            signal("volatility_risk", direction="not_applicable", risk="extreme", strength="0.90"),
+        ),
+        restored_snapshot=restored_snapshot(),
+    )
+
+    result = service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request())
+
+    assert result.risk_gate_status == RiskGateStatus.BLOCKED_BY_VOLATILITY
+    assert result.candidate_direction in {CandidateDirection.WAIT, CandidateDirection.STOP_TRADING}
+
+
+def test_confirm_write_persists_aggregation_and_material_pack_with_required_sections() -> None:
+    session = FakeSession()
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(status="partial_success"),
+        results=(
+            signal("trend_structure", direction="bullish_bias", risk="low", strength="0.80"),
+            signal("volatility_risk", direction="not_applicable", risk="medium", strength="0.30"),
+            signal("gann_placeholder", status="not_implemented", direction="not_applicable", risk="not_applicable"),
+        ),
+        restored_snapshot=restored_snapshot(),
+    )
+
+    result = service_with_repo(repo).run_strategy_aggregation(session, request=run_request(confirm=True))
+
+    assert result.status == StrategyAggregationStatus.PARTIAL_SUCCESS
+    assert session.commits >= 1
+    assert len(repo.aggregation_rows) == 1
+    assert len(repo.material_rows) == 1
+    material = repo.material_rows[0].material_json
+    assert material["swing"]["recent_swing_highs"]
+    assert material["swing"]["recent_swing_lows"]
+    assert material["volatility"]["atr_14"] is not None
+    assert material["volatility"]["atr_percent"] is not None
+    assert material["volatility"]["avg_range_percent_3"] is not None
+    assert material["volatility"]["avg_range_percent_6"] is not None
+    assert material["volatility"]["avg_range_percent_20"] is not None
+    assert material["support_resistance"]["support_candidates"]
+    assert material["support_resistance"]["resistance_candidates"]
+    assert repo.aggregation_rows[0].candidate_scenarios_json["candidate_scenarios"][0]["activation_condition"]
+    assert repo.material_rows[0].question_json["questions"]
+    assert repo.material_rows[0].data_window_json["base_kline_count"] == 40
+    assert repo.material_rows[0].future_leakage_guard_json["uses_future_klines"] is False
+
+
+def test_future_leakage_guard_blocks_rows_after_snapshot_window() -> None:
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(signal("trend_structure", direction="bullish_bias", risk="low", strength="0.80"),),
+        restored_snapshot=restored_snapshot(future_base_row=True),
+    )
+
+    result = service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request())
+
+    assert result.status == StrategyAggregationStatus.BLOCKED
+    assert result.error_code == "future_leakage_guard_failed"
+    assert repo.aggregation_rows == []
+
+
+def test_same_strategy_signal_run_version_is_skipped_when_existing() -> None:
+    existing = SimpleNamespace(
+        aggregation_run_id="SAR-existing",
+        snapshot_id="MCS-stage18",
+        status="success",
+        candidate_direction="long",
+        risk_level="low",
+        risk_gate_status="pass",
+        conflict_level="low",
+        input_strategy_count=2,
+        input_success_count=2,
+        input_failed_count=0,
+        input_invalid_count=0,
+        input_not_implemented_count=0,
+        effective_strategy_count=2,
+    )
+    repo = FakeAggregationRepository(strategy_run=strategy_run(), existing=existing)
+
+    result = service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+
+    assert result.status == StrategyAggregationStatus.SKIPPED
+    assert result.aggregation_run_id == "SAR-existing"
+    assert repo.result_calls == 0
+
+
+def test_hermes_off_does_not_send_and_on_records_status() -> None:
+    off_alert = FakeAlertSender()
+    off_repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(signal("trend_structure", direction="bullish_bias", risk="low", strength="0.80"),),
+        restored_snapshot=restored_snapshot(),
+    )
+    off_result = service_with_repo(off_repo, alert=off_alert).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+
+    on_alert = FakeAlertSender()
+    on_repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(signal("trend_structure", direction="bullish_bias", risk="low", strength="0.80"),),
+        restored_snapshot=restored_snapshot(),
+    )
+    on_settings = AppSettings(strategy_aggregation_hermes_enabled=True)
+    on_result = service_with_repo(on_repo, settings=on_settings, alert=on_alert).run_strategy_aggregation(
+        FakeSession(),
+        request=run_request(confirm=True),
+    )
+
+    assert off_result.hermes_status.value == "disabled"
+    assert off_alert.calls == []
+    assert on_result.hermes_status.value == "sent"
+    assert len(on_alert.calls) == 1
+    body = on_repo.aggregation_rows[0].hermes_message
+    assert "strategy aggregation candidate" in body
+    assert "not final trading advice" in body
+    assert "did not call a large model" in body
+    assert "did not auto-trade" in body
+
+
+def test_cli_dry_run_and_confirm_write_only_call_stage18_service(monkeypatch: Any, capsys: Any) -> None:
+    fake_session = object()
+    captured: list[StrategyAggregationRequest] = []
+
+    @contextmanager
+    def fake_session_scope(**_kwargs: Any) -> Any:
+        yield fake_session
+
+    def fake_run_strategy_aggregation(*, db_session: Any, request: StrategyAggregationRequest) -> Any:
+        assert db_session is fake_session
+        captured.append(request)
+        return SimpleNamespace(
+            status=StrategyAggregationStatus.SUCCESS,
+            exit_code=0,
+            aggregation_run_id="SAR-test",
+            material_pack_id="AMP-test" if request.confirm_write else "",
+            strategy_signal_run_id=request.strategy_signal_run_id,
+            snapshot_id="MCS-test",
+            candidate_direction=CandidateDirection.LONG,
+            risk_level=SimpleNamespace(value="low"),
+            risk_gate_status=SimpleNamespace(value="pass"),
+            conflict_level=SimpleNamespace(value="low"),
+            message="ok",
+            error_message="",
+        )
+
+    monkeypatch.setattr(aggregation_cli, "session_scope", fake_session_scope)
+    monkeypatch.setattr(aggregation_cli, "run_strategy_aggregation", fake_run_strategy_aggregation)
+
+    dry_exit = aggregation_cli.main(["--strategy-signal-run-id", "SSR-test", "--trigger-source", "cli"])
+    dry_output = _captured_key_values(capsys)
+    confirm_exit = aggregation_cli.main(
+        ["--strategy-signal-run-id", "SSR-test", "--trigger-source", "cli", "--confirm-write"]
+    )
+    confirm_output = _captured_key_values(capsys)
+
+    assert dry_exit == 0
+    assert dry_output["material_pack_id"] == ""
+    assert captured[0].dry_run is True
+    assert captured[0].confirm_write is False
+    assert confirm_exit == 0
+    assert confirm_output["material_pack_id"] == "AMP-test"
+    assert captured[1].dry_run is False
+    assert captured[1].confirm_write is True
+
+
+def test_stage18_source_does_not_call_stage15_stage16_llm_or_binance() -> None:
+    import app.strategy.aggregation.repository as repository_module
+    import app.strategy.aggregation.service as service_module
+    import scripts.run_strategy_aggregation as script_module
+
+    source = "\n".join(inspect.getsource(module) for module in (repository_module, service_module, script_module))
+
+    assert "from app.strategy.signal_service" not in source
+    assert "scripts.run_strategy_signals" not in source
+    assert "from app.market_context.snapshot_service" not in source
+    assert "MarketContextSnapshotService" not in source
+    assert "BinanceRestClient" not in source
+    assert "DeepSeekClient" not in source
+    assert "openai" not in source.lower()
+    assert "/fapi/v1" not in source
+
+
+def test_material_pack_does_not_generate_final_advice_fields() -> None:
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(signal("trend_structure", direction="bullish_bias", risk="low", strength="0.80"),),
+        restored_snapshot=restored_snapshot(),
+    )
+    service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+    payload = {
+        "aggregation": repo.aggregation_rows[0].__dict__,
+        "material": repo.material_rows[0].__dict__,
+    }
+    text = json.dumps(payload, ensure_ascii=False, default=str)
+
+    for forbidden in ("final_advice", "open_position", "close_position", "take_profit", "stop_loss", "leverage"):
+        assert forbidden not in text
+
+
+def _captured_key_values(capsys: Any) -> dict[str, str]:
+    captured = capsys.readouterr().out.strip().splitlines()
+    return dict(line.split("=", 1) for line in captured if "=" in line)

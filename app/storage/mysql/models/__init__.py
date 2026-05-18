@@ -6,6 +6,7 @@ It does not execute migrations, send Hermes, read/write Redis, request Binance,
 call DeepSeek, or perform trading.
 
 Current model modules include alert messages, formal 4h/1d Kline tables,
-quality checks, collector event logs, MarketContextSnapshot, and stage-16
-strategy signal run/result tables.
+quality checks, collector event logs, MarketContextSnapshot, stage-16
+strategy signal run/result tables, stage-17 scheduler events, and stage-18
+strategy aggregation/material-pack tables.
 """

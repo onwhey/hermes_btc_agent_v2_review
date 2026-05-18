@@ -7,11 +7,14 @@ scripts/run_scheduler.py::main
     -> app/scheduler/jobs/kline_4h_incremental_collect.py::run_kline_4h_incremental_collect_job
     -> app/scheduler/jobs/strategy_signal_scheduler_job.py::run_strategy_signal_scheduler_after_collect_job
     -> app/strategy/signal_service.py::StrategySignalService.run_strategy_signals
+    -> app/scheduler/jobs/strategy_aggregation_job.py::run_strategy_aggregation_after_signal_job
+    -> app/strategy/aggregation/service.py::run_strategy_aggregation
     -> app/scheduler/jobs/daily_kline_integrity_check.py::run_daily_kline_integrity_check_job
 
 This file belongs to `app/scheduler`. It polls UTC time, separates Redis
 running locks from completed markers, and calls thin scheduler jobs for phases
-09, 11, 14, and the stage-17 strategy-signal orchestration hook. It does not
+09, 11, 14, the stage-17 strategy-signal hook, and the optional stage-18
+aggregation hook. It does not
 call strategy scripts, request Binance directly, read/write `bitcoin_price`,
 implement collector business checks, call DeepSeek, generate final advice, or
 perform trading.
@@ -53,6 +56,7 @@ DAILY_1D_JOB_CATCH_UP_WINDOW = timedelta(hours=2)
 
 JobCallable = Callable[[], Any]
 StrategySignalAfterCollectCallable = Callable[..., Any]
+StrategyAggregationAfterSignalCallable = Callable[..., Any]
 AlertSender = Callable[..., Any]
 
 
@@ -103,6 +107,7 @@ class SchedulerRunner:
         kline_1d_integrity_job: JobCallable | None = None,
         daily_integrity_job: JobCallable | None = None,
         strategy_signal_after_collect_job: StrategySignalAfterCollectCallable | None = None,
+        strategy_aggregation_after_signal_job: StrategyAggregationAfterSignalCallable | None = None,
         alert_sender: AlertSender | None = None,
         sleep_fn: Callable[[float], None] = time_module.sleep,
     ) -> None:
@@ -114,6 +119,9 @@ class SchedulerRunner:
         self.kline_1d_integrity_job = kline_1d_integrity_job or _default_kline_1d_integrity_job
         self.daily_integrity_job = daily_integrity_job or _default_daily_integrity_job
         self.strategy_signal_after_collect_job = strategy_signal_after_collect_job or _default_strategy_signal_after_collect_job
+        self.strategy_aggregation_after_signal_job = (
+            strategy_aggregation_after_signal_job or _default_strategy_aggregation_after_signal_job
+        )
         self.alert_sender = alert_sender or _default_alert_sender
         self.sleep_fn = sleep_fn
         self._slot_log_throttle = SchedulerSlotLogThrottle(config.slot_log_cooldown_seconds)
@@ -371,7 +379,16 @@ class SchedulerRunner:
                 settings=self.settings,
                 config=self.config,
             )
-            return {"strategy_signal_scheduler": _strategy_scheduler_result_details(scheduler_result)}
+            details = {"strategy_signal_scheduler": _strategy_scheduler_result_details(scheduler_result)}
+            aggregation_details = self._run_strategy_aggregation_post_signal_if_needed(
+                due_job,
+                strategy_signal_scheduler_result=scheduler_result,
+                trace_id=trace_id,
+                current_time_utc=current_time_utc,
+            )
+            if aggregation_details:
+                details["strategy_aggregation"] = aggregation_details
+            return details
         except Exception as exc:  # noqa: BLE001 - post-hook failures must not rewrite collector result.
             LOGGER.exception("strategy signal scheduler post-collect hook failed job=%s", due_job.name)
             self._send_scheduler_system_alert(
@@ -387,6 +404,44 @@ class SchedulerRunner:
                     "error_type": exc.__class__.__name__,
                     "error_message": str(exc),
                 }
+            }
+
+    def _run_strategy_aggregation_post_signal_if_needed(
+        self,
+        due_job: DueSchedulerJob,
+        *,
+        strategy_signal_scheduler_result: Any,
+        trace_id: str,
+        current_time_utc: datetime,
+    ) -> dict[str, object]:
+        """Run stage-18 only after stage-17 success/partial_success and config opt-in."""
+
+        status = _result_status_text(strategy_signal_scheduler_result)
+        if status not in {"success", "partial_success"}:
+            return {}
+        if not self.config.strategy_aggregation_auto_run_enabled:
+            return {"status": "disabled"}
+        try:
+            aggregation_result = self.strategy_aggregation_after_signal_job(
+                strategy_signal_scheduler_result=strategy_signal_scheduler_result,
+                current_time_utc=current_time_utc,
+                settings=self.settings,
+                config=self.config,
+            )
+            return _strategy_aggregation_result_details(aggregation_result)
+        except Exception as exc:  # noqa: BLE001 - aggregation hook must not rewrite stage-17 or collector result.
+            LOGGER.exception("strategy aggregation post-signal hook failed job=%s", due_job.name)
+            self._send_scheduler_system_alert(
+                trace_id=trace_id,
+                job_name=due_job.name,
+                summary="Strategy aggregation post-signal hook failed.",
+                error=exc,
+                details={"slot": due_job.slot_id, "slot_time_utc": due_job.slot_time_utc.isoformat()},
+            )
+            return {
+                "status": "failed",
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc),
             }
 
     def _release_and_return_record(
@@ -614,6 +669,12 @@ def _default_strategy_signal_after_collect_job(*args: Any, **kwargs: Any) -> Any
     return run_strategy_signal_scheduler_after_collect_job(*args, **kwargs)
 
 
+def _default_strategy_aggregation_after_signal_job(*args: Any, **kwargs: Any) -> Any:
+    from app.scheduler.jobs.strategy_aggregation_job import run_strategy_aggregation_after_signal_job
+
+    return run_strategy_aggregation_after_signal_job(*args, **kwargs)
+
+
 def _default_alert_sender(*args: Any, **kwargs: Any) -> Any:
     from app.alerting.service import send_alert
 
@@ -825,6 +886,26 @@ def _strategy_scheduler_result_details(result: Any) -> dict[str, object]:
         "failed_count": getattr(result, "failed_count", 0),
         "invalid_count": getattr(result, "invalid_count", 0),
         "not_implemented_count": getattr(result, "not_implemented_count", 0),
+        "hermes_status": str(getattr(hermes_status, "value", hermes_status)),
+        "message": getattr(result, "message", ""),
+    }
+
+
+def _strategy_aggregation_result_details(result: Any) -> dict[str, object]:
+    status = getattr(result, "status", "")
+    candidate_direction = getattr(result, "candidate_direction", "")
+    risk_level = getattr(result, "risk_level", "")
+    conflict_level = getattr(result, "conflict_level", "")
+    hermes_status = getattr(result, "hermes_status", "")
+    return {
+        "status": str(getattr(status, "value", status)),
+        "aggregation_run_id": getattr(result, "aggregation_run_id", None),
+        "material_pack_id": getattr(result, "material_pack_id", None),
+        "strategy_signal_run_id": getattr(result, "strategy_signal_run_id", None),
+        "snapshot_id": getattr(result, "snapshot_id", None),
+        "candidate_direction": str(getattr(candidate_direction, "value", candidate_direction)),
+        "risk_level": str(getattr(risk_level, "value", risk_level)),
+        "conflict_level": str(getattr(conflict_level, "value", conflict_level)),
         "hermes_status": str(getattr(hermes_status, "value", hermes_status)),
         "message": getattr(result, "message", ""),
     }

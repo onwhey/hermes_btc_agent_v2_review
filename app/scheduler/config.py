@@ -67,6 +67,7 @@ class SchedulerRuntimeConfig:
     strategy_signal_hermes_notify_failed: bool = True
     strategy_signal_hermes_notify_skipped: bool = False
     strategy_signal_scheduler_running_timeout_seconds: int = 900
+    strategy_aggregation_auto_run_enabled: bool = False
 
 
 def build_scheduler_runtime_config(
@@ -137,6 +138,7 @@ def build_scheduler_runtime_config(
         strategy_signal_scheduler_running_timeout_seconds=(
             active_settings.strategy_signal_scheduler_running_timeout_seconds
         ),
+        strategy_aggregation_auto_run_enabled=active_settings.strategy_aggregation_auto_run_enabled,
     )
     validate_scheduler_runtime_config(config)
     return config

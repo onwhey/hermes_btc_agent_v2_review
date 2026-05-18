@@ -57,6 +57,32 @@ docs/implementation/ 每个模块完成后的实现说明
 09_4h_incremental_collector.md
 10_price_monitor_10s.md
 11_daily_kline_integrity_check.md
+15_market_context_snapshot.md
+16_strategy_signal_framework.md
+17_strategy_signal_scheduler_plan.md
+18_strategy_aggregation_material_pack.md
+```
+
+## 第 18 阶段手动聚合检查
+
+第 18 只做策略聚合和数学材料包构建，不调用大模型，不生成最终交易建议，不自动交易。
+
+默认 dry-run：
+
+```bash
+python -m scripts.run_strategy_aggregation --strategy-signal-run-id <run_id> --trigger-source cli
+```
+
+确认写入：
+
+```bash
+python -m scripts.run_strategy_aggregation --strategy-signal-run-id <run_id> --trigger-source cli --confirm-write
+```
+
+自动接在第 17 后面需要显式开启：
+
+```env
+STRATEGY_AGGREGATION_AUTO_RUN_ENABLED=true
 ```
 
 ## 01 项目骨架本地检查

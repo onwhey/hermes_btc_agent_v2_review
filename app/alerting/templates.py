@@ -41,6 +41,7 @@ TEMPLATE_TITLES: Mapping[AlertType, str] = {
     AlertType.KLINE_INTEGRITY_CHECK_PASSED: "K 线健康检查通过提醒",
     AlertType.MANUAL_BACKFILL_NOTICE: "手动补 K 已安全阻断",
     AlertType.STRATEGY_SIGNAL_SCHEDULER: "策略信号调度提醒",
+    AlertType.STRATEGY_AGGREGATION: "策略聚合提醒",
     AlertType.MANUAL_TEST_ALERT: "人工测试提醒",
 }
 

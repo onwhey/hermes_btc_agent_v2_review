@@ -61,6 +61,7 @@ class AlertType(str, Enum):
     KLINE_INTEGRITY_CHECK_PASSED = "kline_integrity_check_passed"
     MANUAL_BACKFILL_NOTICE = "manual_backfill_notice"
     STRATEGY_SIGNAL_SCHEDULER = "strategy_signal_scheduler"
+    STRATEGY_AGGREGATION = "strategy_aggregation"
     MANUAL_TEST_ALERT = "manual_test_alert"
 
 

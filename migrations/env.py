@@ -26,6 +26,7 @@ from app.storage.mysql.models import data_quality_check as _data_quality_check_m
 from app.storage.mysql.models import market_context_snapshot as _market_context_snapshot_model  # noqa: F401
 from app.storage.mysql.models import market_kline_1d as _market_kline_1d_model  # noqa: F401
 from app.storage.mysql.models import market_kline_4h as _market_kline_4h_model  # noqa: F401
+from app.storage.mysql.models import strategy_aggregation as _strategy_aggregation_model  # noqa: F401
 from app.storage.mysql.models import strategy_signal as _strategy_signal_model  # noqa: F401
 from app.storage.mysql.models import strategy_signal_scheduler_event as _strategy_signal_scheduler_event_model  # noqa: F401
 

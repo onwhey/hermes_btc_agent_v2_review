@@ -88,6 +88,13 @@ from app.core.constants import (
     DEFAULT_MARKET_CONTEXT_BASE_INTERVAL,
     DEFAULT_MARKET_CONTEXT_HIGHER_INTERVAL,
     DEFAULT_MARKET_CONTEXT_SYMBOL,
+    DEFAULT_STRATEGY_AGGREGATION_AUTO_RUN_ENABLED,
+    DEFAULT_STRATEGY_AGGREGATION_HERMES_ENABLED,
+    DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_BLOCKED,
+    DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_FAILED,
+    DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_PARTIAL_SUCCESS,
+    DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED,
+    DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SUCCESS,
     DEFAULT_STRATEGY_SIGNAL_BASE_INTERVAL,
     DEFAULT_STRATEGY_SIGNAL_HERMES_ENABLED,
     DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_BLOCKED,
@@ -218,6 +225,13 @@ class AppSettings:
     strategy_signal_scheduler_running_timeout_seconds: int = (
         DEFAULT_STRATEGY_SIGNAL_SCHEDULER_RUNNING_TIMEOUT_SECONDS
     )
+    strategy_aggregation_auto_run_enabled: bool = DEFAULT_STRATEGY_AGGREGATION_AUTO_RUN_ENABLED
+    strategy_aggregation_hermes_enabled: bool = DEFAULT_STRATEGY_AGGREGATION_HERMES_ENABLED
+    strategy_aggregation_hermes_notify_success: bool = DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SUCCESS
+    strategy_aggregation_hermes_notify_partial_success: bool = DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_PARTIAL_SUCCESS
+    strategy_aggregation_hermes_notify_blocked: bool = DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_BLOCKED
+    strategy_aggregation_hermes_notify_failed: bool = DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_FAILED
+    strategy_aggregation_hermes_notify_skipped: bool = DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED
     hermes_webhook_url: str = ""
     hermes_secret: str = ""
     hermes_timeout_seconds: float = DEFAULT_HERMES_TIMEOUT_SECONDS
@@ -969,6 +983,69 @@ def load_settings(
             ),
             "STRATEGY_SIGNAL_SCHEDULER_RUNNING_TIMEOUT_SECONDS",
             DEFAULT_STRATEGY_SIGNAL_SCHEDULER_RUNNING_TIMEOUT_SECONDS,
+        ),
+        strategy_aggregation_auto_run_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_AGGREGATION_AUTO_RUN_ENABLED",
+                str(DEFAULT_STRATEGY_AGGREGATION_AUTO_RUN_ENABLED).lower(),
+            ),
+            "STRATEGY_AGGREGATION_AUTO_RUN_ENABLED",
+            DEFAULT_STRATEGY_AGGREGATION_AUTO_RUN_ENABLED,
+        ),
+        strategy_aggregation_hermes_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_AGGREGATION_HERMES_ENABLED",
+                str(DEFAULT_STRATEGY_AGGREGATION_HERMES_ENABLED).lower(),
+            ),
+            "STRATEGY_AGGREGATION_HERMES_ENABLED",
+            DEFAULT_STRATEGY_AGGREGATION_HERMES_ENABLED,
+        ),
+        strategy_aggregation_hermes_notify_success=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_AGGREGATION_HERMES_NOTIFY_SUCCESS",
+                str(DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SUCCESS).lower(),
+            ),
+            "STRATEGY_AGGREGATION_HERMES_NOTIFY_SUCCESS",
+            DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SUCCESS,
+        ),
+        strategy_aggregation_hermes_notify_partial_success=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_AGGREGATION_HERMES_NOTIFY_PARTIAL_SUCCESS",
+                str(DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_PARTIAL_SUCCESS).lower(),
+            ),
+            "STRATEGY_AGGREGATION_HERMES_NOTIFY_PARTIAL_SUCCESS",
+            DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_PARTIAL_SUCCESS,
+        ),
+        strategy_aggregation_hermes_notify_blocked=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_AGGREGATION_HERMES_NOTIFY_BLOCKED",
+                str(DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_BLOCKED).lower(),
+            ),
+            "STRATEGY_AGGREGATION_HERMES_NOTIFY_BLOCKED",
+            DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_BLOCKED,
+        ),
+        strategy_aggregation_hermes_notify_failed=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_AGGREGATION_HERMES_NOTIFY_FAILED",
+                str(DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_FAILED).lower(),
+            ),
+            "STRATEGY_AGGREGATION_HERMES_NOTIFY_FAILED",
+            DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_FAILED,
+        ),
+        strategy_aggregation_hermes_notify_skipped=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED",
+                str(DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED).lower(),
+            ),
+            "STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED",
+            DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED,
         ),
         hermes_webhook_url=_get_config_value(merged_values, "HERMES_WEBHOOK_URL"),
         hermes_secret=_get_config_value(merged_values, "HERMES_SECRET"),
