@@ -56,6 +56,17 @@ class SchedulerRuntimeConfig:
     daily_kline_1d_integrity_notify_success: bool
     daily_kline_1d_integrity_lock_ttl_seconds: int
     daily_kline_1d_integrity_utc_time: time
+    strategy_signal_scheduler_enabled: bool = False
+    strategy_signal_symbol: str = "BTCUSDT"
+    strategy_signal_base_interval: str = "4h"
+    strategy_signal_higher_interval: str = "1d"
+    strategy_signal_hermes_enabled: bool = False
+    strategy_signal_hermes_notify_success: bool = True
+    strategy_signal_hermes_notify_partial_success: bool = True
+    strategy_signal_hermes_notify_blocked: bool = True
+    strategy_signal_hermes_notify_failed: bool = True
+    strategy_signal_hermes_notify_skipped: bool = False
+    strategy_signal_scheduler_running_timeout_seconds: int = 900
 
 
 def build_scheduler_runtime_config(
@@ -110,6 +121,21 @@ def build_scheduler_runtime_config(
         daily_kline_1d_integrity_utc_time=_parse_utc_hhmm(
             active_settings.daily_kline_1d_integrity_utc_time,
             key="DAILY_KLINE_1D_INTEGRITY_UTC_TIME",
+        ),
+        strategy_signal_scheduler_enabled=active_settings.strategy_signal_scheduler_enabled,
+        strategy_signal_symbol=active_settings.strategy_signal_symbol.strip().upper(),
+        strategy_signal_base_interval=active_settings.strategy_signal_base_interval,
+        strategy_signal_higher_interval=active_settings.strategy_signal_higher_interval,
+        strategy_signal_hermes_enabled=active_settings.strategy_signal_hermes_enabled,
+        strategy_signal_hermes_notify_success=active_settings.strategy_signal_hermes_notify_success,
+        strategy_signal_hermes_notify_partial_success=(
+            active_settings.strategy_signal_hermes_notify_partial_success
+        ),
+        strategy_signal_hermes_notify_blocked=active_settings.strategy_signal_hermes_notify_blocked,
+        strategy_signal_hermes_notify_failed=active_settings.strategy_signal_hermes_notify_failed,
+        strategy_signal_hermes_notify_skipped=active_settings.strategy_signal_hermes_notify_skipped,
+        strategy_signal_scheduler_running_timeout_seconds=(
+            active_settings.strategy_signal_scheduler_running_timeout_seconds
         ),
     )
     validate_scheduler_runtime_config(config)
@@ -167,6 +193,14 @@ def validate_scheduler_runtime_config(config: SchedulerRuntimeConfig) -> None:
         raise ConfigError("DAILY_KLINE_1D_INTEGRITY_LIMIT must be greater than 0")
     if config.daily_kline_1d_integrity_lock_ttl_seconds <= 0:
         raise ConfigError("DAILY_KLINE_1D_INTEGRITY_LOCK_TTL_SECONDS must be greater than 0")
+    if not config.strategy_signal_symbol:
+        raise ConfigError("STRATEGY_SIGNAL_SYMBOLS must not be empty")
+    if config.strategy_signal_base_interval != KLINE_4H_INTERVAL_VALUE:
+        raise ConfigError("STRATEGY_SIGNAL_BASE_INTERVAL must be 4h")
+    if config.strategy_signal_higher_interval != KLINE_1D_INTERVAL_VALUE:
+        raise ConfigError("STRATEGY_SIGNAL_HIGHER_INTERVAL must be 1d")
+    if config.strategy_signal_scheduler_running_timeout_seconds <= 0:
+        raise ConfigError("STRATEGY_SIGNAL_SCHEDULER_RUNNING_TIMEOUT_SECONDS must be greater than 0")
 
 
 def _parse_utc_hhmm(raw_value: str, *, key: str) -> time:

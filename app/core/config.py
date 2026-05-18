@@ -88,6 +88,17 @@ from app.core.constants import (
     DEFAULT_MARKET_CONTEXT_BASE_INTERVAL,
     DEFAULT_MARKET_CONTEXT_HIGHER_INTERVAL,
     DEFAULT_MARKET_CONTEXT_SYMBOL,
+    DEFAULT_STRATEGY_SIGNAL_BASE_INTERVAL,
+    DEFAULT_STRATEGY_SIGNAL_HERMES_ENABLED,
+    DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_BLOCKED,
+    DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_FAILED,
+    DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_PARTIAL_SUCCESS,
+    DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_SKIPPED,
+    DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_SUCCESS,
+    DEFAULT_STRATEGY_SIGNAL_HIGHER_INTERVAL,
+    DEFAULT_STRATEGY_SIGNAL_SCHEDULER_ENABLED,
+    DEFAULT_STRATEGY_SIGNAL_SCHEDULER_RUNNING_TIMEOUT_SECONDS,
+    DEFAULT_STRATEGY_SIGNAL_SYMBOL,
     DEFAULT_SYMBOL,
     DEFAULT_TIMEZONE,
     SENSITIVE_FIELD_NAMES,
@@ -194,6 +205,19 @@ class AppSettings:
     market_context_higher_interval: str = DEFAULT_MARKET_CONTEXT_HIGHER_INTERVAL
     market_context_4h_lookback_count: int = DEFAULT_MARKET_CONTEXT_4H_LOOKBACK_COUNT
     market_context_1d_lookback_count: int = DEFAULT_MARKET_CONTEXT_1D_LOOKBACK_COUNT
+    strategy_signal_scheduler_enabled: bool = DEFAULT_STRATEGY_SIGNAL_SCHEDULER_ENABLED
+    strategy_signal_symbol: str = DEFAULT_STRATEGY_SIGNAL_SYMBOL
+    strategy_signal_base_interval: str = DEFAULT_STRATEGY_SIGNAL_BASE_INTERVAL
+    strategy_signal_higher_interval: str = DEFAULT_STRATEGY_SIGNAL_HIGHER_INTERVAL
+    strategy_signal_hermes_enabled: bool = DEFAULT_STRATEGY_SIGNAL_HERMES_ENABLED
+    strategy_signal_hermes_notify_success: bool = DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_SUCCESS
+    strategy_signal_hermes_notify_partial_success: bool = DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_PARTIAL_SUCCESS
+    strategy_signal_hermes_notify_blocked: bool = DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_BLOCKED
+    strategy_signal_hermes_notify_failed: bool = DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_FAILED
+    strategy_signal_hermes_notify_skipped: bool = DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_SKIPPED
+    strategy_signal_scheduler_running_timeout_seconds: int = (
+        DEFAULT_STRATEGY_SIGNAL_SCHEDULER_RUNNING_TIMEOUT_SECONDS
+    )
     hermes_webhook_url: str = ""
     hermes_secret: str = ""
     hermes_timeout_seconds: float = DEFAULT_HERMES_TIMEOUT_SECONDS
@@ -858,6 +882,93 @@ def load_settings(
             ),
             "MARKET_CONTEXT_1D_LOOKBACK_COUNT",
             DEFAULT_MARKET_CONTEXT_1D_LOOKBACK_COUNT,
+        ),
+        strategy_signal_scheduler_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_SIGNAL_SCHEDULER_ENABLED",
+                str(DEFAULT_STRATEGY_SIGNAL_SCHEDULER_ENABLED).lower(),
+            ),
+            "STRATEGY_SIGNAL_SCHEDULER_ENABLED",
+            DEFAULT_STRATEGY_SIGNAL_SCHEDULER_ENABLED,
+        ),
+        strategy_signal_symbol=_get_config_value(
+            merged_values,
+            "STRATEGY_SIGNAL_SYMBOLS",
+            DEFAULT_STRATEGY_SIGNAL_SYMBOL,
+        ),
+        strategy_signal_base_interval=_get_config_value(
+            merged_values,
+            "STRATEGY_SIGNAL_BASE_INTERVAL",
+            DEFAULT_STRATEGY_SIGNAL_BASE_INTERVAL,
+        ),
+        strategy_signal_higher_interval=_get_config_value(
+            merged_values,
+            "STRATEGY_SIGNAL_HIGHER_INTERVAL",
+            DEFAULT_STRATEGY_SIGNAL_HIGHER_INTERVAL,
+        ),
+        strategy_signal_hermes_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_SIGNAL_HERMES_ENABLED",
+                str(DEFAULT_STRATEGY_SIGNAL_HERMES_ENABLED).lower(),
+            ),
+            "STRATEGY_SIGNAL_HERMES_ENABLED",
+            DEFAULT_STRATEGY_SIGNAL_HERMES_ENABLED,
+        ),
+        strategy_signal_hermes_notify_success=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_SIGNAL_HERMES_NOTIFY_SUCCESS",
+                str(DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_SUCCESS).lower(),
+            ),
+            "STRATEGY_SIGNAL_HERMES_NOTIFY_SUCCESS",
+            DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_SUCCESS,
+        ),
+        strategy_signal_hermes_notify_partial_success=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_SIGNAL_HERMES_NOTIFY_PARTIAL_SUCCESS",
+                str(DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_PARTIAL_SUCCESS).lower(),
+            ),
+            "STRATEGY_SIGNAL_HERMES_NOTIFY_PARTIAL_SUCCESS",
+            DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_PARTIAL_SUCCESS,
+        ),
+        strategy_signal_hermes_notify_blocked=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_SIGNAL_HERMES_NOTIFY_BLOCKED",
+                str(DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_BLOCKED).lower(),
+            ),
+            "STRATEGY_SIGNAL_HERMES_NOTIFY_BLOCKED",
+            DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_BLOCKED,
+        ),
+        strategy_signal_hermes_notify_failed=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_SIGNAL_HERMES_NOTIFY_FAILED",
+                str(DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_FAILED).lower(),
+            ),
+            "STRATEGY_SIGNAL_HERMES_NOTIFY_FAILED",
+            DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_FAILED,
+        ),
+        strategy_signal_hermes_notify_skipped=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_SIGNAL_HERMES_NOTIFY_SKIPPED",
+                str(DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_SKIPPED).lower(),
+            ),
+            "STRATEGY_SIGNAL_HERMES_NOTIFY_SKIPPED",
+            DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_SKIPPED,
+        ),
+        strategy_signal_scheduler_running_timeout_seconds=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_SIGNAL_SCHEDULER_RUNNING_TIMEOUT_SECONDS",
+                str(DEFAULT_STRATEGY_SIGNAL_SCHEDULER_RUNNING_TIMEOUT_SECONDS),
+            ),
+            "STRATEGY_SIGNAL_SCHEDULER_RUNNING_TIMEOUT_SECONDS",
+            DEFAULT_STRATEGY_SIGNAL_SCHEDULER_RUNNING_TIMEOUT_SECONDS,
         ),
         hermes_webhook_url=_get_config_value(merged_values, "HERMES_WEBHOOK_URL"),
         hermes_secret=_get_config_value(merged_values, "HERMES_SECRET"),

@@ -5,13 +5,16 @@ scripts/run_scheduler.py::main
     -> app/scheduler/runner.py::run_scheduler_forever
     -> app/scheduler/runner.py::SchedulerRunner.run_once
     -> app/scheduler/jobs/kline_4h_incremental_collect.py::run_kline_4h_incremental_collect_job
+    -> app/scheduler/jobs/strategy_signal_scheduler_job.py::run_strategy_signal_scheduler_after_collect_job
+    -> app/strategy/signal_service.py::StrategySignalService.run_strategy_signals
     -> app/scheduler/jobs/daily_kline_integrity_check.py::run_daily_kline_integrity_check_job
 
 This file belongs to `app/scheduler`. It polls UTC time, separates Redis
 running locks from completed markers, and calls thin scheduler jobs for phases
-09 and 11. It does not call scripts, request Binance directly, read/write
-business MySQL tables, read/write `bitcoin_price`, implement 09/11 business
-checks, call DeepSeek, generate advice, or perform trading.
+09, 11, 14, and the stage-17 strategy-signal orchestration hook. It does not
+call strategy scripts, request Binance directly, read/write `bitcoin_price`,
+implement collector business checks, call DeepSeek, generate final advice, or
+perform trading.
 """
 
 from __future__ import annotations
@@ -49,6 +52,7 @@ DAILY_INTEGRITY_CATCH_UP_WINDOW = timedelta(hours=2)
 DAILY_1D_JOB_CATCH_UP_WINDOW = timedelta(hours=2)
 
 JobCallable = Callable[[], Any]
+StrategySignalAfterCollectCallable = Callable[..., Any]
 AlertSender = Callable[..., Any]
 
 
@@ -98,6 +102,7 @@ class SchedulerRunner:
         kline_1d_job: JobCallable | None = None,
         kline_1d_integrity_job: JobCallable | None = None,
         daily_integrity_job: JobCallable | None = None,
+        strategy_signal_after_collect_job: StrategySignalAfterCollectCallable | None = None,
         alert_sender: AlertSender | None = None,
         sleep_fn: Callable[[float], None] = time_module.sleep,
     ) -> None:
@@ -108,6 +113,7 @@ class SchedulerRunner:
         self.kline_1d_job = kline_1d_job or _default_kline_1d_job
         self.kline_1d_integrity_job = kline_1d_integrity_job or _default_kline_1d_integrity_job
         self.daily_integrity_job = daily_integrity_job or _default_daily_integrity_job
+        self.strategy_signal_after_collect_job = strategy_signal_after_collect_job or _default_strategy_signal_after_collect_job
         self.alert_sender = alert_sender or _default_alert_sender
         self.sleep_fn = sleep_fn
         self._slot_log_throttle = SchedulerSlotLogThrottle(config.slot_log_cooldown_seconds)
@@ -280,6 +286,7 @@ class SchedulerRunner:
             )
 
         terminal_status, terminal_reason = _classify_job_result(due_job.name, result)
+        post_collect_details: dict[str, object] = {}
         if terminal_status == SchedulerSlotStatus.COMPLETED:
             marker_written = self._mark_slot_completed_safely(
                 due_job,
@@ -297,6 +304,13 @@ class SchedulerRunner:
                     reason=terminal_reason,
                     trace_id=trace_id,
                     details=_result_details(result),
+                )
+            else:
+                post_collect_details = self._run_strategy_signal_post_collect_if_needed(
+                    due_job,
+                    result=result,
+                    trace_id=trace_id,
+                    current_time_utc=current_time_utc,
                 )
         else:
             self._mark_slot_status_safely(
@@ -325,8 +339,54 @@ class SchedulerRunner:
             status=terminal_status,
             message=f"scheduler slot {terminal_status.value}",
             result=result,
-            details={"terminal_reason": terminal_reason, **_result_details(result)},
+            details={
+                "terminal_reason": terminal_reason,
+                **_result_details(result),
+                **post_collect_details,
+            },
         )
+
+    def _run_strategy_signal_post_collect_if_needed(
+        self,
+        due_job: DueSchedulerJob,
+        *,
+        result: Any,
+        trace_id: str,
+        current_time_utc: datetime,
+    ) -> dict[str, object]:
+        """Run the stage-17 post-collector hook only after collector success."""
+
+        if due_job.name not in {KLINE_4H_INCREMENTAL_JOB_NAME, KLINE_1D_INCREMENTAL_JOB_NAME}:
+            return {}
+        if _result_status_text(result) != "success":
+            return {}
+        if not self.config.strategy_signal_scheduler_enabled:
+            return {"strategy_signal_scheduler": {"status": "disabled"}}
+        try:
+            scheduler_result = self.strategy_signal_after_collect_job(
+                upstream_job_name=due_job.name,
+                upstream_result=result,
+                current_time_utc=current_time_utc,
+                settings=self.settings,
+                config=self.config,
+            )
+            return {"strategy_signal_scheduler": _strategy_scheduler_result_details(scheduler_result)}
+        except Exception as exc:  # noqa: BLE001 - post-hook failures must not rewrite collector result.
+            LOGGER.exception("strategy signal scheduler post-collect hook failed job=%s", due_job.name)
+            self._send_scheduler_system_alert(
+                trace_id=trace_id,
+                job_name=due_job.name,
+                summary="Strategy signal scheduler post-collector hook failed.",
+                error=exc,
+                details={"slot": due_job.slot_id, "slot_time_utc": due_job.slot_time_utc.isoformat()},
+            )
+            return {
+                "strategy_signal_scheduler": {
+                    "status": "failed",
+                    "error_type": exc.__class__.__name__,
+                    "error_message": str(exc),
+                }
+            }
 
     def _release_and_return_record(
         self,
@@ -547,6 +607,12 @@ def _default_daily_integrity_job() -> Any:
     return run_daily_kline_integrity_check_job()
 
 
+def _default_strategy_signal_after_collect_job(*args: Any, **kwargs: Any) -> Any:
+    from app.scheduler.jobs.strategy_signal_scheduler_job import run_strategy_signal_scheduler_after_collect_job
+
+    return run_strategy_signal_scheduler_after_collect_job(*args, **kwargs)
+
+
 def _default_alert_sender(*args: Any, **kwargs: Any) -> Any:
     from app.alerting.service import send_alert
 
@@ -741,6 +807,25 @@ def _result_details(result: Any) -> dict[str, object]:
         "result_trace_id": getattr(result, "trace_id", ""),
         "alert_status": getattr(result, "alert_status", ""),
         **dict(details),
+    }
+
+
+def _strategy_scheduler_result_details(result: Any) -> dict[str, object]:
+    status = getattr(result, "status", "")
+    hermes_status = getattr(result, "hermes_status", "")
+    return {
+        "status": str(getattr(status, "value", status)),
+        "event_id": getattr(result, "event_id", None),
+        "run_id": getattr(result, "run_id", None),
+        "snapshot_id": getattr(result, "snapshot_id", None),
+        "target_base_open_time_ms": getattr(result, "target_base_open_time_ms", None),
+        "strategy_count": getattr(result, "strategy_count", 0),
+        "success_count": getattr(result, "success_count", 0),
+        "failed_count": getattr(result, "failed_count", 0),
+        "invalid_count": getattr(result, "invalid_count", 0),
+        "not_implemented_count": getattr(result, "not_implemented_count", 0),
+        "hermes_status": str(getattr(hermes_status, "value", hermes_status)),
+        "message": getattr(result, "message", ""),
     }
 
 

@@ -632,6 +632,30 @@ def test_signal_service_dry_run_does_not_write_strategy_tables() -> None:
     assert result_repository.create_calls == 0
 
 
+def test_signal_service_accepts_scheduler_trigger_for_stage17_app_call() -> None:
+    session = FakeSession()
+    service = StrategySignalService(
+        input_builder=FakeInputBuilder(),
+        runner=FakeRunner(),
+        result_repository=FailingResultRepository(),
+    )
+
+    result = service.run_strategy_signals(
+        session,
+        request=StrategySignalRunRequest(
+            snapshot_id="MCS-BTCUSDT-4H-1D-created",
+            trigger_source="scheduler",
+            dry_run=True,
+            confirm_write=False,
+            trace_id="trace-scheduler",
+        ),
+    )
+
+    assert result.status == StrategyRunStatus.PARTIAL_SUCCESS
+    assert result.exit_code == EXIT_SUCCESS
+    assert session.added == []
+
+
 def test_signal_service_confirm_write_persists_run_and_independent_results() -> None:
     session = FakeSession()
     service = StrategySignalService(

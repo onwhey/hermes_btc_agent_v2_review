@@ -15,6 +15,10 @@ User CLI
     -> app/strategy/runner.py::run_strategies
     -> app/strategy/result_repository.py::create_strategy_signal_run_with_results
 
+Scheduler stage-17 hook
+    -> app/scheduler/strategy_signal_scheduler_service.py::run_after_collector_success
+    -> app/strategy/signal_service.py::run_strategy_signals
+
 This file does not request Binance, write formal Kline tables, write Redis,
 send Hermes, call DeepSeek or any large language model, read account/position
 state, generate final advice, connect scheduler jobs, or trade.
@@ -28,7 +32,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.core.time_utils import now_utc
-from app.market_data.kline_constants import TRIGGER_SOURCE_CLI
+from app.market_data.kline_constants import TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER
 from app.strategy.input_builder import StrategyInputBuilder
 from app.strategy.result_repository import create_default_strategy_signal_result_repository
 from app.strategy.runner import StrategyRunner
@@ -49,7 +53,7 @@ from app.strategy.types import (
     StrategySignalStatus,
 )
 
-ALLOWED_STRATEGY_TRIGGER_SOURCES = frozenset({TRIGGER_SOURCE_CLI})
+ALLOWED_STRATEGY_TRIGGER_SOURCES = frozenset({TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER})
 
 
 class StrategySignalService:
@@ -377,7 +381,7 @@ def _validate_strategy_signal_run_request(
     if bool(request.snapshot_id) == bool(request.ensure_latest_snapshot):
         problems.append("Exactly one of snapshot_id or ensure_latest_snapshot is required")
     if request.trigger_source not in ALLOWED_STRATEGY_TRIGGER_SOURCES:
-        problems.append("trigger_source supports only cli in stage 16")
+        problems.append("trigger_source supports only cli or scheduler")
     if request.lookback_base_count <= 0:
         problems.append("lookback_base_count must be greater than 0")
     if request.lookback_higher_count <= 0:
