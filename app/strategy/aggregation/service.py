@@ -85,8 +85,17 @@ from app.strategy.aggregation.types import (
     StrategyAggregationStatus,
 )
 
+try:
+    from sqlalchemy.exc import IntegrityError
+except ImportError:  # pragma: no cover - dependencies are managed by pyproject.
+    IntegrityError = None  # type: ignore[assignment]
+
 ALLOWED_AGGREGATION_TRIGGER_SOURCES = frozenset({TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER})
 ALLOWED_INPUT_RUN_STATUSES = frozenset({"success", "partial_success"})
+FINAL_AGGREGATION_STATUSES = (
+    StrategyAggregationStatus.SUCCESS.value,
+    StrategyAggregationStatus.PARTIAL_SUCCESS.value,
+)
 
 
 class StrategyAggregationService:
@@ -144,6 +153,7 @@ class StrategyAggregationService:
                 material_schema_version=MATERIAL_SCHEMA_VERSION,
                 indicator_version=INDICATOR_VERSION,
                 candidate_scenario_version=CANDIDATE_SCENARIO_VERSION,
+                statuses=FINAL_AGGREGATION_STATUSES,
             )
         except Exception as exc:  # noqa: BLE001 - database read failure is a service failure.
             _rollback_if_possible(db_session)
@@ -377,6 +387,14 @@ class StrategyAggregationService:
             _commit_if_possible(db_session)
         except Exception as exc:  # noqa: BLE001 - persistence errors become structured failures.
             _rollback_if_possible(db_session)
+            skipped_result = self._build_skipped_result_after_unique_conflict(
+                db_session,
+                request=request,
+                trace_id=trace_id,
+                exc=exc,
+            )
+            if skipped_result is not None:
+                return skipped_result
             return failed_result(
                 request,
                 aggregation_run_id=aggregation_run_id,
@@ -448,6 +466,14 @@ class StrategyAggregationService:
             _commit_if_possible(db_session)
         except Exception as exc:  # noqa: BLE001
             _rollback_if_possible(db_session)
+            skipped_result = self._build_skipped_result_after_unique_conflict(
+                db_session,
+                request=request,
+                trace_id=trace_id,
+                exc=exc,
+            )
+            if skipped_result is not None:
+                return skipped_result
             return failed_result(
                 request,
                 aggregation_run_id=aggregation_run_id,
@@ -518,8 +544,53 @@ class StrategyAggregationService:
             input_invalid_count=int(getattr(existing, "input_invalid_count", 0) or 0),
             input_not_implemented_count=int(getattr(existing, "input_not_implemented_count", 0) or 0),
             effective_strategy_count=int(getattr(existing, "effective_strategy_count", 0) or 0),
-            message=f"Stage-18 aggregation skipped because existing status={getattr(existing, 'status', '')}.",
+            message=f"Stage-18 aggregation skipped: already_exists existing status={getattr(existing, 'status', '')}.",
             hermes_status=StrategyAggregationHermesStatus.NOT_REQUIRED,
+            details={"skip_reason": "already_exists"},
+        )
+
+    def _build_skipped_result_after_unique_conflict(
+        self,
+        db_session: Any,
+        *,
+        request: StrategyAggregationRequest,
+        trace_id: str,
+        exc: Exception,
+    ) -> StrategyAggregationResult | None:
+        """Convert concurrent final-result unique conflicts into skipped.
+
+        Only success/partial_success material packs are final. If a concurrent
+        run wins the final unique constraint, this attempt re-queries the
+        existing final row and returns skipped/already_exists instead of
+        reporting a failed stage-18 run.
+        """
+
+        if not _is_unique_constraint_error(exc):
+            return None
+        try:
+            existing = self._repository.get_existing_aggregation(
+                db_session,
+                strategy_signal_run_id=request.strategy_signal_run_id,
+                aggregation_version=AGGREGATION_VERSION,
+                material_schema_version=MATERIAL_SCHEMA_VERSION,
+                indicator_version=INDICATOR_VERSION,
+                candidate_scenario_version=CANDIDATE_SCENARIO_VERSION,
+                statuses=FINAL_AGGREGATION_STATUSES,
+            )
+        except Exception:  # noqa: BLE001 - fall back to the original persistence failure.
+            return None
+        if existing is None:
+            return None
+        skipped = self._build_skipped_result_from_existing(
+            db_session,
+            existing=existing,
+            request=request,
+            trace_id=trace_id,
+        )
+        return replace(
+            skipped,
+            message="Stage-18 aggregation skipped: already_exists final success material pack.",
+            details={**dict(skipped.details), "skip_reason": "already_exists", "unique_conflict_recovered": True},
         )
 
     def _record_hermes_and_return(
@@ -670,7 +741,7 @@ def _build_aggregation_run_id(strategy_signal_run_id: str, *, trace_id: str) -> 
         uuid.NAMESPACE_URL,
         f"{strategy_signal_run_id}:{AGGREGATION_VERSION}:{MATERIAL_SCHEMA_VERSION}:{INDICATOR_VERSION}:{CANDIDATE_SCENARIO_VERSION}",
     ).hex[:12]
-    return f"SAR-{stable}-{trace_id[:8]}"
+    return f"SAR-{stable}-{uuid.uuid4().hex[:8]}"
 
 
 def _build_material_pack_id(strategy_signal_run_id: str, *, trace_id: str) -> str:
@@ -678,7 +749,7 @@ def _build_material_pack_id(strategy_signal_run_id: str, *, trace_id: str) -> st
         uuid.NAMESPACE_DNS,
         f"{strategy_signal_run_id}:{MATERIAL_SCHEMA_VERSION}:{INDICATOR_VERSION}:{CANDIDATE_SCENARIO_VERSION}",
     ).hex[:12]
-    return f"AMP-{stable}-{trace_id[:8]}"
+    return f"AMP-{stable}-{uuid.uuid4().hex[:8]}"
 
 
 def _analysis_hypothesis_direction_or_none(value: Any) -> AnalysisHypothesisDirection | None:
@@ -742,8 +813,24 @@ def _alert_severity_for_status(status: StrategyAggregationStatus) -> AlertSeveri
 
 def _alert_title_for_status(status: StrategyAggregationStatus) -> str:
     if status in (StrategyAggregationStatus.SUCCESS, StrategyAggregationStatus.PARTIAL_SUCCESS):
-        return "BTC strategy aggregation result"
-    return "BTC strategy aggregation abnormal"
+        return "BTC 策略聚合分析假设结果"
+    return "BTC 策略聚合分析假设异常"
+
+
+def _is_unique_constraint_error(exc: Exception) -> bool:
+    if IntegrityError is not None and isinstance(exc, IntegrityError):
+        text = str(getattr(exc, "orig", exc)).lower()
+    else:
+        text = f"{exc.__class__.__name__}: {exc}".lower()
+    return any(
+        marker in text
+        for marker in (
+            "unique",
+            "duplicate",
+            "uq_",
+            "uk_",
+        )
+    )
 
 
 def _commit_if_possible(db_session: Any) -> None:

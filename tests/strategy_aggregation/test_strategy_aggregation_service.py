@@ -41,18 +41,29 @@ class FakeAggregationRepository:
         results: tuple[Any, ...] = (),
         restored_snapshot: Any | None = None,
         existing: Any | None = None,
+        existing_after_unique_conflict: Any | None = None,
+        create_material_pack_error: Exception | None = None,
     ) -> None:
         self.strategy_run = strategy_run
         self.results = results
         self.restored_snapshot = restored_snapshot
         self.existing = existing
+        self.existing_after_unique_conflict = existing_after_unique_conflict
+        self.create_material_pack_error = create_material_pack_error
+        self.unique_conflict_raised = False
         self.aggregation_rows: list[Any] = []
         self.material_rows: list[Any] = []
         self.restore_calls: list[str] = []
         self.result_calls = 0
 
-    def get_existing_aggregation(self, _db_session: Any, **_kwargs: Any) -> Any | None:
-        return self.existing
+    def get_existing_aggregation(self, _db_session: Any, **kwargs: Any) -> Any | None:
+        candidate = self.existing
+        if candidate is None and self.unique_conflict_raised:
+            candidate = self.existing_after_unique_conflict
+        statuses = kwargs.get("statuses")
+        if candidate is not None and statuses is not None and getattr(candidate, "status", None) not in statuses:
+            return None
+        return candidate
 
     def get_strategy_signal_run(self, _db_session: Any, *, run_id: str) -> Any | None:
         if self.strategy_run and self.strategy_run.run_id == run_id:
@@ -82,6 +93,9 @@ class FakeAggregationRepository:
         return row
 
     def create_material_pack(self, _db_session: Any, *, payload: Any) -> Any:
+        if self.create_material_pack_error is not None:
+            self.unique_conflict_raised = True
+            raise self.create_material_pack_error
         row = SimpleNamespace(**payload.__dict__)
         row.id = len(self.material_rows) + 1
         self.material_rows.append(row)
@@ -461,6 +475,64 @@ def test_same_strategy_signal_run_version_is_skipped_when_existing() -> None:
     assert result.status == StrategyAggregationStatus.SKIPPED
     assert result.aggregation_run_id == "SAR-existing"
     assert repo.result_calls == 0
+    assert result.details["skip_reason"] == "already_exists"
+
+
+def test_blocked_existing_attempt_does_not_lock_later_success_rerun() -> None:
+    existing_blocked = SimpleNamespace(
+        aggregation_run_id="SAR-blocked",
+        snapshot_id="MCS-stage18",
+        status="blocked",
+    )
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.80"),),
+        restored_snapshot=restored_snapshot(),
+        existing=existing_blocked,
+    )
+
+    result = service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+
+    assert result.status == StrategyAggregationStatus.SUCCESS
+    assert len(repo.aggregation_rows) == 1
+    assert len(repo.material_rows) == 1
+
+
+def test_concurrent_final_unique_conflict_returns_skipped_already_exists() -> None:
+    existing_final = SimpleNamespace(
+        aggregation_run_id="SAR-existing-final",
+        snapshot_id="MCS-stage18",
+        status="success",
+        analysis_hypothesis_direction="long",
+        analysis_hypothesis_confidence="medium",
+        analysis_hypothesis_semantics="analysis_hypothesis_only",
+        direction_projection_source="fixture_or_existing_signal_projection",
+        risk_level="low",
+        risk_gate_status="pass",
+        conflict_level="low",
+        input_strategy_count=2,
+        input_success_count=2,
+        input_failed_count=0,
+        input_invalid_count=0,
+        input_not_implemented_count=0,
+        effective_strategy_count=2,
+    )
+    session = FakeSession()
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.80"),),
+        restored_snapshot=restored_snapshot(),
+        existing_after_unique_conflict=existing_final,
+        create_material_pack_error=RuntimeError("UNIQUE constraint failed: uk_analysis_material_pack_version"),
+    )
+
+    result = service_with_repo(repo).run_strategy_aggregation(session, request=run_request(confirm=True))
+
+    assert result.status == StrategyAggregationStatus.SKIPPED
+    assert result.aggregation_run_id == "SAR-existing-final"
+    assert result.details["skip_reason"] == "already_exists"
+    assert result.details["unique_conflict_recovered"] is True
+    assert session.rollbacks == 1
 
 
 def test_hermes_off_does_not_send_and_on_records_status() -> None:
@@ -488,11 +560,17 @@ def test_hermes_off_does_not_send_and_on_records_status() -> None:
     assert off_alert.calls == []
     assert on_result.hermes_status.value == "sent"
     assert len(on_alert.calls) == 1
+    assert "BTC 策略聚合分析假设" in on_alert.calls[0].title
+    assert "BTC 策略聚合分析假设" in on_alert.calls[0].summary
     body = on_repo.aggregation_rows[0].hermes_message
-    assert "strategy aggregation analysis hypothesis" in body
-    assert "not final trading advice" in body
-    assert "did not call a large model" in body
-    assert "did not auto-trade" in body
+    assert "【标题】BTC 策略聚合分析假设结果" in body
+    assert "【摘要】" in body
+    assert "【原因】" in body
+    assert "【建议动作】" in body
+    assert "这是分析假设，不是策略信号" in body
+    assert "这不是最终交易建议" in body
+    assert "本阶段未调用大模型" in body
+    assert "本阶段未自动交易" in body
 
 
 def test_cli_dry_run_and_confirm_write_only_call_stage18_service(monkeypatch: Any, capsys: Any) -> None:

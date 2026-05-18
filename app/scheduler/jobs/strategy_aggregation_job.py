@@ -25,7 +25,12 @@ from app.market_data.kline_constants import TRIGGER_SOURCE_SCHEDULER
 from app.scheduler.config import SchedulerRuntimeConfig, build_scheduler_runtime_config
 from app.scheduler.strategy_signal_scheduler_types import StrategySignalSchedulerResult
 from app.strategy.aggregation.service import run_strategy_aggregation
-from app.strategy.aggregation.types import StrategyAggregationRequest, StrategyAggregationResult
+from app.strategy.aggregation.types import (
+    EXIT_SUCCESS,
+    StrategyAggregationRequest,
+    StrategyAggregationResult,
+    StrategyAggregationStatus,
+)
 from app.storage.mysql import session as mysql_session
 
 
@@ -51,11 +56,6 @@ def run_strategy_aggregation_after_signal_job(
     active_settings = settings or get_settings()
     active_config = config or build_scheduler_runtime_config(active_settings)
     if not active_config.strategy_aggregation_auto_run_enabled:
-        from app.strategy.aggregation.types import (
-            EXIT_SUCCESS,
-            StrategyAggregationStatus,
-        )
-
         return StrategyAggregationResult(
             status=StrategyAggregationStatus.SKIPPED,
             exit_code=EXIT_SUCCESS,
@@ -68,7 +68,30 @@ def run_strategy_aggregation_after_signal_job(
         )
 
     _ensure_utc(current_time_utc or now_utc())
+    stage17_status = getattr(strategy_signal_scheduler_result, "status", "")
+    if str(getattr(stage17_status, "value", stage17_status)) not in {"success", "partial_success"}:
+        return StrategyAggregationResult(
+            status=StrategyAggregationStatus.SKIPPED,
+            exit_code=EXIT_SUCCESS,
+            aggregation_run_id="",
+            material_pack_id=None,
+            strategy_signal_run_id=str(getattr(strategy_signal_scheduler_result, "run_id", "") or ""),
+            trace_id=str(getattr(strategy_signal_scheduler_result, "trace_id", "") or ""),
+            snapshot_id=getattr(strategy_signal_scheduler_result, "snapshot_id", None),
+            message="Stage-18 scheduler job accepts only stage-17 success or partial_success.",
+        )
     run_id = str(getattr(strategy_signal_scheduler_result, "run_id", "") or "")
+    if not run_id.strip():
+        return StrategyAggregationResult(
+            status=StrategyAggregationStatus.SKIPPED,
+            exit_code=EXIT_SUCCESS,
+            aggregation_run_id="",
+            material_pack_id=None,
+            strategy_signal_run_id="",
+            trace_id=str(getattr(strategy_signal_scheduler_result, "trace_id", "") or ""),
+            snapshot_id=getattr(strategy_signal_scheduler_result, "snapshot_id", None),
+            message="strategy_signal_run_id missing; stage-18 scheduler job did not open a database session.",
+        )
     request = StrategyAggregationRequest(
         strategy_signal_run_id=run_id,
         trigger_source=TRIGGER_SOURCE_SCHEDULER,

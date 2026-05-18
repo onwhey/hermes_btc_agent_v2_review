@@ -157,7 +157,7 @@ def test_scheduler_auto_runs_stage18_only_after_stage17_success() -> None:
     assert records[0].details["strategy_aggregation"]["aggregation_run_id"] == "SAR-test"
 
 
-def test_scheduler_does_not_auto_run_stage18_after_stage17_blocked() -> None:
+def test_scheduler_auto_run_disabled_does_not_call_stage18_job() -> None:
     stage18_calls: list[Any] = []
 
     def collect_job() -> IncrementalKlineCollectResult:
@@ -165,18 +165,92 @@ def test_scheduler_does_not_auto_run_stage18_after_stage17_blocked() -> None:
 
     def stage17_hook(**_kwargs: Any) -> StrategySignalSchedulerResult:
         return StrategySignalSchedulerResult(
-            status=StrategySignalSchedulerStatus.BLOCKED,
-            event_id="SSS-blocked",
-            run_id=None,
-            snapshot_id=None,
+            status=StrategySignalSchedulerStatus.SUCCESS,
+            event_id="SSS-test",
+            run_id="SSR-test",
+            snapshot_id="MCS-test",
             trace_id="trace-17",
-            message="blocked",
+            message="stage17 ok",
             target_base_open_time_ms=1,
         )
 
     def stage18_hook(**kwargs: Any) -> StrategyAggregationResult:
         stage18_calls.append(kwargs)
-        raise AssertionError("stage18 must not run after stage17 blocked")
+        raise AssertionError("stage18 must not run when auto-run is disabled")
+
+    runner = SchedulerRunner(
+        config=runtime_config(strategy_aggregation_auto_run_enabled=False),
+        slot_store=FakeSlotStore(),
+        settings=AppSettings(strategy_aggregation_auto_run_enabled=False),
+        kline_4h_job=collect_job,
+        strategy_signal_after_collect_job=stage17_hook,
+        strategy_aggregation_after_signal_job=stage18_hook,
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(18, 8, 6))
+
+    assert stage18_calls == []
+    assert records[0].details["strategy_aggregation"]["status"] == "disabled"
+
+
+def test_scheduler_does_not_auto_run_stage18_after_stage17_blocked() -> None:
+    stage18_calls: list[Any] = []
+
+    for blocked_status in (StrategySignalSchedulerStatus.BLOCKED, StrategySignalSchedulerStatus.FAILED):
+
+        def collect_job() -> IncrementalKlineCollectResult:
+            return success_collect_result()
+
+        def stage17_hook(**_kwargs: Any) -> StrategySignalSchedulerResult:
+            return StrategySignalSchedulerResult(
+                status=blocked_status,
+                event_id="SSS-blocked",
+                run_id=None,
+                snapshot_id=None,
+                trace_id="trace-17",
+                message="blocked",
+                target_base_open_time_ms=1,
+            )
+
+        def stage18_hook(**kwargs: Any) -> StrategyAggregationResult:
+            stage18_calls.append(kwargs)
+            raise AssertionError("stage18 must not run after stage17 blocked/failed")
+
+        runner = SchedulerRunner(
+            config=runtime_config(),
+            slot_store=FakeSlotStore(),
+            settings=AppSettings(strategy_aggregation_auto_run_enabled=True),
+            kline_4h_job=collect_job,
+            strategy_signal_after_collect_job=stage17_hook,
+            strategy_aggregation_after_signal_job=stage18_hook,
+        )
+
+        records = runner.run_once(current_time_utc=utc_at(18, 8, 6))
+
+        assert records[0].details["strategy_signal_scheduler"]["status"] == blocked_status.value
+        assert "strategy_aggregation" not in records[0].details
+
+
+def test_scheduler_skips_stage18_when_stage17_success_has_no_run_id() -> None:
+    stage18_calls: list[Any] = []
+
+    def collect_job() -> IncrementalKlineCollectResult:
+        return success_collect_result()
+
+    def stage17_hook(**_kwargs: Any) -> StrategySignalSchedulerResult:
+        return StrategySignalSchedulerResult(
+            status=StrategySignalSchedulerStatus.SUCCESS,
+            event_id="SSS-missing-run",
+            run_id=None,
+            snapshot_id="MCS-test",
+            trace_id="trace-17",
+            message="stage17 success but missing run id",
+            target_base_open_time_ms=1,
+        )
+
+    def stage18_hook(**kwargs: Any) -> StrategyAggregationResult:
+        stage18_calls.append(kwargs)
+        raise AssertionError("stage18 must not run without strategy_signal_run_id")
 
     runner = SchedulerRunner(
         config=runtime_config(),
@@ -190,5 +264,33 @@ def test_scheduler_does_not_auto_run_stage18_after_stage17_blocked() -> None:
     records = runner.run_once(current_time_utc=utc_at(18, 8, 6))
 
     assert stage18_calls == []
-    assert records[0].details["strategy_signal_scheduler"]["status"] == "blocked"
-    assert "strategy_aggregation" not in records[0].details
+    assert records[0].details["strategy_signal_scheduler"]["status"] == "success"
+    assert records[0].details["strategy_aggregation"]["status"] == "skipped"
+    assert "strategy_signal_run_id missing" in records[0].details["strategy_aggregation"]["message"]
+
+
+def test_stage18_scheduler_job_missing_run_id_does_not_open_db_session(monkeypatch: Any) -> None:
+    from app.scheduler.jobs import strategy_aggregation_job as job_module
+
+    def forbidden_session_scope(**_kwargs: Any) -> Any:
+        raise AssertionError("missing strategy_signal_run_id must not open a database session")
+
+    monkeypatch.setattr(job_module.mysql_session, "session_scope", forbidden_session_scope)
+
+    result = job_module.run_strategy_aggregation_after_signal_job(
+        strategy_signal_scheduler_result=StrategySignalSchedulerResult(
+            status=StrategySignalSchedulerStatus.SUCCESS,
+            event_id="SSS-missing-run",
+            run_id=None,
+            snapshot_id="MCS-test",
+            trace_id="trace-17",
+            message="stage17 success but missing run id",
+            target_base_open_time_ms=1,
+        ),
+        current_time_utc=utc_at(18, 8, 6),
+        settings=AppSettings(strategy_aggregation_auto_run_enabled=True),
+        config=runtime_config(strategy_aggregation_auto_run_enabled=True),
+    )
+
+    assert result.status == StrategyAggregationStatus.SKIPPED
+    assert "strategy_signal_run_id missing" in result.message

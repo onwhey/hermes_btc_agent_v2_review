@@ -83,8 +83,14 @@ class StrategyAggregationRepository:
         material_schema_version: str,
         indicator_version: str,
         candidate_scenario_version: str,
+        statuses: tuple[str, ...] | None = None,
     ) -> Any | None:
-        """Return an existing versioned stage-18 aggregation row if present."""
+        """Return an existing versioned stage-18 aggregation row if present.
+
+        `statuses` lets the service look only for final success material packs.
+        Blocked or failed audit attempts must remain rerunnable and therefore
+        must not be treated as idempotent final rows.
+        """
 
         _require_sqlalchemy()
         stmt = (
@@ -94,9 +100,10 @@ class StrategyAggregationRepository:
             .where(StrategyAggregationRun.material_schema_version == material_schema_version)
             .where(StrategyAggregationRun.indicator_version == indicator_version)
             .where(StrategyAggregationRun.candidate_scenario_version == candidate_scenario_version)
-            .order_by(StrategyAggregationRun.id.desc())
-            .limit(1)
         )
+        if statuses is not None:
+            stmt = stmt.where(StrategyAggregationRun.status.in_(statuses))
+        stmt = stmt.order_by(StrategyAggregationRun.id.desc()).limit(1)
         return db_session.execute(stmt).scalar_one_or_none()
 
     def get_material_pack_by_aggregation_run_id(

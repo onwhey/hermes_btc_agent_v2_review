@@ -41,13 +41,14 @@ if mapped_column is not None:
         __tablename__ = "strategy_aggregation_run"
         __table_args__ = (
             UniqueConstraint("aggregation_run_id", name="uq_strategy_aggregation_run_id"),
-            UniqueConstraint(
+            Index(
+                "idx_strategy_aggregation_version_status",
                 "strategy_signal_run_id",
                 "aggregation_version",
                 "material_schema_version",
                 "indicator_version",
                 "candidate_scenario_version",
-                name="uk_strategy_aggregation_version",
+                "status",
             ),
             Index("idx_strategy_aggregation_strategy_signal_run", "strategy_signal_run_id"),
             Index("idx_strategy_aggregation_snapshot_id", "snapshot_id"),

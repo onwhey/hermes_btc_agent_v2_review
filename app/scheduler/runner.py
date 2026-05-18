@@ -419,6 +419,12 @@ class SchedulerRunner:
         status = _result_status_text(strategy_signal_scheduler_result)
         if status not in {"success", "partial_success"}:
             return {}
+        run_id = str(getattr(strategy_signal_scheduler_result, "run_id", "") or "").strip()
+        if not run_id:
+            return {
+                "status": "skipped",
+                "message": "strategy_signal_run_id missing; stage-18 auto-run was not started.",
+            }
         if not self.config.strategy_aggregation_auto_run_enabled:
             return {"status": "disabled"}
         try:
