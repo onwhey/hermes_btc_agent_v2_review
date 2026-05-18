@@ -644,7 +644,7 @@ def _build_target_context_from_upstream(
         target_base_open_time_ms = target_base_close_time_ms - KLINE_4H_INTERVAL_MS
         target_source = "upstream_slot_time_utc"
 
-    target_higher_open_time_ms = target_base_close_time_ms - KLINE_1D_INTERVAL_MS
+    target_higher_open_time_ms = ((target_base_close_time_ms // KLINE_1D_INTERVAL_MS) - 1) * KLINE_1D_INTERVAL_MS
     return {
         "current_time_ms": current_time_ms,
         "upstream_slot_time_utc": slot_time_utc,

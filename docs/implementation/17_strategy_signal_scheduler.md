@@ -77,7 +77,8 @@ target_base_open_time_utc = target_base_close_time_utc - 4 hours
 target_base_close_time_utc = upstream_slot_time_utc 所属 UTC 日期的 00:00
 target_base_open_time_utc = target_base_close_time_utc - 4 hours
 
-target_higher_open_time_utc = target_base_close_time_utc - 1 day
+target_higher_open_time_ms = ((target_base_close_time_ms // 1d_ms) - 1) * 1d_ms
+target_higher_open_time_utc = UTC 日线 open_time 边界
 ```
 
 `current_time_utc` 仅表示第 17 本次服务实际运行时间，用于审计和传给第 16 阶段的运行上下文，不再用于绑定 `target_base_open_time_ms`。因此 scheduler 延迟、重启补跑或 catch-up 时，事件仍绑定到上游 collector 的调度 slot / 实际目标 K线，不会漂移到运行当刻推算出的最新 K线。

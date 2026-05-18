@@ -341,6 +341,25 @@ def test_target_4h_kline_is_bound_to_upstream_slot_not_current_time() -> None:
     assert strategy.calls[0].current_time_ms == expected_ms(utc_at(18, 12, 30))
 
 
+def test_higher_target_uses_latest_closed_daily_boundary_for_normal_4h_slot() -> None:
+    service, repo, _strategy, _alert = service_with_fakes()
+
+    result = service.run_after_collector_success(
+        FakeSession(),
+        request=StrategySignalSchedulerRequest(
+            upstream_job_name=KLINE_4H_INCREMENTAL_JOB_NAME,
+            current_time_utc=utc_at(18, 8, 6),
+            upstream_slot_time_utc=utc_at(18, 8, 5),
+            trace_id="trace-higher-boundary",
+        ),
+    )
+
+    assert result.status == StrategySignalSchedulerStatus.SUCCESS
+    assert repo.rows[0].target_base_open_time_utc == utc_at(18, 4, 0)
+    assert repo.rows[0].target_base_close_time_utc == utc_at(18, 8, 0)
+    assert repo.rows[0].target_higher_open_time_utc == utc_at(17, 0, 0)
+
+
 def test_explicit_4h_collector_open_time_takes_precedence_over_slot_calculation() -> None:
     service, repo, _strategy, _alert = service_with_fakes()
 
@@ -394,6 +413,7 @@ def test_utc_midnight_4h_waits_for_1d_then_runs_once() -> None:
     assert repo.rows[0].upstream_1d_collector_event_id == 701
     assert repo.rows[0].target_base_open_time_ms == expected_ms(utc_at(17, 20, 0))
     assert repo.rows[0].target_base_close_time_utc == utc_at(18, 0, 0)
+    assert repo.rows[0].target_higher_open_time_utc == utc_at(17, 0, 0)
     assert len(strategy.calls) == 1
 
 
