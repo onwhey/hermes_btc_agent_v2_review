@@ -5,6 +5,7 @@ import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
 
@@ -478,24 +479,93 @@ def test_same_strategy_signal_run_version_is_skipped_when_existing() -> None:
     assert result.details["skip_reason"] == "already_exists"
 
 
-def test_blocked_existing_attempt_does_not_lock_later_success_rerun() -> None:
-    existing_blocked = SimpleNamespace(
-        aggregation_run_id="SAR-blocked",
-        snapshot_id="MCS-stage18",
-        status="blocked",
-    )
-    repo = FakeAggregationRepository(
-        strategy_run=strategy_run(),
-        results=(fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.80"),),
-        restored_snapshot=restored_snapshot(),
-        existing=existing_blocked,
-    )
+def test_blocked_and_failed_existing_attempts_do_not_lock_later_success_rerun() -> None:
+    for existing_status in ("blocked", "failed"):
+        existing_attempt = SimpleNamespace(
+            aggregation_run_id=f"SAR-{existing_status}",
+            snapshot_id="MCS-stage18",
+            status=existing_status,
+        )
+        repo = FakeAggregationRepository(
+            strategy_run=strategy_run(),
+            results=(
+                fake_stage16_signal(
+                    "fixture_direction_hypothesis_long",
+                    direction="bullish_bias",
+                    risk="low",
+                    strength="0.80",
+                ),
+            ),
+            restored_snapshot=restored_snapshot(),
+            existing=existing_attempt,
+        )
+
+        result = service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+
+        assert result.status == StrategyAggregationStatus.SUCCESS
+        assert len(repo.aggregation_rows) == 1
+        assert len(repo.material_rows) == 1
+
+
+def test_confirm_write_blocked_attempt_persists_only_aggregation_audit_row() -> None:
+    repo = FakeAggregationRepository(strategy_run=strategy_run(status="blocked"))
 
     result = service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
 
-    assert result.status == StrategyAggregationStatus.SUCCESS
+    assert result.status == StrategyAggregationStatus.BLOCKED
+    assert result.material_pack_id is None
     assert len(repo.aggregation_rows) == 1
-    assert len(repo.material_rows) == 1
+    assert repo.aggregation_rows[0].status == StrategyAggregationStatus.BLOCKED
+    assert len(repo.material_rows) == 0
+
+
+def test_strategy_aggregation_run_schema_uses_status_index_not_version_unique() -> None:
+    from sqlalchemy import UniqueConstraint
+
+    from app.storage.mysql.models.strategy_aggregation import AnalysisMaterialPack, StrategyAggregationRun
+
+    aggregation_table = StrategyAggregationRun.__table__
+    aggregation_unique_names = {
+        constraint.name
+        for constraint in aggregation_table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert "uk_strategy_aggregation_version" not in aggregation_unique_names
+    assert "uq_strategy_aggregation_run_id" in aggregation_unique_names
+
+    version_status_index = next(
+        index
+        for index in aggregation_table.indexes
+        if index.name == "idx_strategy_aggregation_version_status"
+    )
+    assert version_status_index.unique is False
+    assert [column.name for column in version_status_index.columns] == [
+        "strategy_signal_run_id",
+        "aggregation_version",
+        "material_schema_version",
+        "indicator_version",
+        "candidate_scenario_version",
+        "status",
+    ]
+
+    material_table = AnalysisMaterialPack.__table__
+    material_unique_names = {
+        constraint.name
+        for constraint in material_table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert "uk_analysis_material_pack_version" in material_unique_names
+
+
+def test_stage18_followup_migration_relaxes_attempt_uniqueness() -> None:
+    migration_path = Path("migrations/versions/20260519_18_relax_strategy_aggregation_attempt_uniqueness.py")
+    source = migration_path.read_text(encoding="utf-8")
+
+    assert "op.drop_constraint(" in source
+    assert "\"uk_strategy_aggregation_version\"" in source
+    assert "op.create_index(" in source
+    assert "\"idx_strategy_aggregation_version_status\"" in source
+    assert "unique=False" in source
 
 
 def test_concurrent_final_unique_conflict_returns_skipped_already_exists() -> None:
