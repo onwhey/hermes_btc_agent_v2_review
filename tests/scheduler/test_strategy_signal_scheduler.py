@@ -302,6 +302,7 @@ def test_4h_collect_success_triggers_strategy_signal_service_with_scheduler_requ
         request=StrategySignalSchedulerRequest(
             upstream_job_name=KLINE_4H_INCREMENTAL_JOB_NAME,
             current_time_utc=utc_at(16, 8, 6),
+            upstream_slot_time_utc=utc_at(16, 8, 5),
             upstream_trace_id="collect-trace",
             upstream_collector_event_id=501,
             trace_id="trace-17",
@@ -320,6 +321,45 @@ def test_4h_collect_success_triggers_strategy_signal_service_with_scheduler_requ
     assert repo.rows[0].hermes_status == StrategySignalSchedulerHermesStatus.DISABLED.value
 
 
+def test_target_4h_kline_is_bound_to_upstream_slot_not_current_time() -> None:
+    service, repo, strategy, _alert = service_with_fakes()
+
+    result = service.run_after_collector_success(
+        FakeSession(),
+        request=StrategySignalSchedulerRequest(
+            upstream_job_name=KLINE_4H_INCREMENTAL_JOB_NAME,
+            current_time_utc=utc_at(18, 12, 30),
+            upstream_slot_time_utc=utc_at(18, 4, 5),
+            trace_id="trace-delayed-slot",
+        ),
+    )
+
+    assert result.status == StrategySignalSchedulerStatus.SUCCESS
+    assert repo.rows[0].target_base_open_time_utc == utc_at(18, 0, 0)
+    assert repo.rows[0].target_base_close_time_utc == utc_at(18, 4, 0)
+    assert repo.rows[0].target_base_open_time_ms == expected_ms(utc_at(18, 0, 0))
+    assert strategy.calls[0].current_time_ms == expected_ms(utc_at(18, 12, 30))
+
+
+def test_explicit_4h_collector_open_time_takes_precedence_over_slot_calculation() -> None:
+    service, repo, _strategy, _alert = service_with_fakes()
+
+    result = service.run_after_collector_success(
+        FakeSession(),
+        request=StrategySignalSchedulerRequest(
+            upstream_job_name=KLINE_4H_INCREMENTAL_JOB_NAME,
+            current_time_utc=utc_at(18, 12, 30),
+            upstream_slot_time_utc=utc_at(18, 4, 5),
+            upstream_latest_base_open_time_ms=expected_ms(utc_at(18, 8, 0)),
+            trace_id="trace-explicit-open",
+        ),
+    )
+
+    assert result.status == StrategySignalSchedulerStatus.SUCCESS
+    assert repo.rows[0].target_base_open_time_utc == utc_at(18, 8, 0)
+    assert repo.rows[0].target_base_close_time_utc == utc_at(18, 12, 0)
+
+
 def test_utc_midnight_4h_waits_for_1d_then_runs_once() -> None:
     repo = FakeSchedulerEventRepository()
     strategy = FakeStrategySignalService()
@@ -330,7 +370,8 @@ def test_utc_midnight_4h_waits_for_1d_then_runs_once() -> None:
         session,
         request=StrategySignalSchedulerRequest(
             upstream_job_name=KLINE_4H_INCREMENTAL_JOB_NAME,
-            current_time_utc=utc_at(16, 0, 6),
+            current_time_utc=utc_at(18, 0, 6),
+            upstream_slot_time_utc=utc_at(18, 0, 5),
             upstream_collector_event_id=601,
             trace_id="trace-midnight",
         ),
@@ -339,7 +380,8 @@ def test_utc_midnight_4h_waits_for_1d_then_runs_once() -> None:
         session,
         request=StrategySignalSchedulerRequest(
             upstream_job_name=KLINE_1D_INCREMENTAL_JOB_NAME,
-            current_time_utc=utc_at(16, 0, 12),
+            current_time_utc=utc_at(18, 0, 12),
+            upstream_slot_time_utc=utc_at(18, 0, 10),
             upstream_collector_event_id=701,
             trace_id="trace-midnight",
         ),
@@ -350,7 +392,8 @@ def test_utc_midnight_4h_waits_for_1d_then_runs_once() -> None:
     assert len(repo.rows) == 1
     assert repo.rows[0].upstream_4h_collector_event_id == 601
     assert repo.rows[0].upstream_1d_collector_event_id == 701
-    assert repo.rows[0].target_base_open_time_ms == expected_ms(utc_at(15, 20, 0))
+    assert repo.rows[0].target_base_open_time_ms == expected_ms(utc_at(17, 20, 0))
+    assert repo.rows[0].target_base_close_time_utc == utc_at(18, 0, 0)
     assert len(strategy.calls) == 1
 
 
@@ -360,6 +403,7 @@ def test_same_target_does_not_create_duplicate_scheduler_event() -> None:
     request = StrategySignalSchedulerRequest(
         upstream_job_name=KLINE_4H_INCREMENTAL_JOB_NAME,
         current_time_utc=utc_at(16, 8, 6),
+        upstream_slot_time_utc=utc_at(16, 8, 5),
         trace_id="trace-dup",
     )
 
@@ -388,6 +432,7 @@ def test_blocked_failed_partial_and_skipped_statuses_are_recorded() -> None:
         request=StrategySignalSchedulerRequest(
             upstream_job_name=KLINE_4H_INCREMENTAL_JOB_NAME,
             current_time_utc=utc_at(16, 8, 6),
+            upstream_slot_time_utc=utc_at(16, 8, 5),
             trace_id="trace-blocked",
         ),
     )
@@ -400,6 +445,7 @@ def test_blocked_failed_partial_and_skipped_statuses_are_recorded() -> None:
         request=StrategySignalSchedulerRequest(
             upstream_job_name=KLINE_4H_INCREMENTAL_JOB_NAME,
             current_time_utc=utc_at(16, 12, 6),
+            upstream_slot_time_utc=utc_at(16, 12, 5),
             trace_id="trace-failed",
         ),
     )
@@ -412,6 +458,7 @@ def test_blocked_failed_partial_and_skipped_statuses_are_recorded() -> None:
         request=StrategySignalSchedulerRequest(
             upstream_job_name=KLINE_4H_INCREMENTAL_JOB_NAME,
             current_time_utc=utc_at(16, 16, 6),
+            upstream_slot_time_utc=utc_at(16, 16, 5),
             trace_id="trace-partial",
         ),
     )
@@ -424,6 +471,7 @@ def test_blocked_failed_partial_and_skipped_statuses_are_recorded() -> None:
         request=StrategySignalSchedulerRequest(
             upstream_job_name=KLINE_4H_INCREMENTAL_JOB_NAME,
             current_time_utc=utc_at(16, 20, 6),
+            upstream_slot_time_utc=utc_at(16, 20, 5),
             trace_id="trace-skipped",
         ),
     )
@@ -447,6 +495,7 @@ def test_hermes_config_off_does_not_send_and_on_records_sent_message() -> None:
         request=StrategySignalSchedulerRequest(
             upstream_job_name=KLINE_4H_INCREMENTAL_JOB_NAME,
             current_time_utc=utc_at(16, 8, 6),
+            upstream_slot_time_utc=utc_at(16, 8, 5),
             trace_id="trace-hermes-off",
         ),
     )
@@ -462,6 +511,7 @@ def test_hermes_config_off_does_not_send_and_on_records_sent_message() -> None:
         request=StrategySignalSchedulerRequest(
             upstream_job_name=KLINE_4H_INCREMENTAL_JOB_NAME,
             current_time_utc=utc_at(16, 12, 6),
+            upstream_slot_time_utc=utc_at(16, 12, 5),
             trace_id="trace-hermes-on",
         ),
     )
@@ -494,6 +544,7 @@ def test_skipped_default_does_not_send_hermes_when_hermes_enabled() -> None:
         request=StrategySignalSchedulerRequest(
             upstream_job_name=KLINE_4H_INCREMENTAL_JOB_NAME,
             current_time_utc=utc_at(16, 8, 6),
+            upstream_slot_time_utc=utc_at(16, 8, 5),
             trace_id="trace-skip-hermes",
         ),
     )
@@ -532,6 +583,7 @@ def test_runner_calls_stage17_hook_after_4h_collector_success() -> None:
     assert len(calls) == 1
     assert calls[0]["upstream_job_name"] == KLINE_4H_INCREMENTAL_JOB_NAME
     assert calls[0]["upstream_result"].trace_id == "collect-trace"
+    assert calls[0]["upstream_slot_time_utc"] == utc_at(16, 8, 5)
     assert records[0].details["strategy_signal_scheduler"]["status"] == "success"
 
 

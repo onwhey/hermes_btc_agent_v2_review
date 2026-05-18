@@ -143,6 +143,8 @@ trigger_source=scheduler
 
 第 17 阶段只处理最近一根理论已收盘 4h K线。
 
+scheduler 后置触发时，目标 4h K线必须绑定到上游 collector 的调度 slot 或 collector result 中明确的 latest written/closed Kline open time，不得单纯根据第 17 实际运行时的当前 UTC 时间重新推算。
+
 scheduler 启动、恢复或检测到可能漏跑时，只检查最近一根已收盘 4h K线是否已经存在策略信号调度记录。若不存在，则尝试生成一次策略信号。
 
 第 17 阶段不得自动补跑更早的多根历史 4h K线，不得批量生成历史策略信号，不得补发历史 Hermes 通知。

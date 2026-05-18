@@ -8,7 +8,7 @@ app/scheduler/runner.py::SchedulerRunner._run_strategy_signal_post_collect_if_ne
     -> app/strategy/result_repository.py::create_strategy_signal_run_with_results
 
 This file belongs to `app/scheduler`. It records one scheduler event for the
-latest theoretical closed 4h Kline and, when allowed, calls only the stage-16
+upstream collector slot's target 4h Kline and, when allowed, calls only the stage-16
 StrategySignalService. It does not call scripts, does not call the stage-15
 MarketContextSnapshot service directly, does not request Binance REST or
 WebSocket, does not modify formal Kline tables, does not call DeepSeek or any
@@ -19,7 +19,7 @@ perform trading.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.alerting.templates import WECHAT_VISIBLE_BODY_DETAIL_KEY
@@ -110,7 +110,11 @@ class StrategySignalSchedulerService:
 
         active_now = _ensure_utc(request.current_time_utc)
         trace_id = request.trace_id or request.upstream_trace_id or uuid.uuid4().hex
-        target = _build_latest_target_context(active_now)
+        target = _build_target_context_from_upstream(
+            request=request,
+            current_time_utc=active_now,
+            config=self._config,
+        )
         trigger_reason = _trigger_reason_for_upstream_job(request.upstream_job_name)
         if trigger_reason is None:
             return StrategySignalSchedulerResult(
@@ -606,19 +610,45 @@ def run_strategy_signal_scheduler_after_collect(
     return active_service.run_after_collector_success(db_session, request=request)
 
 
-def _build_latest_target_context(current_time_utc: datetime) -> dict[str, Any]:
+def _build_target_context_from_upstream(
+    *,
+    request: StrategySignalSchedulerRequest,
+    current_time_utc: datetime,
+    config: SchedulerRuntimeConfig,
+) -> dict[str, Any]:
+    """Build the stage-17 target from the upstream collector identity.
+
+    The scheduler run time is useful for audit and stage-16 freshness checks,
+    but it is not stable enough to identify the Kline that the upstream
+    collector slot represented. Target identity therefore comes from an
+    explicit 4h collector open time when present, otherwise from the upstream
+    scheduler slot. This helper is read-only: it does not query Binance, does
+    not query formal Kline tables, and cannot repair or backfill data.
+    """
+
     current_time_ms = utc_datetime_to_timestamp_ms(current_time_utc)
-    target_base_open_time_ms = _latest_closed_open_time_ms(
-        current_time_ms=current_time_ms,
-        interval_ms=KLINE_4H_INTERVAL_MS,
-    )
-    target_higher_open_time_ms = _latest_closed_open_time_ms(
-        current_time_ms=current_time_ms,
-        interval_ms=KLINE_1D_INTERVAL_MS,
-    )
-    target_base_close_time_ms = target_base_open_time_ms + KLINE_4H_INTERVAL_MS
+    slot_time_utc = _ensure_utc(request.upstream_slot_time_utc)
+    explicit_open_time_ms = _explicit_base_open_time_ms_from_request(request)
+
+    if explicit_open_time_ms is not None:
+        target_base_open_time_ms = explicit_open_time_ms
+        target_base_close_time_ms = explicit_open_time_ms + KLINE_4H_INTERVAL_MS
+        target_source = "upstream_collector_result"
+    else:
+        target_base_close_time_utc = _target_base_close_time_from_slot(
+            upstream_job_name=request.upstream_job_name,
+            upstream_slot_time_utc=slot_time_utc,
+            config=config,
+        )
+        target_base_close_time_ms = utc_datetime_to_timestamp_ms(target_base_close_time_utc)
+        target_base_open_time_ms = target_base_close_time_ms - KLINE_4H_INTERVAL_MS
+        target_source = "upstream_slot_time_utc"
+
+    target_higher_open_time_ms = target_base_close_time_ms - KLINE_1D_INTERVAL_MS
     return {
         "current_time_ms": current_time_ms,
+        "upstream_slot_time_utc": slot_time_utc,
+        "target_source": target_source,
         "target_base_open_time_ms": target_base_open_time_ms,
         "target_base_open_time_utc": timestamp_ms_to_utc_datetime(target_base_open_time_ms),
         "target_base_close_time_ms": target_base_close_time_ms,
@@ -628,10 +658,33 @@ def _build_latest_target_context(current_time_utc: datetime) -> dict[str, Any]:
     }
 
 
-def _latest_closed_open_time_ms(*, current_time_ms: int, interval_ms: int) -> int:
-    """Return the latest closed Kline open time aligned to UTC milliseconds."""
+def _explicit_base_open_time_ms_from_request(request: StrategySignalSchedulerRequest) -> int | None:
+    """Return explicit 4h collector open time only when it is interval-aligned."""
 
-    return ((current_time_ms // interval_ms) - 1) * interval_ms
+    if request.upstream_job_name != KLINE_4H_INCREMENTAL_JOB_NAME:
+        return None
+    value = request.upstream_latest_base_open_time_ms
+    if value is None or value % KLINE_4H_INTERVAL_MS != 0:
+        return None
+    return int(value)
+
+
+def _target_base_close_time_from_slot(
+    *,
+    upstream_job_name: str,
+    upstream_slot_time_utc: datetime,
+    config: SchedulerRuntimeConfig,
+) -> datetime:
+    """Calculate the target 4h close boundary from the upstream scheduler slot."""
+
+    slot_time_utc = _ensure_utc(upstream_slot_time_utc)
+    if upstream_job_name == KLINE_1D_INCREMENTAL_JOB_NAME:
+        return slot_time_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    close_time_utc = slot_time_utc - timedelta(
+        minutes=config.kline_4h_incremental_collect_utc_minutes_after_close
+    )
+    return close_time_utc.replace(second=0, microsecond=0)
 
 
 def _trigger_reason_for_upstream_job(upstream_job_name: str) -> str | None:

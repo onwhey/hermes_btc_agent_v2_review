@@ -14,6 +14,7 @@ trading.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -30,6 +31,7 @@ def run_strategy_signal_scheduler_after_collect_job(
     *,
     upstream_job_name: str,
     upstream_result: Any,
+    upstream_slot_time_utc: datetime,
     current_time_utc: datetime | None = None,
     settings: AppSettings | None = None,
     config: SchedulerRuntimeConfig | None = None,
@@ -37,8 +39,9 @@ def run_strategy_signal_scheduler_after_collect_job(
 ) -> StrategySignalSchedulerResult:
     """Run stage-17 orchestration after a successful collector job.
 
-    Parameters: upstream scheduler job name, collector result, current UTC time,
-    and optional injected dependencies.
+    Parameters: upstream scheduler job name, collector result, upstream
+    scheduler slot UTC time, current UTC run time, and optional injected
+    dependencies.
     Return value: `StrategySignalSchedulerResult`.
     Failure scenarios: repository or strategy service failures are converted by
     the app service when possible.
@@ -50,15 +53,18 @@ def run_strategy_signal_scheduler_after_collect_job(
     active_settings = settings or get_settings()
     active_config = config or build_scheduler_runtime_config(active_settings)
     active_time = _ensure_utc(current_time_utc or now_utc())
+    active_slot_time = _ensure_utc(upstream_slot_time_utc)
     trace_id = str(getattr(upstream_result, "trace_id", "") or uuid4().hex)
     request = StrategySignalSchedulerRequest(
         upstream_job_name=upstream_job_name,
         current_time_utc=active_time,
+        upstream_slot_time_utc=active_slot_time,
         symbol=active_config.strategy_signal_symbol,
         base_interval_value=active_config.strategy_signal_base_interval,
         higher_interval_value=active_config.strategy_signal_higher_interval,
         upstream_trace_id=trace_id,
         upstream_collector_event_id=getattr(upstream_result, "event_log_id", None),
+        upstream_latest_base_open_time_ms=_extract_latest_base_open_time_ms(upstream_result),
         trace_id=trace_id,
     )
 
@@ -74,6 +80,47 @@ def _ensure_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         raise ValueError("strategy signal scheduler job requires timezone-aware UTC time")
     return value.astimezone(UTC)
+
+
+def _extract_latest_base_open_time_ms(upstream_result: Any) -> int | None:
+    """Return an explicit 4h collector target open time when the result has one.
+
+    The first source of truth for stage-17 target binding is a clear collector
+    result field. Current collector result objects normally expose only counts
+    and event IDs, so this helper also accepts future-compatible detail keys.
+    It never queries Binance or formal Kline tables and never repairs data.
+    """
+
+    candidate_names = (
+        "latest_written_open_time_ms",
+        "latest_closed_open_time_ms",
+        "latest_base_open_time_ms",
+        "actual_end_open_time_ms",
+        "end_open_time_ms",
+    )
+    for name in candidate_names:
+        value = getattr(upstream_result, name, None)
+        parsed = _parse_open_time_ms(value)
+        if parsed is not None:
+            return parsed
+
+    details = getattr(upstream_result, "details", None)
+    if isinstance(details, Mapping):
+        for name in candidate_names:
+            parsed = _parse_open_time_ms(details.get(name))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _parse_open_time_ms(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
 
 
 __all__ = ["run_strategy_signal_scheduler_after_collect_job"]

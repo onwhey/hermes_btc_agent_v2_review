@@ -366,6 +366,7 @@ class SchedulerRunner:
             scheduler_result = self.strategy_signal_after_collect_job(
                 upstream_job_name=due_job.name,
                 upstream_result=result,
+                upstream_slot_time_utc=due_job.slot_time_utc,
                 current_time_utc=current_time_utc,
                 settings=self.settings,
                 config=self.config,

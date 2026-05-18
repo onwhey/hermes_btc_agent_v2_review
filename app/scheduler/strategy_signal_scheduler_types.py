@@ -52,8 +52,9 @@ class StrategySignalSchedulerRequest:
     """Input for one post-collector strategy signal scheduler attempt.
 
     Parameters: `upstream_job_name` identifies the successful collector job;
-    `current_time_utc` is used to derive the latest theoretical closed 4h
-    target. Return value: service methods return `StrategySignalSchedulerResult`.
+    `upstream_slot_time_utc` is the scheduler slot that caused that collector
+    run; `current_time_utc` is only the wall-clock time of this stage-17
+    attempt. Return value: service methods return `StrategySignalSchedulerResult`.
     Failure scenarios: invalid intervals or repository/service failures are
     converted by the orchestration service.
     External effects: none in this value object.
@@ -61,12 +62,14 @@ class StrategySignalSchedulerRequest:
 
     upstream_job_name: str
     current_time_utc: datetime
+    upstream_slot_time_utc: datetime
     symbol: str = DEFAULT_KLINE_SYMBOL
     base_interval_value: str = KLINE_4H_INTERVAL_VALUE
     higher_interval_value: str = KLINE_1D_INTERVAL_VALUE
     trigger_source: str = TRIGGER_SOURCE_SCHEDULER
     upstream_trace_id: str = ""
     upstream_collector_event_id: int | None = None
+    upstream_latest_base_open_time_ms: int | None = None
     trace_id: str = field(default_factory=lambda: uuid4().hex)
 
 

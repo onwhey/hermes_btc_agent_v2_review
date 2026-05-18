@@ -66,11 +66,21 @@ created_by="strategy_signal_scheduler"
 
 ## 5. 幂等与目标 K线
 
-第 17 只处理最近一根理论已收盘 4h K线。目标由当前 UTC 时间和 4h 周期边界计算：
+第 17 只处理上游 collector 所属调度 slot 对应的 4h K线。目标不再由第 17 运行时的当前 UTC 时间推算，而是优先使用上游 collector result 中明确的 latest written/closed 4h `open_time_ms`；如果 result 没有该字段，则使用 `upstream_slot_time_utc` 计算：
 
 ```text
-target_base_open_time_ms = latest theoretical closed 4h open time
+4h collector:
+target_base_close_time_utc = upstream_slot_time_utc - KLINE_4H_INCREMENTAL_COLLECT_UTC_MINUTES_AFTER_CLOSE
+target_base_open_time_utc = target_base_close_time_utc - 4 hours
+
+1d collector:
+target_base_close_time_utc = upstream_slot_time_utc 所属 UTC 日期的 00:00
+target_base_open_time_utc = target_base_close_time_utc - 4 hours
+
+target_higher_open_time_utc = target_base_close_time_utc - 1 day
 ```
+
+`current_time_utc` 仅表示第 17 本次服务实际运行时间，用于审计和传给第 16 阶段的运行上下文，不再用于绑定 `target_base_open_time_ms`。因此 scheduler 延迟、重启补跑或 catch-up 时，事件仍绑定到上游 collector 的调度 slot / 实际目标 K线，不会漂移到运行当刻推算出的最新 K线。
 
 唯一键：
 
