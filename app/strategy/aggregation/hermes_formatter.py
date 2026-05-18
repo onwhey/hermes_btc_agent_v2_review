@@ -8,7 +8,7 @@ Called by: `app/strategy/aggregation/service.py`.
 
 External services: none. MySQL: none. Redis: none. Hermes: this file only
 formats text; it does not send. DeepSeek/large models: none. Trading execution:
-none. The message explicitly states that candidate_direction is an analysis
+none. The message explicitly states that analysis_hypothesis_direction is an analysis
 hypothesis only, not a strategy signal, not a final suggestion, and no
 automatic trading happened.
 """
@@ -38,7 +38,10 @@ def build_strategy_aggregation_visible_body(result: StrategyAggregationResult, a
     lines = [
         f"[{title}]",
         f"status: {result.status.value}",
-        f"candidate_direction: {result.candidate_direction.value if result.candidate_direction else ''}",
+        f"analysis_hypothesis_direction: {result.analysis_hypothesis_direction.value if result.analysis_hypothesis_direction else ''}",
+        f"analysis_hypothesis_semantics: {result.analysis_hypothesis_semantics}",
+        f"direction_projection_source: {result.direction_projection_source}",
+        f"stop_trading_source: {result.stop_trading_source or ''}",
         f"risk_level: {result.risk_level.value if result.risk_level else ''}",
         f"risk_gate_status: {result.risk_gate_status.value if result.risk_gate_status else ''}",
         f"conflict_level: {result.conflict_level.value if result.conflict_level else ''}",
@@ -58,7 +61,8 @@ def build_strategy_aggregation_visible_body(result: StrategyAggregationResult, a
         [
             "Boundary: this is a strategy aggregation analysis hypothesis, not final trading advice.",
             "Stage 18 did not implement real strategy logic, did not call a large model, did not enter the advice lifecycle, and did not auto-trade.",
-            "candidate_direction is only an analysis hypothesis projection for later analysis layers.",
+            "analysis_hypothesis_direction is only an analysis hypothesis projection for later analysis layers.",
+            "is_strategy_signal=false; is_trading_advice=false; is_executable=false.",
         ]
     )
     return "\n".join(lines)

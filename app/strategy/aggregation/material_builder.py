@@ -168,38 +168,47 @@ def build_material_pack(
             "volatility_state": volatility.volatility_state,
         },
         "support_resistance": support_resistance,
-        "candidate_direction": decision.candidate_direction.value,
-        "candidate_direction_semantics": ANALYSIS_HYPOTHESIS_SEMANTICS,
+        "analysis_hypothesis_direction": decision.analysis_hypothesis_direction.value,
+        "analysis_hypothesis_semantics": ANALYSIS_HYPOTHESIS_SEMANTICS,
+        "direction_projection_source": candidate_scenarios_json.get("direction_projection_source"),
+        "stop_trading_source": candidate_scenarios_json.get("stop_trading_source"),
+        "risk_gate_projection_source": candidate_scenarios_json.get("risk_gate_projection_source"),
         "hypothesis_invalidation_check": _first_scenario_value(
             candidate_scenarios_json,
             "invalidation_check",
         ),
-        "candidate_target_observation_zone": _first_scenario_value(
+        "hypothesis_target_observation_zone": _first_scenario_value(
             candidate_scenarios_json,
             "target_observation_zone",
         ),
-        "preliminary_reward_risk_ratio": _first_scenario_value(
+        "context_upside_downside_ratio": _first_scenario_value(
             candidate_scenarios_json,
-            "preliminary_reward_risk_ratio",
+            "context_upside_downside_ratio",
+        ),
+        "context_upside_downside_ratio_semantics": _first_scenario_value(
+            candidate_scenarios_json,
+            "context_upside_downside_ratio_semantics",
         ),
         "strategy_conflict_points": strategy_conflicts,
         "opposing_evidence": opposing_evidence,
         "question_list_for_stage19": question_json,
         "boundary": {
             "deterministic_material_only": True,
-            "candidate_direction_only": True,
-            "candidate_direction_is_analysis_hypothesis_only": True,
+            "analysis_hypothesis_direction_only": True,
+            "analysis_hypothesis_direction_is_analysis_hypothesis_only": True,
             "is_strategy_signal": False,
             "is_trading_advice": False,
             "is_executable": False,
             "strategy_logic_implemented": False,
+            "promotion_allowed": False,
+            "promotion_requires_future_strategy_and_llm_stage": True,
             "no_large_model_call": True,
             "no_automatic_trading": True,
         },
     }
 
     summary_json = {
-        "candidate_direction": decision.candidate_direction.value,
+        "analysis_hypothesis_direction": decision.analysis_hypothesis_direction.value,
         "risk_level": decision.risk_level.value,
         "risk_gate_status": decision.risk_gate_status.value,
         "conflict_level": decision.conflict_level.value,
@@ -262,8 +271,9 @@ def _build_strategy_conflict_json(
         "is_trading_advice": False,
         "is_executable": False,
         "strategy_logic_implemented": False,
-        "why_candidate_is_not_execution_decision": (
-            "第18只输出可验证候选方向，后续分析层和生命周期层尚未运行。"
+        "why_hypothesis_is_not_execution_decision": (
+            "Stage 18 only stores analysis hypotheses for later review; "
+            "model analysis and advice lifecycle stages have not run."
         ),
     }
 

@@ -27,8 +27,8 @@ from app.strategy.aggregation.indicators import (
 from app.strategy.aggregation.types import (
     AggregationDecision,
     AggregationRiskLevel,
-    CandidateDirection,
-    CandidateDirectionConfidence,
+    AnalysisHypothesisDirection,
+    AnalysisHypothesisConfidence,
     ConflictLevel,
     RiskGateStatus,
     StrategyAggregationStatus,
@@ -118,22 +118,22 @@ def build_aggregation_decision(summary: StrategyVoteSummary) -> AggregationDecis
     direction_consensus = _direction_consensus(summary)
 
     if risk_gate == RiskGateStatus.INSUFFICIENT_DATA:
-        direction = CandidateDirection.WAIT
+        direction = AnalysisHypothesisDirection.WAIT
     elif risk_gate == RiskGateStatus.BLOCKED_BY_VOLATILITY:
-        direction = CandidateDirection.STOP_TRADING if risk_level == AggregationRiskLevel.EXTREME else CandidateDirection.WAIT
+        direction = AnalysisHypothesisDirection.STOP_TRADING if risk_level == AggregationRiskLevel.EXTREME else AnalysisHypothesisDirection.WAIT
     elif risk_gate == RiskGateStatus.BLOCKED_BY_CONFLICT:
-        direction = CandidateDirection.WAIT
+        direction = AnalysisHypothesisDirection.WAIT
     elif summary.long_strength > summary.short_strength and summary.long_strategies:
-        direction = CandidateDirection.LONG
+        direction = AnalysisHypothesisDirection.LONG
     elif summary.short_strength > summary.long_strength and summary.short_strategies:
-        direction = CandidateDirection.SHORT
+        direction = AnalysisHypothesisDirection.SHORT
     else:
-        direction = CandidateDirection.WAIT
+        direction = AnalysisHypothesisDirection.WAIT
 
-    confidence = _candidate_confidence(summary, conflict_level=conflict_level, risk_gate=risk_gate)
+    confidence = _analysis_hypothesis_confidence(summary, conflict_level=conflict_level, risk_gate=risk_gate)
     return AggregationDecision(
-        candidate_direction=direction,
-        candidate_direction_confidence=confidence,
+        analysis_hypothesis_direction=direction,
+        analysis_hypothesis_confidence=confidence,
         risk_level=risk_level,
         risk_gate_status=risk_gate,
         conflict_level=conflict_level,
@@ -177,7 +177,7 @@ def build_evidence_json(vote_summary: StrategyVoteSummary) -> Mapping[str, Any]:
         "not_implemented_strategies": list(vote_summary.not_implemented_strategies),
         "failed_strategies": list(vote_summary.failed_strategies),
         "invalid_strategies": list(vote_summary.invalid_strategies),
-        "candidate_direction_is_analysis_hypothesis_only": True,
+        "analysis_hypothesis_direction_is_analysis_hypothesis_only": True,
         "is_strategy_signal": False,
         "is_trading_advice": False,
         "is_executable": False,
@@ -185,24 +185,24 @@ def build_evidence_json(vote_summary: StrategyVoteSummary) -> Mapping[str, Any]:
     }
 
 
-def supporting_items(direction: CandidateDirection, summary: StrategyVoteSummary) -> list[Mapping[str, Any]]:
-    """Return strategy rows supporting the candidate direction."""
+def supporting_items(direction: AnalysisHypothesisDirection, summary: StrategyVoteSummary) -> list[Mapping[str, Any]]:
+    """Return upstream rows supporting the analysis hypothesis projection."""
 
-    if direction == CandidateDirection.LONG:
+    if direction == AnalysisHypothesisDirection.LONG:
         return list(summary.long_strategies)
-    if direction == CandidateDirection.SHORT:
+    if direction == AnalysisHypothesisDirection.SHORT:
         return list(summary.short_strategies)
-    if direction == CandidateDirection.STOP_TRADING:
+    if direction == AnalysisHypothesisDirection.STOP_TRADING:
         return list(summary.risk_strategies)
     return list(summary.neutral_strategies) + list(summary.risk_strategies)
 
 
-def opposing_items(direction: CandidateDirection, summary: StrategyVoteSummary) -> list[Mapping[str, Any]]:
-    """Return strategy rows opposing or conflicting with the candidate direction."""
+def opposing_items(direction: AnalysisHypothesisDirection, summary: StrategyVoteSummary) -> list[Mapping[str, Any]]:
+    """Return upstream rows opposing or conflicting with the projection."""
 
-    if direction == CandidateDirection.LONG:
+    if direction == AnalysisHypothesisDirection.LONG:
         return list(summary.short_strategies)
-    if direction == CandidateDirection.SHORT:
+    if direction == AnalysisHypothesisDirection.SHORT:
         return list(summary.long_strategies)
     return list(summary.long_strategies) + list(summary.short_strategies)
 
@@ -294,31 +294,31 @@ def _direction_consensus(summary: StrategyVoteSummary) -> str:
     return "neutral"
 
 
-def _candidate_confidence(
+def _analysis_hypothesis_confidence(
     summary: StrategyVoteSummary,
     *,
     conflict_level: ConflictLevel,
     risk_gate: RiskGateStatus,
-) -> CandidateDirectionConfidence:
+) -> AnalysisHypothesisConfidence:
     if risk_gate in {RiskGateStatus.BLOCKED_BY_CONFLICT, RiskGateStatus.BLOCKED_BY_VOLATILITY}:
-        return CandidateDirectionConfidence.LOW
+        return AnalysisHypothesisConfidence.LOW
     if conflict_level in {ConflictLevel.HIGH, ConflictLevel.MEDIUM}:
-        return CandidateDirectionConfidence.LOW
+        return AnalysisHypothesisConfidence.LOW
     if max(summary.long_strength, summary.short_strength) >= 1.2 and summary.effective_strategy_count >= 2:
-        return CandidateDirectionConfidence.HIGH
+        return AnalysisHypothesisConfidence.HIGH
     if summary.long_strategies or summary.short_strategies:
-        return CandidateDirectionConfidence.MEDIUM
-    return CandidateDirectionConfidence.LOW
+        return AnalysisHypothesisConfidence.MEDIUM
+    return AnalysisHypothesisConfidence.LOW
 
 
 def _decision_message(
-    direction: CandidateDirection,
+    direction: AnalysisHypothesisDirection,
     *,
     risk_gate: RiskGateStatus,
     conflict_level: ConflictLevel,
 ) -> str:
     return (
-        f"Stage-18 aggregation projected candidate_direction={direction.value}; "
+        f"Stage-18 aggregation projected analysis_hypothesis_direction={direction.value}; "
         f"risk_gate_status={risk_gate.value}; conflict_level={conflict_level.value}. "
         "This is an analysis hypothesis only, not a strategy signal or trading suggestion."
     )

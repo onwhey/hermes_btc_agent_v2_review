@@ -1,4 +1,4 @@
-﻿"""Stage-18 strategy aggregation service.
+"""Stage-18 strategy aggregation service.
 
 Call chain:
 scripts/run_strategy_aggregation.py::main
@@ -66,14 +66,17 @@ from app.strategy.aggregation.rules import (
 )
 from app.strategy.aggregation.types import (
     AGGREGATION_VERSION,
+    ANALYSIS_HYPOTHESIS_SEMANTICS,
     CANDIDATE_SCENARIO_VERSION,
+    DIRECTION_PROJECTION_SOURCE,
     EXIT_PARAMETER_ERROR,
     EXIT_SUCCESS,
     INDICATOR_VERSION,
     MATERIAL_SCHEMA_VERSION,
     AggregationRiskLevel,
     AnalysisMaterialPackPersistencePayload,
-    CandidateDirection,
+    AnalysisHypothesisConfidence,
+    AnalysisHypothesisDirection,
     ConflictLevel,
     RiskGateStatus,
     StrategyAggregationHermesStatus,
@@ -484,7 +487,28 @@ class StrategyAggregationService:
             strategy_signal_run_id=request.strategy_signal_run_id,
             trace_id=trace_id,
             snapshot_id=getattr(existing, "snapshot_id", None),
-            candidate_direction=_candidate_direction_or_none(getattr(existing, "candidate_direction", None)),
+            analysis_hypothesis_direction=_analysis_hypothesis_direction_or_none(getattr(existing, "analysis_hypothesis_direction", None)),
+            analysis_hypothesis_confidence=_analysis_hypothesis_confidence_or_none(
+                getattr(existing, "analysis_hypothesis_confidence", None)
+            ),
+            analysis_hypothesis_semantics=str(
+                getattr(existing, "analysis_hypothesis_semantics", ANALYSIS_HYPOTHESIS_SEMANTICS)
+                or ANALYSIS_HYPOTHESIS_SEMANTICS
+            ),
+            direction_projection_source=str(
+                getattr(existing, "direction_projection_source", DIRECTION_PROJECTION_SOURCE)
+                or DIRECTION_PROJECTION_SOURCE
+            ),
+            stop_trading_source=getattr(existing, "stop_trading_source", None),
+            risk_gate_projection_source=getattr(existing, "risk_gate_projection_source", None),
+            is_strategy_signal=bool(getattr(existing, "is_strategy_signal", False)),
+            is_trading_advice=bool(getattr(existing, "is_trading_advice", False)),
+            is_executable=bool(getattr(existing, "is_executable", False)),
+            strategy_logic_implemented=bool(getattr(existing, "strategy_logic_implemented", False)),
+            promotion_allowed=bool(getattr(existing, "promotion_allowed", False)),
+            promotion_requires_future_strategy_and_llm_stage=bool(
+                getattr(existing, "promotion_requires_future_strategy_and_llm_stage", True)
+            ),
             risk_level=_risk_level_or_none(getattr(existing, "risk_level", None)),
             risk_gate_status=_risk_gate_or_none(getattr(existing, "risk_gate_status", None)),
             conflict_level=_conflict_level_or_none(getattr(existing, "conflict_level", None)),
@@ -551,12 +575,19 @@ class StrategyAggregationService:
                 "strategy_signal_run_id": result.strategy_signal_run_id,
                 "snapshot_id": result.snapshot_id or "",
                 "status": result.status.value,
-                "candidate_direction": result.candidate_direction.value if result.candidate_direction else "",
-                "candidate_direction_is_analysis_hypothesis_only": True,
-                "is_strategy_signal": False,
-                "is_trading_advice": False,
-                "is_executable": False,
-                "strategy_logic_implemented": False,
+                "analysis_hypothesis_direction": result.analysis_hypothesis_direction.value if result.analysis_hypothesis_direction else "",
+                "analysis_hypothesis_semantics": result.analysis_hypothesis_semantics,
+                "direction_projection_source": result.direction_projection_source,
+                "stop_trading_source": result.stop_trading_source or "",
+                "risk_gate_projection_source": result.risk_gate_projection_source or "",
+                "is_strategy_signal": result.is_strategy_signal,
+                "is_trading_advice": result.is_trading_advice,
+                "is_executable": result.is_executable,
+                "strategy_logic_implemented": result.strategy_logic_implemented,
+                "promotion_allowed": result.promotion_allowed,
+                "promotion_requires_future_strategy_and_llm_stage": (
+                    result.promotion_requires_future_strategy_and_llm_stage
+                ),
                 "no_large_model_call": True,
                 "no_advice_lifecycle": True,
                 "no_auto_trading": True,
@@ -650,9 +681,16 @@ def _build_material_pack_id(strategy_signal_run_id: str, *, trace_id: str) -> st
     return f"AMP-{stable}-{trace_id[:8]}"
 
 
-def _candidate_direction_or_none(value: Any) -> CandidateDirection | None:
+def _analysis_hypothesis_direction_or_none(value: Any) -> AnalysisHypothesisDirection | None:
     try:
-        return CandidateDirection(str(value))
+        return AnalysisHypothesisDirection(str(value))
+    except ValueError:
+        return None
+
+
+def _analysis_hypothesis_confidence_or_none(value: Any) -> AnalysisHypothesisConfidence | None:
+    try:
+        return AnalysisHypothesisConfidence(str(value))
     except ValueError:
         return None
 

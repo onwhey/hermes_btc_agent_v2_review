@@ -52,7 +52,7 @@ if mapped_column is not None:
             Index("idx_strategy_aggregation_strategy_signal_run", "strategy_signal_run_id"),
             Index("idx_strategy_aggregation_snapshot_id", "snapshot_id"),
             Index("idx_strategy_aggregation_status_created", "status", "created_at_utc"),
-            Index("idx_strategy_aggregation_candidate", "candidate_direction", "risk_gate_status"),
+            Index("idx_strategy_aggregation_hypothesis", "analysis_hypothesis_direction", "risk_gate_status"),
             Index("idx_strategy_aggregation_trace_id", "trace_id"),
         )
 
@@ -78,8 +78,26 @@ if mapped_column is not None:
         input_invalid_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
         input_not_implemented_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
         effective_strategy_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-        candidate_direction: Mapped[str | None] = mapped_column(String(32), nullable=True)
-        candidate_direction_confidence: Mapped[str | None] = mapped_column(String(32), nullable=True)
+        analysis_hypothesis_direction: Mapped[str | None] = mapped_column(String(32), nullable=True)
+        analysis_hypothesis_confidence: Mapped[str | None] = mapped_column(String(32), nullable=True)
+        analysis_hypothesis_semantics: Mapped[str] = mapped_column(
+            String(64),
+            nullable=False,
+            default="analysis_hypothesis_only",
+        )
+        direction_projection_source: Mapped[str] = mapped_column(String(128), nullable=False)
+        stop_trading_source: Mapped[str | None] = mapped_column(String(128), nullable=True)
+        risk_gate_projection_source: Mapped[str | None] = mapped_column(String(128), nullable=True)
+        is_strategy_signal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+        is_trading_advice: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+        is_executable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+        strategy_logic_implemented: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+        promotion_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+        promotion_requires_future_strategy_and_llm_stage: Mapped[bool] = mapped_column(
+            Boolean,
+            nullable=False,
+            default=True,
+        )
         risk_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
         risk_gate_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
         conflict_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -190,8 +208,18 @@ else:
         input_invalid_count: int = 0
         input_not_implemented_count: int = 0
         effective_strategy_count: int = 0
-        candidate_direction: str | None = None
-        candidate_direction_confidence: str | None = None
+        analysis_hypothesis_direction: str | None = None
+        analysis_hypothesis_confidence: str | None = None
+        analysis_hypothesis_semantics: str = "analysis_hypothesis_only"
+        direction_projection_source: str = "fixture_or_existing_signal_projection"
+        stop_trading_source: str | None = None
+        risk_gate_projection_source: str | None = None
+        is_strategy_signal: bool = False
+        is_trading_advice: bool = False
+        is_executable: bool = False
+        strategy_logic_implemented: bool = False
+        promotion_allowed: bool = False
+        promotion_requires_future_strategy_and_llm_stage: bool = True
         risk_level: str | None = None
         risk_gate_status: str | None = None
         conflict_level: str | None = None

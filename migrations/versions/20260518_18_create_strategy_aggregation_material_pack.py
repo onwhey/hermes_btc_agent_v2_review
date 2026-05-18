@@ -43,8 +43,33 @@ def upgrade() -> None:
         sa.Column("input_invalid_count", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("input_not_implemented_count", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("effective_strategy_count", sa.BigInteger(), nullable=False, server_default="0"),
-        sa.Column("candidate_direction", sa.String(length=32), nullable=True),
-        sa.Column("candidate_direction_confidence", sa.String(length=32), nullable=True),
+        sa.Column("analysis_hypothesis_direction", sa.String(length=32), nullable=True),
+        sa.Column("analysis_hypothesis_confidence", sa.String(length=32), nullable=True),
+        sa.Column(
+            "analysis_hypothesis_semantics",
+            sa.String(length=64),
+            nullable=False,
+            server_default="analysis_hypothesis_only",
+        ),
+        sa.Column(
+            "direction_projection_source",
+            sa.String(length=128),
+            nullable=False,
+            server_default="fixture_or_existing_signal_projection",
+        ),
+        sa.Column("stop_trading_source", sa.String(length=128), nullable=True),
+        sa.Column("risk_gate_projection_source", sa.String(length=128), nullable=True),
+        sa.Column("is_strategy_signal", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("is_trading_advice", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("is_executable", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("strategy_logic_implemented", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("promotion_allowed", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column(
+            "promotion_requires_future_strategy_and_llm_stage",
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.true(),
+        ),
         sa.Column("risk_level", sa.String(length=32), nullable=True),
         sa.Column("risk_gate_status", sa.String(length=64), nullable=True),
         sa.Column("conflict_level", sa.String(length=32), nullable=True),
@@ -95,9 +120,9 @@ def upgrade() -> None:
     op.create_index("idx_strategy_aggregation_snapshot_id", "strategy_aggregation_run", ["snapshot_id"])
     op.create_index("idx_strategy_aggregation_status_created", "strategy_aggregation_run", ["status", "created_at_utc"])
     op.create_index(
-        "idx_strategy_aggregation_candidate",
+        "idx_strategy_aggregation_hypothesis",
         "strategy_aggregation_run",
-        ["candidate_direction", "risk_gate_status"],
+        ["analysis_hypothesis_direction", "risk_gate_status"],
     )
     op.create_index("idx_strategy_aggregation_trace_id", "strategy_aggregation_run", ["trace_id"])
 
@@ -163,7 +188,7 @@ def downgrade() -> None:
     op.drop_table("analysis_material_pack")
 
     op.drop_index("idx_strategy_aggregation_trace_id", table_name="strategy_aggregation_run")
-    op.drop_index("idx_strategy_aggregation_candidate", table_name="strategy_aggregation_run")
+    op.drop_index("idx_strategy_aggregation_hypothesis", table_name="strategy_aggregation_run")
     op.drop_index("idx_strategy_aggregation_status_created", table_name="strategy_aggregation_run")
     op.drop_index("idx_strategy_aggregation_snapshot_id", table_name="strategy_aggregation_run")
     op.drop_index("idx_strategy_aggregation_strategy_signal_run", table_name="strategy_aggregation_run")

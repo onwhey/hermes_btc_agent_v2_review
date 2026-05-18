@@ -33,6 +33,9 @@ INDICATOR_VERSION = "indicator_v1"
 CANDIDATE_SCENARIO_VERSION = "candidate_scenario_v1"
 
 STRATEGY_AGGREGATION_EVENT_SOURCE = "app.strategy.aggregation.service"
+ANALYSIS_HYPOTHESIS_SEMANTICS = "analysis_hypothesis_only"
+DIRECTION_PROJECTION_SOURCE = "fixture_or_existing_signal_projection"
+RISK_GATE_PROJECTION_SOURCE = "upstream_risk_gate_projection"
 
 EXIT_SUCCESS = 0
 EXIT_PARAMETER_ERROR = 1
@@ -50,8 +53,8 @@ class StrategyAggregationStatus(str, Enum):
     SKIPPED = "skipped"
 
 
-class CandidateDirection(str, Enum):
-    """Candidate direction produced by aggregation; never final advice."""
+class AnalysisHypothesisDirection(str, Enum):
+    """Direction placeholder for later analysis; never a strategy signal."""
 
     LONG = "long"
     SHORT = "short"
@@ -59,8 +62,8 @@ class CandidateDirection(str, Enum):
     STOP_TRADING = "stop_trading"
 
 
-class CandidateDirectionConfidence(str, Enum):
-    """Coarse deterministic confidence for candidate consensus only."""
+class AnalysisHypothesisConfidence(str, Enum):
+    """Coarse confidence for an analysis hypothesis projection only."""
 
     LOW = "low"
     MEDIUM = "medium"
@@ -78,7 +81,7 @@ class AggregationRiskLevel(str, Enum):
 
 
 class RiskGateStatus(str, Enum):
-    """Risk-gate outcome for candidate generation."""
+    """Risk-gate outcome for analysis-hypothesis projection."""
 
     PASS = "pass"
     CAUTION = "caution"
@@ -153,10 +156,10 @@ class StrategyVoteSummary:
 
 @dataclass(frozen=True)
 class AggregationDecision:
-    """Deterministic candidate decision before material-pack persistence."""
+    """Deterministic analysis hypothesis before material-pack persistence."""
 
-    candidate_direction: CandidateDirection
-    candidate_direction_confidence: CandidateDirectionConfidence
+    analysis_hypothesis_direction: AnalysisHypothesisDirection
+    analysis_hypothesis_confidence: AnalysisHypothesisConfidence
     risk_level: AggregationRiskLevel
     risk_gate_status: RiskGateStatus
     conflict_level: ConflictLevel
@@ -187,8 +190,18 @@ class StrategyAggregationResult:
     strategy_signal_run_id: str
     trace_id: str
     snapshot_id: str | None = None
-    candidate_direction: CandidateDirection | None = None
-    candidate_direction_confidence: CandidateDirectionConfidence | None = None
+    analysis_hypothesis_direction: AnalysisHypothesisDirection | None = None
+    analysis_hypothesis_confidence: AnalysisHypothesisConfidence | None = None
+    analysis_hypothesis_semantics: str = ANALYSIS_HYPOTHESIS_SEMANTICS
+    direction_projection_source: str = DIRECTION_PROJECTION_SOURCE
+    stop_trading_source: str | None = None
+    risk_gate_projection_source: str | None = None
+    is_strategy_signal: bool = False
+    is_trading_advice: bool = False
+    is_executable: bool = False
+    strategy_logic_implemented: bool = False
+    promotion_allowed: bool = False
+    promotion_requires_future_strategy_and_llm_stage: bool = True
     risk_level: AggregationRiskLevel | None = None
     risk_gate_status: RiskGateStatus | None = None
     conflict_level: ConflictLevel | None = None
@@ -231,8 +244,18 @@ class StrategyAggregationPersistencePayload:
     input_invalid_count: int
     input_not_implemented_count: int
     effective_strategy_count: int
-    candidate_direction: str | None
-    candidate_direction_confidence: str | None
+    analysis_hypothesis_direction: str | None
+    analysis_hypothesis_confidence: str | None
+    analysis_hypothesis_semantics: str
+    direction_projection_source: str
+    stop_trading_source: str | None
+    risk_gate_projection_source: str | None
+    is_strategy_signal: bool
+    is_trading_advice: bool
+    is_executable: bool
+    strategy_logic_implemented: bool
+    promotion_allowed: bool
+    promotion_requires_future_strategy_and_llm_stage: bool
     risk_level: str | None
     risk_gate_status: str | None
     conflict_level: str | None
@@ -300,7 +323,19 @@ def format_strategy_aggregation_result_lines(result: StrategyAggregationResult) 
         f"material_pack_id={result.material_pack_id or ''}",
         f"strategy_signal_run_id={result.strategy_signal_run_id}",
         f"snapshot_id={result.snapshot_id or ''}",
-        f"candidate_direction={result.candidate_direction.value if result.candidate_direction else ''}",
+        f"analysis_hypothesis_direction={result.analysis_hypothesis_direction.value if result.analysis_hypothesis_direction else ''}",
+        f"analysis_hypothesis_confidence={result.analysis_hypothesis_confidence.value if result.analysis_hypothesis_confidence else ''}",
+        f"analysis_hypothesis_semantics={result.analysis_hypothesis_semantics}",
+        f"direction_projection_source={result.direction_projection_source}",
+        f"stop_trading_source={result.stop_trading_source or ''}",
+        f"risk_gate_projection_source={result.risk_gate_projection_source or ''}",
+        f"is_strategy_signal={str(result.is_strategy_signal).lower()}",
+        f"is_trading_advice={str(result.is_trading_advice).lower()}",
+        f"is_executable={str(result.is_executable).lower()}",
+        f"strategy_logic_implemented={str(result.strategy_logic_implemented).lower()}",
+        f"promotion_allowed={str(result.promotion_allowed).lower()}",
+        "promotion_requires_future_strategy_and_llm_stage="
+        f"{str(result.promotion_requires_future_strategy_and_llm_stage).lower()}",
         f"risk_level={result.risk_level.value if result.risk_level else ''}",
         f"risk_gate_status={result.risk_gate_status.value if result.risk_gate_status else ''}",
         f"conflict_level={result.conflict_level.value if result.conflict_level else ''}",
@@ -311,18 +346,21 @@ def format_strategy_aggregation_result_lines(result: StrategyAggregationResult) 
 
 __all__ = [
     "AGGREGATION_VERSION",
+    "ANALYSIS_HYPOTHESIS_SEMANTICS",
     "CANDIDATE_SCENARIO_VERSION",
+    "DIRECTION_PROJECTION_SOURCE",
     "INDICATOR_VERSION",
     "MATERIAL_SCHEMA_VERSION",
+    "RISK_GATE_PROJECTION_SOURCE",
     "EXIT_BLOCKED",
     "EXIT_FAILED",
     "EXIT_PARAMETER_ERROR",
     "EXIT_SUCCESS",
     "AggregationDecision",
     "AggregationRiskLevel",
+    "AnalysisHypothesisConfidence",
+    "AnalysisHypothesisDirection",
     "AnalysisMaterialPackPersistencePayload",
-    "CandidateDirection",
-    "CandidateDirectionConfidence",
     "ConflictLevel",
     "MaterialPackBuildResult",
     "RiskGateStatus",

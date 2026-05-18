@@ -893,7 +893,7 @@ def _strategy_scheduler_result_details(result: Any) -> dict[str, object]:
 
 def _strategy_aggregation_result_details(result: Any) -> dict[str, object]:
     status = getattr(result, "status", "")
-    candidate_direction = getattr(result, "candidate_direction", "")
+    analysis_hypothesis_direction = getattr(result, "analysis_hypothesis_direction", "")
     risk_level = getattr(result, "risk_level", "")
     conflict_level = getattr(result, "conflict_level", "")
     hermes_status = getattr(result, "hermes_status", "")
@@ -903,7 +903,13 @@ def _strategy_aggregation_result_details(result: Any) -> dict[str, object]:
         "material_pack_id": getattr(result, "material_pack_id", None),
         "strategy_signal_run_id": getattr(result, "strategy_signal_run_id", None),
         "snapshot_id": getattr(result, "snapshot_id", None),
-        "candidate_direction": str(getattr(candidate_direction, "value", candidate_direction)),
+        "analysis_hypothesis_direction": str(getattr(analysis_hypothesis_direction, "value", analysis_hypothesis_direction)),
+        "analysis_hypothesis_semantics": getattr(result, "analysis_hypothesis_semantics", ""),
+        "direction_projection_source": getattr(result, "direction_projection_source", ""),
+        "stop_trading_source": getattr(result, "stop_trading_source", None),
+        "is_strategy_signal": getattr(result, "is_strategy_signal", False),
+        "is_trading_advice": getattr(result, "is_trading_advice", False),
+        "is_executable": getattr(result, "is_executable", False),
         "risk_level": str(getattr(risk_level, "value", risk_level)),
         "conflict_level": str(getattr(conflict_level, "value", conflict_level)),
         "hermes_status": str(getattr(hermes_status, "value", hermes_status)),

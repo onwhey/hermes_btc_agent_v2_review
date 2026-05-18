@@ -6,7 +6,7 @@ This plan must be read with the following corrected boundary:
 
 1. Stage 18 does not implement real trading strategies.
 2. Stage 18 does not independently judge long/short direction from Klines,
-   support/resistance, reward/risk, ATR, swing structure, or any indicator.
+   support/resistance, context upside/downside, ATR, swing structure, or any indicator.
 3. Stage 18 does not generate strategy signals, operation advice, or executable
    trading instructions.
 4. `long` / `short` / `wait` / `stop_trading` in this stage are analysis
@@ -27,168 +27,143 @@ promotion_allowed = false
 promotion_requires_future_strategy_and_llm_stage = true
 ```
 
+Persistent direction fields must use `analysis_hypothesis_direction` and
+`analysis_hypothesis_confidence`. These fields are not strategy signals, not
+trading advice, not executable decisions, and cannot be promoted directly by
+Hermes, Admin, replay, or later modules.
+
+Any support/resistance ratio must be named as context only, such as
+`context_upside_downside_ratio`, with semantics
+`support_resistance_context_only_not_entry_exit_signal`.
+
+`stop_trading_hypothesis` is allowed only as an upstream risk-gate projection
+from existing stage-16 rows or explicit test fixtures. Stage 18 must not read
+Klines, volatility, or support/resistance and independently decide to stop
+trading.
+
 Real Gann, trend, support/resistance, risk-control, and other strategies must
 be developed later as independent plugin-style strategy classes.
 
-## 1. 阶段名称
+## 1. 闃舵鍚嶇О
 
-第 18 阶段：`strategy_aggregation_material_pack`
+绗?18 闃舵锛歚strategy_aggregation_material_pack`
 
-中文名称：策略聚合、候选场景与大模型数学材料包构建。
-
-本版定位：在原第 18 plans 基础上，强化“策略有效性、判断正确性、后续可验证、后续可复盘”的要求。第 18 不只是把多个策略信号做摘要，而是要把每次候选判断变成可以被后续大模型审查、生命周期层引用、复盘系统评估的结构化证据。
-
+涓枃鍚嶇О锛氱瓥鐣ヨ仛鍚堛€佸€欓€夊満鏅笌澶фā鍨嬫暟瀛︽潗鏂欏寘鏋勫缓銆?
+鏈増瀹氫綅锛氬湪鍘熺 18 plans 鍩虹涓婏紝寮哄寲鈥滅瓥鐣ユ湁鏁堟€с€佸垽鏂纭€с€佸悗缁彲楠岃瘉銆佸悗缁彲澶嶇洏鈥濈殑瑕佹眰銆傜 18 涓嶅彧鏄妸澶氫釜绛栫暐淇″彿鍋氭憳瑕侊紝鑰屾槸瑕佹妸姣忔鍊欓€夊垽鏂彉鎴愬彲浠ヨ鍚庣画澶фā鍨嬪鏌ャ€佺敓鍛藉懆鏈熷眰寮曠敤銆佸鐩樼郴缁熻瘎浼扮殑缁撴瀯鍖栬瘉鎹€?
 ---
 
-## 2. 阶段目标
+## 2. 闃舵鐩爣
 
-第 18 阶段在第 16 独立策略信号已经生成、第 17 策略信号调度已经完成之后，负责完成三件事：
-
-1. **策略聚合**：对多个独立策略信号进行确定性聚合，形成候选方向、风险状态、策略一致性、策略冲突、风控否决结果。
-2. **候选场景构建**：基于策略信号和市场快照，形成可验证的候选场景，包括成立条件、失效条件、目标观察区、初步风险收益比、主要证据、反方证据。
-3. **数学材料包构建**：基于 `MarketContextSnapshot` 对应的 K线窗口，计算 swing、ATR、振幅、支撑压力、结构状态、问题清单，并写入 `analysis_material_pack`，供第 19 大模型分析层使用。
-
-第 18 阶段不是最终建议层，不负责建议生命周期，不调用 DeepSeek / GPT / Claude 等大模型，不自动交易，不读取账户、订单或持仓。
-
+绗?18 闃舵鍦ㄧ 16 鐙珛绛栫暐淇″彿宸茬粡鐢熸垚銆佺 17 绛栫暐淇″彿璋冨害宸茬粡瀹屾垚涔嬪悗锛岃礋璐ｅ畬鎴愪笁浠朵簨锛?
+1. **绛栫暐鑱氬悎**锛氬澶氫釜鐙珛绛栫暐淇″彿杩涜纭畾鎬ц仛鍚堬紝褰㈡垚鍊欓€夋柟鍚戙€侀闄╃姸鎬併€佺瓥鐣ヤ竴鑷存€с€佺瓥鐣ュ啿绐併€侀鎺у惁鍐崇粨鏋溿€?2. **鍊欓€夊満鏅瀯寤?*锛氬熀浜庣瓥鐣ヤ俊鍙峰拰甯傚満蹇収锛屽舰鎴愬彲楠岃瘉鐨勫€欓€夊満鏅紝鍖呮嫭鎴愮珛鏉′欢銆佸け鏁堟潯浠躲€佺洰鏍囪瀵熷尯銆佸垵姝ラ闄╂敹鐩婃瘮銆佷富瑕佽瘉鎹€佸弽鏂硅瘉鎹€?3. **鏁板鏉愭枡鍖呮瀯寤?*锛氬熀浜?`MarketContextSnapshot` 瀵瑰簲鐨?K绾跨獥鍙ｏ紝璁＄畻 swing銆丄TR銆佹尟骞呫€佹敮鎾戝帇鍔涖€佺粨鏋勭姸鎬併€侀棶棰樻竻鍗曪紝骞跺啓鍏?`analysis_material_pack`锛屼緵绗?19 澶фā鍨嬪垎鏋愬眰浣跨敤銆?
+绗?18 闃舵涓嶆槸鏈€缁堝缓璁眰锛屼笉璐熻矗寤鸿鐢熷懡鍛ㄦ湡锛屼笉璋冪敤 DeepSeek / GPT / Claude 绛夊ぇ妯″瀷锛屼笉鑷姩浜ゆ槗锛屼笉璇诲彇璐︽埛銆佽鍗曟垨鎸佷粨銆?
 ---
 
-## 3. 链路定位
+## 3. 閾捐矾瀹氫綅
 
 ```text
-第 15 层：MarketContextSnapshot 市场上下文快照
-    ↓
-第 16 层：StrategySignalRun / StrategySignalResult 独立策略信号
-    ↓
-第 17 层：StrategySignalScheduler 策略信号调度编排
-    ↓
-第 18 层：StrategyAggregationRun + AnalysisMaterialPack 策略聚合、候选场景与数学材料包
-    ↓
-第 19 层：LLMAnalysisRun 大模型分析
-    ↓
-第 20 层：AdviceLifecycle 最终建议生命周期
-```
+绗?15 灞傦細MarketContextSnapshot 甯傚満涓婁笅鏂囧揩鐓?    鈫?绗?16 灞傦細StrategySignalRun / StrategySignalResult 鐙珛绛栫暐淇″彿
+    鈫?绗?17 灞傦細StrategySignalScheduler 绛栫暐淇″彿璋冨害缂栨帓
+    鈫?绗?18 灞傦細StrategyAggregationRun + AnalysisMaterialPack 绛栫暐鑱氬悎銆佸€欓€夊満鏅笌鏁板鏉愭枡鍖?    鈫?绗?19 灞傦細LLMAnalysisRun 澶фā鍨嬪垎鏋?    鈫?绗?20 灞傦細AdviceLifecycle 鏈€缁堝缓璁敓鍛藉懆鏈?```
 
-第 18 只消费已有结果：
+绗?18 鍙秷璐瑰凡鏈夌粨鏋滐細
 
 ```text
 strategy_signal_run
 strategy_signal_result
 snapshot_id
-MarketContextSnapshot 对应的 4h / 1d K线窗口或快照引用范围
+MarketContextSnapshot 瀵瑰簲鐨?4h / 1d K绾跨獥鍙ｆ垨蹇収寮曠敤鑼冨洿
 ```
 
-第 18 不得：
-
+绗?18 涓嶅緱锛?
 ```text
-重新跑第 16 策略信号
-重新生成第 15 snapshot
-请求 Binance REST / WebSocket
-调用大模型
-生成最终交易建议
-管理 active advice 生命周期
+閲嶆柊璺戠 16 绛栫暐淇″彿
+閲嶆柊鐢熸垚绗?15 snapshot
+璇锋眰 Binance REST / WebSocket
+璋冪敤澶фā鍨?鐢熸垚鏈€缁堜氦鏄撳缓璁?绠＄悊 active advice 鐢熷懡鍛ㄦ湡
 ```
 
-如果第 15 快照只保存窗口范围或引用关系，而没有保存完整 K线内容，第 18 可以根据 `snapshot_id` 对应的时间范围从本地数据库读取已收盘 K线，但必须满足：
+濡傛灉绗?15 蹇収鍙繚瀛樼獥鍙ｈ寖鍥存垨寮曠敤鍏崇郴锛岃€屾病鏈変繚瀛樺畬鏁?K绾垮唴瀹癸紝绗?18 鍙互鏍规嵁 `snapshot_id` 瀵瑰簲鐨勬椂闂磋寖鍥翠粠鏈湴鏁版嵁搴撹鍙栧凡鏀剁洏 K绾匡紝浣嗗繀椤绘弧瓒筹細
 
 ```text
-只能读取 snapshot 时点及之前已经确认收盘的数据
-不得读取 target close 之后的未来 K线
-不得修改任何 K线数据
-计算结果必须写入 analysis_material_pack
+鍙兘璇诲彇 snapshot 鏃剁偣鍙婁箣鍓嶅凡缁忕‘璁ゆ敹鐩樼殑鏁版嵁
+涓嶅緱璇诲彇 target close 涔嬪悗鐨勬湭鏉?K绾?涓嶅緱淇敼浠讳綍 K绾挎暟鎹?璁＄畻缁撴灉蹇呴』鍐欏叆 analysis_material_pack
 ```
 
 ---
 
-## 4. 核心原则
+## 4. 鏍稿績鍘熷垯
 
-### 4.1 候选方向不是最终建议
-
-第 18 可以输出：
-
+### 4.1 鍊欓€夋柟鍚戜笉鏄渶缁堝缓璁?
+绗?18 鍙互杈撳嚭锛?
 ```text
-candidate_direction = long / short / wait / stop_trading / neutral / mixed
+analysis_hypothesis_direction = long / short / wait / stop_trading / neutral / mixed
 ```
 
-但这只是“聚合层候选方向”，不是最终交易建议。
-
-第 18 严禁输出或暗示：
-
-```text
-建议开多
-建议开空
-建议加仓
-建议减仓
-建议平仓
-止盈指令
-止损指令
-```
-
-第 18 可以输出：
+浣嗚繖鍙槸鈥滆仛鍚堝眰鍊欓€夋柟鍚戔€濓紝涓嶆槸鏈€缁堜氦鏄撳缓璁€?
+绗?18 涓ョ杈撳嚭鎴栨殫绀猴細
 
 ```text
-候选成立条件
-候选失效条件
-候选目标观察区
-初步风险收益比
+寤鸿寮€澶?寤鸿寮€绌?寤鸿鍔犱粨
+寤鸿鍑忎粨
+寤鸿骞充粨
+姝㈢泩鎸囦护
+姝㈡崯鎸囦护
 ```
 
-但必须明确其性质是候选场景，不是操作指令。
+绗?18 鍙互杈撳嚭锛?
+```text
+鍊欓€夋垚绔嬫潯浠?鍊欓€夊け鏁堟潯浠?鍊欓€夌洰鏍囪瀵熷尯
+鍒濇椋庨櫓鏀剁泭姣?```
 
-### 4.2 所有候选判断必须可验证
+浣嗗繀椤绘槑纭叾鎬ц川鏄€欓€夊満鏅紝涓嶆槸鎿嶄綔鎸囦护銆?
+### 4.2 鎵€鏈夊€欓€夊垽鏂繀椤诲彲楠岃瘉
 
-任何 `candidate_direction` 都不能只给一个方向。必须配套保存：
+浠讳綍 `analysis_hypothesis_direction` 閮戒笉鑳藉彧缁欎竴涓柟鍚戙€傚繀椤婚厤濂椾繚瀛橈細
 
 ```text
-分析假设观察条件 activation_check
-分析假设失效检查 invalidation_check
-目标观察区 target_observation_zone
-初步风险收益比 preliminary_reward_risk_ratio
-主要证据 supporting_evidence
-反方证据 opposing_evidence
-风险说明 risk_notes
-后续验证计划 validation_plan
+鍒嗘瀽鍋囪瑙傚療鏉′欢 activation_check
+鍒嗘瀽鍋囪澶辨晥妫€鏌?invalidation_check
+鐩爣瑙傚療鍖?target_observation_zone
+鍒濇椋庨櫓鏀剁泭姣?context_upside_downside_ratio
+涓昏璇佹嵁 supporting_evidence
+鍙嶆柟璇佹嵁 opposing_evidence
+椋庨櫓璇存槑 risk_notes
+鍚庣画楠岃瘉璁″垝 validation_plan
 ```
 
-示例：
-
+绀轰緥锛?
 ```json
 {
-  "candidate_direction": "long",
-  "activation_check": "仅供后续分析层观察，不是执行触发条件",
-  "invalidation_check": "仅供后续分析层检查，不是交易止损指令",
-  "target_observation_zone": "最近 swing high 至上方压力区间",
-  "preliminary_reward_risk_ratio": 1.8,
-  "supporting_evidence": ["趋势结构偏多", "价格仍位于最近 higher low 上方"],
-  "opposing_evidence": ["上方压力接近", "短期振幅扩张"],
-  "risk_notes": ["该候选方向不能解释为立即开仓指令"],
-  "validation_plan": ["后续观察 1 到 6 根 4h K线是否触发成立或失效条件"]
+  "analysis_hypothesis_direction": "long",
+  "activation_check": "浠呬緵鍚庣画鍒嗘瀽灞傝瀵燂紝涓嶆槸鎵ц瑙﹀彂鏉′欢",
+  "invalidation_check": "浠呬緵鍚庣画鍒嗘瀽灞傛鏌ワ紝涓嶆槸浜ゆ槗姝㈡崯鎸囦护",
+  "target_observation_zone": "鏈€杩?swing high 鑷充笂鏂瑰帇鍔涘尯闂?,
+  "context_upside_downside_ratio": 1.8,
+  "supporting_evidence": ["瓒嬪娍缁撴瀯鍋忓", "浠锋牸浠嶄綅浜庢渶杩?higher low 涓婃柟"],
+  "opposing_evidence": ["涓婃柟鍘嬪姏鎺ヨ繎", "鐭湡鎸箙鎵╁紶"],
+  "risk_notes": ["璇ュ€欓€夋柟鍚戜笉鑳借В閲婁负绔嬪嵆寮€浠撴寚浠?],
+  "validation_plan": ["鍚庣画瑙傚療 1 鍒?6 鏍?4h K绾挎槸鍚﹁Е鍙戞垚绔嬫垨澶辨晥鏉′欢"]
 }
 ```
 
-### 4.3 禁止未来函数
+### 4.3 绂佹鏈潵鍑芥暟
 
-第 18 的所有指标和候选场景只能基于 `snapshot_id` 对应时点可见的数据。
-
-禁止：
-
+绗?18 鐨勬墍鏈夋寚鏍囧拰鍊欓€夊満鏅彧鑳藉熀浜?`snapshot_id` 瀵瑰簲鏃剁偣鍙鐨勬暟鎹€?
+绂佹锛?
 ```text
-读取 target close 之后的 K线参与 swing / ATR / 支撑压力计算
-使用后续价格走势反推当时的候选方向
-用当前数据库最新 K线污染历史 snapshot 的材料包
+璇诲彇 target close 涔嬪悗鐨?K绾垮弬涓?swing / ATR / 鏀拺鍘嬪姏璁＄畻
+浣跨敤鍚庣画浠锋牸璧板娍鍙嶆帹褰撴椂鐨勫€欓€夋柟鍚?鐢ㄥ綋鍓嶆暟鎹簱鏈€鏂?K绾挎薄鏌撳巻鍙?snapshot 鐨勬潗鏂欏寘
 ```
 
-必须保证：
-
+蹇呴』淇濊瘉锛?
 ```text
-同一个 strategy_signal_run_id + snapshot_id 在不同时间重跑，第 18 的核心材料应该稳定一致。
-```
+鍚屼竴涓?strategy_signal_run_id + snapshot_id 鍦ㄤ笉鍚屾椂闂撮噸璺戯紝绗?18 鐨勬牳蹇冩潗鏂欏簲璇ョǔ瀹氫竴鑷淬€?```
 
-如果底层 K线发生合法修订或补齐，应通过新的 material version / rerun 机制记录，不得无声覆盖旧材料。
+濡傛灉搴曞眰 K绾垮彂鐢熷悎娉曚慨璁㈡垨琛ラ綈锛屽簲閫氳繃鏂扮殑 material version / rerun 鏈哄埗璁板綍锛屼笉寰楁棤澹拌鐩栨棫鏉愭枡銆?
+### 4.4 鎸囨爣銆佽仛鍚堝拰鏉愭枡鍖呭繀椤荤増鏈寲
 
-### 4.4 指标、聚合和材料包必须版本化
-
-第 18 必须记录：
-
+绗?18 蹇呴』璁板綍锛?
 ```text
 aggregation_version
 material_schema_version
@@ -196,62 +171,42 @@ indicator_version
 candidate_scenario_version
 ```
 
-原因：ATR、swing、支撑压力、风险收益比和风控否决规则未来一定会调整。没有版本号，后续复盘无法判断某次候选判断是按哪个算法生成的。
+鍘熷洜锛欰TR銆乻wing銆佹敮鎾戝帇鍔涖€侀闄╂敹鐩婃瘮鍜岄鎺у惁鍐宠鍒欐湭鏉ヤ竴瀹氫細璋冩暣銆傛病鏈夌増鏈彿锛屽悗缁鐩樻棤娉曞垽鏂煇娆″€欓€夊垽鏂槸鎸夊摢涓畻娉曠敓鎴愮殑銆?
+### 4.5 椋庢帶鍙互鍚﹀喅鏂瑰悜
 
-### 4.5 风控可以否决方向
-
-风控类策略和波动率风险策略可以把候选方向从 `long / short` 改为：
-
+椋庢帶绫荤瓥鐣ュ拰娉㈠姩鐜囬闄╃瓥鐣ュ彲浠ユ妸鍊欓€夋柟鍚戜粠 `long / short` 鏀逛负锛?
 ```text
 wait
 stop_trading
 ```
 
-示例：
-
+绀轰緥锛?
 ```text
-趋势结构偏多，但波动率风险极高
-=> candidate_direction = wait
+瓒嬪娍缁撴瀯鍋忓锛屼絾娉㈠姩鐜囬闄╂瀬楂?=> analysis_hypothesis_direction = wait
 => risk_gate_status = blocked_by_volatility
 ```
 
-聚合层必须明确告诉用户和后续模型：到底是哪类风险导致等待或停止交易。
+鑱氬悎灞傚繀椤绘槑纭憡璇夌敤鎴峰拰鍚庣画妯″瀷锛氬埌搴曟槸鍝被椋庨櫓瀵艰嚧绛夊緟鎴栧仠姝氦鏄撱€?
+### 4.6 璁板綍鍒嗘锛屼笉鍙緭鍑虹粨璁?
+绗?18 蹇呴』璁板綍锛?
+```text
+鏀寔澶氬ご鐨勭瓥鐣?鏀寔绌哄ご鐨勭瓥鐣?鏀寔绛夊緟鐨勭瓥鐣?鍙彁绀洪闄╃殑绛栫暐
+鏈疄鐜扮瓥鐣?澶辫触鎴栨棤鏁堢瓥鐣?鍐茬獊绛夌骇
+椋庢帶鍚﹀喅鐘舵€?```
 
-### 4.6 记录分歧，不只输出结论
-
-第 18 必须记录：
+鍚庣画澶嶇洏鏃讹紝涓嶅彧鐪嬧€滆仛鍚堟渶缁堝亸澶?鍋忕┖鈥濓紝杩樿鑳借瘎浼帮細
 
 ```text
-支持多头的策略
-支持空头的策略
-支持等待的策略
-只提示风险的策略
-未实现策略
-失败或无效策略
-冲突等级
-风控否决状态
-```
+鍝釜绛栫暐璐＄尞浜嗘纭垽鏂?鍝釜绛栫暐缁忓父鍒堕€犲櫔闊?椋庢帶鍚﹀喅鏄惁鐪熺殑鍑忓皯浜嗛敊璇氦鏄?绛栫暐涔嬮棿鏄惁閲嶅琛ㄨ揪鍚屼竴涓洜瀛?```
 
-后续复盘时，不只看“聚合最终偏多/偏空”，还要能评估：
-
-```text
-哪个策略贡献了正确判断
-哪个策略经常制造噪音
-风控否决是否真的减少了错误交易
-策略之间是否重复表达同一个因子
-```
-
-### 4.7 Hermes 完全配置化
-
-第 18 支持 Hermes 通知，但发送与否由 `.env` 控制。用户可以同时开启第 17、第 18、第 19、第 20 的通知，也可以全部关闭。
-
-第 18 不强制只发一条消息，但文档必须提醒：成熟阶段通常建议关闭底层通知，只保留最高决策层通知和异常通知。
-
+### 4.7 Hermes 瀹屽叏閰嶇疆鍖?
+绗?18 鏀寔 Hermes 閫氱煡锛屼絾鍙戦€佷笌鍚︾敱 `.env` 鎺у埗銆傜敤鎴峰彲浠ュ悓鏃跺紑鍚 17銆佺 18銆佺 19銆佺 20 鐨勯€氱煡锛屼篃鍙互鍏ㄩ儴鍏抽棴銆?
+绗?18 涓嶅己鍒跺彧鍙戜竴鏉℃秷鎭紝浣嗘枃妗ｅ繀椤绘彁閱掞細鎴愮啛闃舵閫氬父寤鸿鍏抽棴搴曞眰閫氱煡锛屽彧淇濈暀鏈€楂樺喅绛栧眰閫氱煡鍜屽紓甯搁€氱煡銆?
 ---
 
-## 5. 输入数据
+## 5. 杈撳叆鏁版嵁
 
-第 18 的核心输入：
+绗?18 鐨勬牳蹇冭緭鍏ワ細
 
 ```text
 strategy_signal_run_id
@@ -259,17 +214,17 @@ snapshot_id
 symbol
 base_interval
 higher_interval
-strategy_signal_result 列表
-MarketContextSnapshot 对应的 4h / 1d K线窗口或快照引用范围
+strategy_signal_result 鍒楄〃
+MarketContextSnapshot 瀵瑰簲鐨?4h / 1d K绾跨獥鍙ｆ垨蹇収寮曠敤鑼冨洿
 ```
 
-有效输入状态：
+鏈夋晥杈撳叆鐘舵€侊細
 
 ```text
 strategy_signal_run.status in success / partial_success
 ```
 
-禁止输入状态：
+绂佹杈撳叆鐘舵€侊細
 
 ```text
 blocked
@@ -278,13 +233,12 @@ skipped
 running
 ```
 
-如果输入的 `strategy_signal_run` 状态不合法，第 18 应返回 `blocked`，并记录原因。
-
+濡傛灉杈撳叆鐨?`strategy_signal_run` 鐘舵€佷笉鍚堟硶锛岀 18 搴旇繑鍥?`blocked`锛屽苟璁板綍鍘熷洜銆?
 ---
 
-## 6. 输出数据
+## 6. 杈撳嚭鏁版嵁
 
-第 18 至少新增两类持久化结果：
+绗?18 鑷冲皯鏂板涓ょ被鎸佷箙鍖栫粨鏋滐細
 
 ```text
 strategy_aggregation_run
@@ -293,10 +247,8 @@ analysis_material_pack
 
 ### 6.1 strategy_aggregation_run
 
-职责：记录本轮策略聚合、候选方向、风险否决、冲突情况和候选场景摘要。
-
-建议字段：
-
+鑱岃矗锛氳褰曟湰杞瓥鐣ヨ仛鍚堛€佸€欓€夋柟鍚戙€侀闄╁惁鍐炽€佸啿绐佹儏鍐靛拰鍊欓€夊満鏅憳瑕併€?
+寤鸿瀛楁锛?
 ```text
 id
 aggregation_run_id
@@ -316,8 +268,8 @@ input_failed_count
 input_invalid_count
 input_not_implemented_count
 effective_strategy_count
-candidate_direction
-candidate_direction_confidence
+analysis_hypothesis_direction
+analysis_hypothesis_confidence
 risk_level
 risk_gate_status
 conflict_level
@@ -341,7 +293,7 @@ created_at_utc
 updated_at_utc
 ```
 
-建议状态值：
+寤鸿鐘舵€佸€硷細
 
 ```text
 success
@@ -351,22 +303,14 @@ failed
 skipped
 ```
 
-说明：
-
+璇存槑锛?
 ```text
-success：聚合成功，输入策略信号质量满足要求。
-partial_success：聚合完成，但存在部分策略 failed / invalid / not_implemented。
-blocked：输入条件不满足，例如 strategy_signal_run 状态不合法、缺少 snapshot_id、有效策略不足、K线窗口不足。
-failed：数据库异常、JSON 序列化异常、代码异常或不可恢复计算异常。
-skipped：幂等命中，已有相同输入的聚合结果。
-```
+success锛氳仛鍚堟垚鍔燂紝杈撳叆绛栫暐淇″彿璐ㄩ噺婊¤冻瑕佹眰銆?partial_success锛氳仛鍚堝畬鎴愶紝浣嗗瓨鍦ㄩ儴鍒嗙瓥鐣?failed / invalid / not_implemented銆?blocked锛氳緭鍏ユ潯浠朵笉婊¤冻锛屼緥濡?strategy_signal_run 鐘舵€佷笉鍚堟硶銆佺己灏?snapshot_id銆佹湁鏁堢瓥鐣ヤ笉瓒炽€並绾跨獥鍙ｄ笉瓒炽€?failed锛氭暟鎹簱寮傚父銆丣SON 搴忓垪鍖栧紓甯搞€佷唬鐮佸紓甯告垨涓嶅彲鎭㈠璁＄畻寮傚父銆?skipped锛氬箓绛夊懡涓紝宸叉湁鐩稿悓杈撳叆鐨勮仛鍚堢粨鏋溿€?```
 
 ### 6.2 analysis_material_pack
 
-职责：记录给第 19 大模型使用的结构化数学材料包和问题清单。
-
-建议字段：
-
+鑱岃矗锛氳褰曠粰绗?19 澶фā鍨嬩娇鐢ㄧ殑缁撴瀯鍖栨暟瀛︽潗鏂欏寘鍜岄棶棰樻竻鍗曘€?
+寤鸿瀛楁锛?
 ```text
 id
 material_pack_id
@@ -390,12 +334,9 @@ created_at_utc
 updated_at_utc
 ```
 
-`material_json` 保存确定性计算材料。
-
-`question_json` 保存第 19 阶段要问大模型的问题清单。
-
-`data_window_json` 必须记录使用的 K线范围，例如：
-
+`material_json` 淇濆瓨纭畾鎬ц绠楁潗鏂欍€?
+`question_json` 淇濆瓨绗?19 闃舵瑕侀棶澶фā鍨嬬殑闂娓呭崟銆?
+`data_window_json` 蹇呴』璁板綍浣跨敤鐨?K绾胯寖鍥达紝渚嬪锛?
 ```json
 {
   "base_interval": "4h",
@@ -409,8 +350,7 @@ updated_at_utc
 }
 ```
 
-`future_leakage_guard_json` 必须记录防未来函数检查结果，例如：
-
+`future_leakage_guard_json` 蹇呴』璁板綍闃叉湭鏉ュ嚱鏁版鏌ョ粨鏋滐紝渚嬪锛?
 ```json
 {
   "max_base_open_time_used_utc": "...",
@@ -421,26 +361,19 @@ updated_at_utc
 
 ---
 
-## 7. 聚合逻辑第一版
+## 7. 鑱氬悎閫昏緫绗竴鐗?
+绗?18 绗竴鐗堥噰鐢ㄧ‘瀹氭€ц鍒欙紝涓嶅紩鍏ユ満鍣ㄥ涔狅紝涓嶈皟鐢ㄥぇ妯″瀷銆?
+### 7.1 鏈夋晥绛栫暐璇嗗埆
 
-第 18 第一版采用确定性规则，不引入机器学习，不调用大模型。
-
-### 7.1 有效策略识别
-
-根据 `strategy_signal_result.strategy_status` 区分：
-
+鏍规嵁 `strategy_signal_result.strategy_status` 鍖哄垎锛?
 ```text
-success：有效策略信号
-failed：策略执行失败
-invalid：策略输出无效
-not_implemented：策略未实现
+success锛氭湁鏁堢瓥鐣ヤ俊鍙?failed锛氱瓥鐣ユ墽琛屽け璐?invalid锛氱瓥鐣ヨ緭鍑烘棤鏁?not_implemented锛氱瓥鐣ユ湭瀹炵幇
 ```
 
-`not_implemented` 不应导致聚合失败。当前阶段江恩策略可能仍为占位策略，因此 `partial_success` 是可接受状态。
+`not_implemented` 涓嶅簲瀵艰嚧鑱氬悎澶辫触銆傚綋鍓嶉樁娈垫睙鎭╃瓥鐣ュ彲鑳戒粛涓哄崰浣嶇瓥鐣ワ紝鍥犳 `partial_success` 鏄彲鎺ュ彈鐘舵€併€?
+### 7.2 鏂瑰悜褰掔被
 
-### 7.2 方向归类
-
-聚合层读取策略结果中的：
+鑱氬悎灞傝鍙栫瓥鐣ョ粨鏋滀腑鐨勶細
 
 ```text
 direction_bias
@@ -451,56 +384,46 @@ reason_json
 evidence_json
 ```
 
-第一版可以按简单规则归类：
+绗竴鐗堝彲浠ユ寜绠€鍗曡鍒欏綊绫伙細
 
 ```text
-bullish / long_bias：支持多头
-bearish / short_bias：支持空头
-neutral / range / wait：支持等待或中性
-risk_only：只提示风险，不直接参与多空投票
-not_implemented：不参与方向投票，但计入未实现策略
-failed / invalid：不参与方向投票，但计入质量问题
+bullish / long_bias锛氭敮鎸佸澶?bearish / short_bias锛氭敮鎸佺┖澶?neutral / range / wait锛氭敮鎸佺瓑寰呮垨涓€?risk_only锛氬彧鎻愮ず椋庨櫓锛屼笉鐩存帴鍙備笌澶氱┖鎶曠エ
+not_implemented锛氫笉鍙備笌鏂瑰悜鎶曠エ锛屼絾璁″叆鏈疄鐜扮瓥鐣?failed / invalid锛氫笉鍙備笌鏂瑰悜鎶曠エ锛屼絾璁″叆璐ㄩ噺闂
 ```
 
-### 7.3 候选方向规则
-
-基础规则：
-
+### 7.3 鍊欓€夋柟鍚戣鍒?
+鍩虹瑙勫垯锛?
 ```text
-多头有效策略数量 > 空头有效策略数量，且风控未否决：candidate_direction = long
-空头有效策略数量 > 多头有效策略数量，且风控未否决：candidate_direction = short
-多空接近或有效策略不足：candidate_direction = wait / mixed
-风控极高或风险策略否决：candidate_direction = wait 或 stop_trading
+澶氬ご鏈夋晥绛栫暐鏁伴噺 > 绌哄ご鏈夋晥绛栫暐鏁伴噺锛屼笖椋庢帶鏈惁鍐筹細analysis_hypothesis_direction = long
+绌哄ご鏈夋晥绛栫暐鏁伴噺 > 澶氬ご鏈夋晥绛栫暐鏁伴噺锛屼笖椋庢帶鏈惁鍐筹細analysis_hypothesis_direction = short
+澶氱┖鎺ヨ繎鎴栨湁鏁堢瓥鐣ヤ笉瓒筹細analysis_hypothesis_direction = wait / mixed
+椋庢帶鏋侀珮鎴栭闄╃瓥鐣ュ惁鍐筹細analysis_hypothesis_direction = wait 鎴?stop_trading
 ```
 
-候选方向置信度建议：
-
+鍊欓€夋柟鍚戠疆淇″害寤鸿锛?
 ```text
 low / medium / high
 ```
 
-第一版不要过度精细。置信度只能表示聚合层信号一致性强弱，不代表盈利概率。
+绗竴鐗堜笉瑕佽繃搴︾簿缁嗐€傜疆淇″害鍙兘琛ㄧず鑱氬悎灞備俊鍙蜂竴鑷存€у己寮憋紝涓嶄唬琛ㄧ泩鍒╂鐜囥€?
+### 7.4 椋庢帶浼樺厛瑙勫垯
 
-### 7.4 风控优先规则
-
-建议字段：
-
+寤鸿瀛楁锛?
 ```text
 risk_gate_status = pass / caution / blocked_by_volatility / blocked_by_conflict / insufficient_data
 ```
 
-示例：
-
+绀轰緥锛?
 ```text
-趋势偏多，波动率风险高：candidate_direction = wait，risk_gate_status = blocked_by_volatility
-趋势偏空，风险可控：candidate_direction = short，risk_gate_status = pass
-多空策略严重冲突：candidate_direction = wait，risk_gate_status = blocked_by_conflict
-有效数据不足：candidate_direction = wait，risk_gate_status = insufficient_data
+瓒嬪娍鍋忓锛屾尝鍔ㄧ巼椋庨櫓楂橈細analysis_hypothesis_direction = wait锛宺isk_gate_status = blocked_by_volatility
+瓒嬪娍鍋忕┖锛岄闄╁彲鎺э細analysis_hypothesis_direction = short锛宺isk_gate_status = pass
+澶氱┖绛栫暐涓ラ噸鍐茬獊锛歝andidate_direction = wait锛宺isk_gate_status = blocked_by_conflict
+鏈夋晥鏁版嵁涓嶈冻锛歝andidate_direction = wait锛宺isk_gate_status = insufficient_data
 ```
 
-### 7.5 冲突等级
+### 7.5 鍐茬獊绛夌骇
 
-建议值：
+寤鸿鍊硷細
 
 ```text
 none
@@ -509,26 +432,22 @@ medium
 high
 ```
 
-第一版规则：
+绗竴鐗堣鍒欙細
 
 ```text
-有效策略全部同向：none / low
-有一个主要策略相反：medium
-多空策略数量接近，且信号强度都不低：high
-风控否决方向：medium / high
-有效策略过少：medium，且 risk_gate_status = insufficient_data
+鏈夋晥绛栫暐鍏ㄩ儴鍚屽悜锛歯one / low
+鏈変竴涓富瑕佺瓥鐣ョ浉鍙嶏細medium
+澶氱┖绛栫暐鏁伴噺鎺ヨ繎锛屼笖淇″彿寮哄害閮戒笉浣庯細high
+椋庢帶鍚﹀喅鏂瑰悜锛歮edium / high
+鏈夋晥绛栫暐杩囧皯锛歮edium锛屼笖 risk_gate_status = insufficient_data
 ```
 
 ---
 
-## 8. 数学材料包第一版
-
-第 18 第一版至少计算以下材料，并写入 `analysis_material_pack.material_json`。
-
-### 8.1 K线窗口摘要
-
-从 `MarketContextSnapshot` 对应的 4h / 1d K线窗口中提取：
-
+## 8. 鏁板鏉愭枡鍖呯涓€鐗?
+绗?18 绗竴鐗堣嚦灏戣绠椾互涓嬫潗鏂欙紝骞跺啓鍏?`analysis_material_pack.material_json`銆?
+### 8.1 K绾跨獥鍙ｆ憳瑕?
+浠?`MarketContextSnapshot` 瀵瑰簲鐨?4h / 1d K绾跨獥鍙ｄ腑鎻愬彇锛?
 ```text
 latest_open
 latest_high
@@ -541,28 +460,23 @@ base_window_count
 higher_window_count
 ```
 
-不得请求 Binance REST 或 WebSocket。
-
+涓嶅緱璇锋眰 Binance REST 鎴?WebSocket銆?
 ### 8.2 swing high / swing low
 
-第一版使用确定性局部高低点规则。
-
-建议参数：
-
+绗竴鐗堜娇鐢ㄧ‘瀹氭€у眬閮ㄩ珮浣庣偣瑙勫垯銆?
+寤鸿鍙傛暟锛?
 ```text
 swing_left_bars = 2
 swing_right_bars = 2
 ```
 
-定义：
-
+瀹氫箟锛?
 ```text
-swing high：某根 K线 high 高于左侧 N 根和右侧 N 根 high
-swing low：某根 K线 low 低于左侧 N 根和右侧 N 根 low
+swing high锛氭煇鏍?K绾?high 楂樹簬宸︿晶 N 鏍瑰拰鍙充晶 N 鏍?high
+swing low锛氭煇鏍?K绾?low 浣庝簬宸︿晶 N 鏍瑰拰鍙充晶 N 鏍?low
 ```
 
-输出：
-
+杈撳嚭锛?
 ```json
 {
   "recent_swing_highs": [],
@@ -572,18 +486,15 @@ swing low：某根 K线 low 低于左侧 N 根和右侧 N 根 low
 }
 ```
 
-### 8.3 ATR 与波动率
+### 8.3 ATR 涓庢尝鍔ㄧ巼
 
-计算 4h 的 ATR_14：
-
+璁＄畻 4h 鐨?ATR_14锛?
 ```text
 TR = max(high - low, abs(high - previous_close), abs(low - previous_close))
-ATR_14 = 最近 14 根 TR 平均值
-ATR_PERCENT = ATR_14 / latest_close * 100
+ATR_14 = 鏈€杩?14 鏍?TR 骞冲潎鍊?ATR_PERCENT = ATR_14 / latest_close * 100
 ```
 
-输出：
-
+杈撳嚭锛?
 ```json
 {
   "atr_14": 0,
@@ -592,24 +503,18 @@ ATR_PERCENT = ATR_14 / latest_close * 100
 }
 ```
 
-### 8.4 振幅变化
+### 8.4 鎸箙鍙樺寲
 
-单根振幅：
-
+鍗曟牴鎸箙锛?
 ```text
 range_percent = (high - low) / close * 100
 ```
 
-计算：
-
+璁＄畻锛?
 ```text
-最近 3 根平均振幅
-最近 6 根平均振幅
-最近 20 根平均振幅
-```
+鏈€杩?3 鏍瑰钩鍧囨尟骞?鏈€杩?6 鏍瑰钩鍧囨尟骞?鏈€杩?20 鏍瑰钩鍧囨尟骞?```
 
-输出：
-
+杈撳嚭锛?
 ```json
 {
   "avg_range_percent_3": 0,
@@ -619,16 +524,15 @@ range_percent = (high - low) / close * 100
 }
 ```
 
-### 8.5 支撑压力候选
-
-第一版基于最近 swing high / swing low 生成候选支撑压力：
+### 8.5 鏀拺鍘嬪姏鍊欓€?
+绗竴鐗堝熀浜庢渶杩?swing high / swing low 鐢熸垚鍊欓€夋敮鎾戝帇鍔涳細
 
 ```text
-最近有效 swing lows → support_candidates
-最近有效 swing highs → resistance_candidates
+鏈€杩戞湁鏁?swing lows 鈫?support_candidates
+鏈€杩戞湁鏁?swing highs 鈫?resistance_candidates
 ```
 
-输出应包含：
+杈撳嚭搴斿寘鍚細
 
 ```text
 price
@@ -638,20 +542,18 @@ distance_to_latest_close_percent
 source = swing_high / swing_low
 ```
 
-### 8.6 候选场景
-
-`candidate_scenarios_json` 至少包含：
-
+### 8.6 鍊欓€夊満鏅?
+`candidate_scenarios_json` 鑷冲皯鍖呭惈锛?
 ```json
 {
-  "candidate_direction": "long / short / wait / stop_trading / mixed",
+  "analysis_hypothesis_direction": "long / short / wait / stop_trading / mixed",
   "candidate_scenarios": [
     {
       "scenario_type": "long_hypothesis / short_hypothesis / wait_hypothesis / stop_trading_hypothesis",
-      "activation_check": "分析假设观察条件",
-      "invalidation_check": "分析假设失效检查",
-      "target_observation_zone": "候选目标观察区",
-      "preliminary_reward_risk_ratio": 0,
+      "activation_check": "鍒嗘瀽鍋囪瑙傚療鏉′欢",
+      "invalidation_check": "鍒嗘瀽鍋囪澶辨晥妫€鏌?,
+      "target_observation_zone": "鍊欓€夌洰鏍囪瀵熷尯",
+      "context_upside_downside_ratio": 0,
       "supporting_evidence": [],
       "opposing_evidence": [],
       "risk_notes": [],
@@ -661,88 +563,63 @@ source = swing_high / swing_low
 }
 ```
 
-注意：
-
+娉ㄦ剰锛?
 ```text
-invalidation_check 不是交易止损指令
-target_observation_zone 不是止盈指令
-preliminary_reward_risk_ratio 只是候选场景质量评估，不是下单依据
+invalidation_check 涓嶆槸浜ゆ槗姝㈡崯鎸囦护
+target_observation_zone 涓嶆槸姝㈢泩鎸囦护
+context_upside_downside_ratio 鍙槸鍊欓€夊満鏅川閲忚瘎浼帮紝涓嶆槸涓嬪崟渚濇嵁
 ```
 
-### 8.7 大模型问题清单
-
-`question_json` 至少包含：
-
+### 8.7 澶фā鍨嬮棶棰樻竻鍗?
+`question_json` 鑷冲皯鍖呭惈锛?
 ```text
-1. 当前候选方向是否被价格结构支持？
-2. 当前波动率是否支持候选失效条件的距离？
-3. 当前目标观察区与候选失效条件之间的初步风险收益比是否合理？
-4. 当前结构是否存在假突破或追涨/追跌风险？
-5. 多个策略是否真正独立，还是重复表达同一个趋势因子？
-6. 如果策略信号与风控冲突，应优先等待还是停止交易？
-7. 哪些条件必须成立，才允许从 wait 转为 long 或 short？
-8. 当前候选场景的反方证据是否足以否决方向？
-9. 如果当前候选判断错误，最可能错在哪里？
-```
+1. 褰撳墠鍊欓€夋柟鍚戞槸鍚﹁浠锋牸缁撴瀯鏀寔锛?2. 褰撳墠娉㈠姩鐜囨槸鍚︽敮鎸佸€欓€夊け鏁堟潯浠剁殑璺濈锛?3. 褰撳墠鐩爣瑙傚療鍖轰笌鍊欓€夊け鏁堟潯浠朵箣闂寸殑鍒濇椋庨櫓鏀剁泭姣旀槸鍚﹀悎鐞嗭紵
+4. 褰撳墠缁撴瀯鏄惁瀛樺湪鍋囩獊鐮存垨杩芥定/杩借穼椋庨櫓锛?5. 澶氫釜绛栫暐鏄惁鐪熸鐙珛锛岃繕鏄噸澶嶈〃杈惧悓涓€涓秼鍔垮洜瀛愶紵
+6. 濡傛灉绛栫暐淇″彿涓庨鎺у啿绐侊紝搴斾紭鍏堢瓑寰呰繕鏄仠姝氦鏄擄紵
+7. 鍝簺鏉′欢蹇呴』鎴愮珛锛屾墠鍏佽浠?wait 杞负 long 鎴?short锛?8. 褰撳墠鍊欓€夊満鏅殑鍙嶆柟璇佹嵁鏄惁瓒充互鍚﹀喅鏂瑰悜锛?9. 濡傛灉褰撳墠鍊欓€夊垽鏂敊璇紝鏈€鍙兘閿欏湪鍝噷锛?```
 
-第 19 大模型层必须优先读取这些问题，而不是让模型自由发挥写作文。
-
+绗?19 澶фā鍨嬪眰蹇呴』浼樺厛璇诲彇杩欎簺闂锛岃€屼笉鏄妯″瀷鑷敱鍙戞尌鍐欎綔鏂囥€?
 ---
 
-## 9. 后续评估预留
+## 9. 鍚庣画璇勪及棰勭暀
 
-第 18 不做完整复盘，但必须为后续复盘留下可评估材料。
-
-每个候选场景必须能在后续被评估：
-
+绗?18 涓嶅仛瀹屾暣澶嶇洏锛屼絾蹇呴』涓哄悗缁鐩樼暀涓嬪彲璇勪及鏉愭枡銆?
+姣忎釜鍊欓€夊満鏅繀椤昏兘鍦ㄥ悗缁璇勪及锛?
 ```text
-是否满足 activation_check 对应的观察条件
-是否先满足 invalidation_check 对应的失效检查
-后续 1 / 3 / 6 根 4h K线最大浮盈
-后续 1 / 3 / 6 根 4h K线最大浮亏
-目标观察区是否到达
-风险收益比是否现实
-风控否决是否有效
+鏄惁婊¤冻 activation_check 瀵瑰簲鐨勮瀵熸潯浠?鏄惁鍏堟弧瓒?invalidation_check 瀵瑰簲鐨勫け鏁堟鏌?鍚庣画 1 / 3 / 6 鏍?4h K绾挎渶澶ф诞鐩?鍚庣画 1 / 3 / 6 鏍?4h K绾挎渶澶ф诞浜?鐩爣瑙傚療鍖烘槸鍚﹀埌杈?椋庨櫓鏀剁泭姣旀槸鍚︾幇瀹?椋庢帶鍚﹀喅鏄惁鏈夋晥
 ```
 
-第 18 可以在 `validation_plan_json` 中预留：
+绗?18 鍙互鍦?`validation_plan_json` 涓鐣欙細
 
 ```json
 {
   "evaluation_horizons_base_bars": [1, 3, 6],
-  "activation_check": "基于 4h 收盘价判断成立条件是否触发",
-  "invalidation_check": "基于 4h 收盘价判断失效条件是否触发",
-  "floating_pnl_check": "以后续 K线 high/low 估算最大有利/不利波动",
-  "notes": "本阶段只生成验证计划，不执行复盘"
+  "activation_check": "鍩轰簬 4h 鏀剁洏浠峰垽鏂垚绔嬫潯浠舵槸鍚﹁Е鍙?,
+  "invalidation_check": "鍩轰簬 4h 鏀剁洏浠峰垽鏂け鏁堟潯浠舵槸鍚﹁Е鍙?,
+  "floating_pnl_check": "浠ュ悗缁?K绾?high/low 浼扮畻鏈€澶ф湁鍒?涓嶅埄娉㈠姩",
+  "notes": "鏈樁娈靛彧鐢熸垚楠岃瘉璁″垝锛屼笉鎵ц澶嶇洏"
 }
 ```
 
-这不会提前实现复盘系统，但能保证第 18 的输出以后可以被评估。
-
+杩欎笉浼氭彁鍓嶅疄鐜板鐩樼郴缁燂紝浣嗚兘淇濊瘉绗?18 鐨勮緭鍑轰互鍚庡彲浠ヨ璇勪及銆?
 ---
 
-## 10. 自动触发规则
+## 10. 鑷姩瑙﹀彂瑙勫垯
 
-第 18 可以自动接在第 17 后面运行，但必须通过 `.env` 配置控制。
-
-新增配置：
-
+绗?18 鍙互鑷姩鎺ュ湪绗?17 鍚庨潰杩愯锛屼絾蹇呴』閫氳繃 `.env` 閰嶇疆鎺у埗銆?
+鏂板閰嶇疆锛?
 ```env
 STRATEGY_AGGREGATION_AUTO_RUN_ENABLED=false
 ```
 
-规则：
-
+瑙勫垯锛?
 ```text
-第 17 status = success / partial_success
-    ↓
-且 STRATEGY_AGGREGATION_AUTO_RUN_ENABLED=true
-    ↓
-自动调用第 18 StrategyAggregationService
+绗?17 status = success / partial_success
+    鈫?涓?STRATEGY_AGGREGATION_AUTO_RUN_ENABLED=true
+    鈫?鑷姩璋冪敤绗?18 StrategyAggregationService
 ```
 
-以下第 17 状态不得自动运行第 18：
-
+浠ヤ笅绗?17 鐘舵€佷笉寰楄嚜鍔ㄨ繍琛岀 18锛?
 ```text
 waiting_upstream
 blocked
@@ -751,14 +628,12 @@ skipped
 running
 ```
 
-第 18 自动触发时，不得影响第 17 的 event log 状态。第 17 与第 18 必须保持独立审计链路。
-
+绗?18 鑷姩瑙﹀彂鏃讹紝涓嶅緱褰卞搷绗?17 鐨?event log 鐘舵€併€傜 17 涓庣 18 蹇呴』淇濇寔鐙珛瀹¤閾捐矾銆?
 ---
 
-## 11. CLI 手动入口
+## 11. CLI 鎵嬪姩鍏ュ彛
 
-新增手动入口：
-
+鏂板鎵嬪姩鍏ュ彛锛?
 ```bash
 python -m scripts.run_strategy_aggregation \
   --strategy-signal-run-id <run_id> \
@@ -766,8 +641,7 @@ python -m scripts.run_strategy_aggregation \
   --dry-run
 ```
 
-确认写入：
-
+纭鍐欏叆锛?
 ```bash
 python -m scripts.run_strategy_aggregation \
   --strategy-signal-run-id <run_id> \
@@ -775,21 +649,17 @@ python -m scripts.run_strategy_aggregation \
   --confirm-write
 ```
 
-CLI 规则：
-
+CLI 瑙勫垯锛?
 ```text
-默认 dry-run
-dry-run 不写 strategy_aggregation_run
-dry-run 不写 analysis_material_pack
-confirm-write 才允许写入
-不允许 CLI 直接调用第 15
-不允许 CLI 直接调用第 16
-不允许 CLI 请求 Binance
-不允许 CLI 修改 K线
-```
+榛樿 dry-run
+dry-run 涓嶅啓 strategy_aggregation_run
+dry-run 涓嶅啓 analysis_material_pack
+confirm-write 鎵嶅厑璁稿啓鍏?涓嶅厑璁?CLI 鐩存帴璋冪敤绗?15
+涓嶅厑璁?CLI 鐩存帴璋冪敤绗?16
+涓嶅厑璁?CLI 璇锋眰 Binance
+涓嶅厑璁?CLI 淇敼 K绾?```
 
-CLI 输出至少包含：
-
+CLI 杈撳嚭鑷冲皯鍖呭惈锛?
 ```text
 status
 exit_code
@@ -797,7 +667,7 @@ aggregation_run_id
 material_pack_id
 strategy_signal_run_id
 snapshot_id
-candidate_direction
+analysis_hypothesis_direction
 risk_gate_status
 conflict_level
 message
@@ -806,12 +676,10 @@ error_message
 
 ---
 
-## 12. Hermes 通知
+## 12. Hermes 閫氱煡
 
-第 18 支持 Hermes 通知，但必须配置化。
-
-新增配置：
-
+绗?18 鏀寔 Hermes 閫氱煡锛屼絾蹇呴』閰嶇疆鍖栥€?
+鏂板閰嶇疆锛?
 ```env
 STRATEGY_AGGREGATION_HERMES_ENABLED=false
 STRATEGY_AGGREGATION_HERMES_NOTIFY_SUCCESS=true
@@ -821,26 +689,18 @@ STRATEGY_AGGREGATION_HERMES_NOTIFY_FAILED=true
 STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED=false
 ```
 
-第 18 Hermes 通知内容定位：
-
+绗?18 Hermes 閫氱煡鍐呭瀹氫綅锛?
 ```text
-策略聚合结果通知
+绛栫暐鑱氬悎缁撴灉閫氱煡
 ```
 
-不得包装成最终交易建议。
-
-通知内容必须明确：
-
+涓嶅緱鍖呰鎴愭渶缁堜氦鏄撳缓璁€?
+閫氱煡鍐呭蹇呴』鏄庣‘锛?
 ```text
-这是策略聚合层候选判断，不是最终交易建议。
-未调用大模型。
-未进入建议生命周期。
-系统未自动交易。
-```
+杩欐槸绛栫暐鑱氬悎灞傚€欓€夊垽鏂紝涓嶆槸鏈€缁堜氦鏄撳缓璁€?鏈皟鐢ㄥぇ妯″瀷銆?鏈繘鍏ュ缓璁敓鍛藉懆鏈熴€?绯荤粺鏈嚜鍔ㄤ氦鏄撱€?```
 
-允许用户通过 `.env` 同时开启第 17 和第 18 通知。一个 4h 周期可能收到第 17 策略信号通知和第 18 聚合通知。是否开启由用户自己控制。
-
-Hermes 发送结果必须写入 `strategy_aggregation_run` 或配套通知字段，例如：
+鍏佽鐢ㄦ埛閫氳繃 `.env` 鍚屾椂寮€鍚 17 鍜岀 18 閫氱煡銆備竴涓?4h 鍛ㄦ湡鍙兘鏀跺埌绗?17 绛栫暐淇″彿閫氱煡鍜岀 18 鑱氬悎閫氱煡銆傛槸鍚﹀紑鍚敱鐢ㄦ埛鑷繁鎺у埗銆?
+Hermes 鍙戦€佺粨鏋滃繀椤诲啓鍏?`strategy_aggregation_run` 鎴栭厤濂楅€氱煡瀛楁锛屼緥濡傦細
 
 ```text
 hermes_enabled
@@ -851,91 +711,70 @@ hermes_sent_at_utc
 
 ---
 
-## 13. 幂等规则
+## 13. 骞傜瓑瑙勫垯
 
-第 18 必须防止重复聚合。
-
-唯一身份建议：
-
+绗?18 蹇呴』闃叉閲嶅鑱氬悎銆?
+鍞竴韬唤寤鸿锛?
 ```text
 strategy_signal_run_id + aggregation_version + material_schema_version + indicator_version + candidate_scenario_version
 ```
 
-如果已经存在 `success / partial_success` 的聚合结果，则不重复写入。
-
-第一版对 `blocked / failed` 不自动重跑。后续如需重跑，应增加明确的人工重跑入口或 retry 策略。
-
+濡傛灉宸茬粡瀛樺湪 `success / partial_success` 鐨勮仛鍚堢粨鏋滐紝鍒欎笉閲嶅鍐欏叆銆?
+绗竴鐗堝 `blocked / failed` 涓嶈嚜鍔ㄩ噸璺戙€傚悗缁闇€閲嶈窇锛屽簲澧炲姞鏄庣‘鐨勪汉宸ラ噸璺戝叆鍙ｆ垨 retry 绛栫暐銆?
 ---
 
-## 14. 状态与错误处理
+## 14. 鐘舵€佷笌閿欒澶勭悊
 
-### 14.1 blocked 场景
+### 14.1 blocked 鍦烘櫙
 
-以下情况应 blocked：
-
+浠ヤ笅鎯呭喌搴?blocked锛?
 ```text
-strategy_signal_run 不存在
-strategy_signal_run.status 不是 success / partial_success
-strategy_signal_run 没有 snapshot_id
-strategy_signal_result 为空
-有效策略数量不足
-snapshot 对应 K线窗口不足以计算基础材料
-防未来函数检查失败
-本地数据库缺少必要已收盘 K线
-```
+strategy_signal_run 涓嶅瓨鍦?strategy_signal_run.status 涓嶆槸 success / partial_success
+strategy_signal_run 娌℃湁 snapshot_id
+strategy_signal_result 涓虹┖
+鏈夋晥绛栫暐鏁伴噺涓嶈冻
+snapshot 瀵瑰簲 K绾跨獥鍙ｄ笉瓒充互璁＄畻鍩虹鏉愭枡
+闃叉湭鏉ュ嚱鏁版鏌ュけ璐?鏈湴鏁版嵁搴撶己灏戝繀瑕佸凡鏀剁洏 K绾?```
 
-### 14.2 failed 场景
+### 14.2 failed 鍦烘櫙
 
-以下情况应 failed：
-
+浠ヤ笅鎯呭喌搴?failed锛?
 ```text
-数据库异常
-JSON 序列化异常
-代码运行异常
-不可恢复的计算异常
-```
+鏁版嵁搴撳紓甯?JSON 搴忓垪鍖栧紓甯?浠ｇ爜杩愯寮傚父
+涓嶅彲鎭㈠鐨勮绠楀紓甯?```
 
-### 14.3 partial_success 场景
+### 14.3 partial_success 鍦烘櫙
 
-以下情况可以 partial_success：
-
+浠ヤ笅鎯呭喌鍙互 partial_success锛?
 ```text
-聚合主流程完成
-但部分策略 failed / invalid / not_implemented
-材料包主字段生成成功，但某些非核心材料不足
-候选场景生成成功，但风险收益比因缺少目标位只能标记为 null
+鑱氬悎涓绘祦绋嬪畬鎴?浣嗛儴鍒嗙瓥鐣?failed / invalid / not_implemented
+鏉愭枡鍖呬富瀛楁鐢熸垚鎴愬姛锛屼絾鏌愪簺闈炴牳蹇冩潗鏂欎笉瓒?鍊欓€夊満鏅敓鎴愭垚鍔燂紝浣嗛闄╂敹鐩婃瘮鍥犵己灏戠洰鏍囦綅鍙兘鏍囪涓?null
 ```
 
 ---
 
-## 15. 禁止事项
+## 15. 绂佹浜嬮」
 
-第 18 阶段严禁：
-
+绗?18 闃舵涓ョ锛?
 ```text
-调用 DeepSeek / GPT / Claude 等大模型
-生成最终交易建议
-管理 active advice 生命周期
-开仓、平仓、加仓、减仓、撤单
-读取账户、订单、持仓、API 私钥
-请求 Binance REST
-请求 Binance WebSocket
-修改 market_kline_4h 或 market_kline_1d 正式 K线表
-新增 manual_repair
-人工修改 K线数据
-重新跑第 16 策略信号
-重新生成第 15 MarketContextSnapshot
-降低第 15 快照质量门禁
-修改第 16 dry-run / confirm-write 语义
-使用 target close 之后的未来 K线
-```
+璋冪敤 DeepSeek / GPT / Claude 绛夊ぇ妯″瀷
+鐢熸垚鏈€缁堜氦鏄撳缓璁?绠＄悊 active advice 鐢熷懡鍛ㄦ湡
+寮€浠撱€佸钩浠撱€佸姞浠撱€佸噺浠撱€佹挙鍗?璇诲彇璐︽埛銆佽鍗曘€佹寔浠撱€丄PI 绉侀挜
+璇锋眰 Binance REST
+璇锋眰 Binance WebSocket
+淇敼 market_kline_4h 鎴?market_kline_1d 姝ｅ紡 K绾胯〃
+鏂板 manual_repair
+浜哄伐淇敼 K绾挎暟鎹?閲嶆柊璺戠 16 绛栫暐淇″彿
+閲嶆柊鐢熸垚绗?15 MarketContextSnapshot
+闄嶄綆绗?15 蹇収璐ㄩ噺闂ㄧ
+淇敼绗?16 dry-run / confirm-write 璇箟
+浣跨敤 target close 涔嬪悗鐨勬湭鏉?K绾?```
 
 ---
 
-## 16. 建议代码结构
+## 16. 寤鸿浠ｇ爜缁撴瀯
 
-可按现有项目结构调整，建议新增或修改：
-
+鍙寜鐜版湁椤圭洰缁撴瀯璋冩暣锛屽缓璁柊澧炴垨淇敼锛?
 ```text
 app/strategy/aggregation/
   types.py
@@ -956,83 +795,46 @@ tests/strategy_aggregation/
   test_strategy_aggregation_cli.py
 ```
 
-如项目已有更合适的目录规范，优先遵守 `AGENTS.md` 和现有模块边界。
-
+濡傞」鐩凡鏈夋洿鍚堥€傜殑鐩綍瑙勮寖锛屼紭鍏堥伒瀹?`AGENTS.md` 鍜岀幇鏈夋ā鍧楄竟鐣屻€?
 ---
 
-## 17. 迁移要求
+## 17. 杩佺Щ瑕佹眰
 
-新增 Alembic migration，创建：
+鏂板 Alembic migration锛屽垱寤猴細
 
 ```text
 strategy_aggregation_run
 analysis_material_pack
 ```
 
-表结构必须支持：
+琛ㄧ粨鏋勫繀椤绘敮鎸侊細
 
 ```text
-run_id 追踪
-snapshot_id 追踪
-strategy_signal_run_id 追踪
-trace_id 追踪
-版本字段
-JSON 材料保存
-候选场景保存
-验证计划保存
-状态保存
-错误信息保存
-Hermes 投递状态保存
-幂等约束
+run_id 杩借釜
+snapshot_id 杩借釜
+strategy_signal_run_id 杩借釜
+trace_id 杩借釜
+鐗堟湰瀛楁
+JSON 鏉愭枡淇濆瓨
+鍊欓€夊満鏅繚瀛?楠岃瘉璁″垝淇濆瓨
+鐘舵€佷繚瀛?閿欒淇℃伅淇濆瓨
+Hermes 鎶曢€掔姸鎬佷繚瀛?骞傜瓑绾︽潫
 ```
 
-不得直接手写生产数据库 SQL 绕过 Alembic。
+涓嶅緱鐩存帴鎵嬪啓鐢熶骇鏁版嵁搴?SQL 缁曡繃 Alembic銆?
+---
+
+## 18. 娴嬭瘯瑕佹眰
+
+鑷冲皯瑕嗙洊锛?
+```text
+1. success 鐨?strategy_signal_run 鍙互杩涘叆鑱氬悎銆?2. partial_success 鐨?strategy_signal_run 鍙互杩涘叆鑱氬悎銆?3. blocked / failed 鐨?strategy_signal_run 涓嶅厑璁歌仛鍚堛€?4. strategy_signal_run 缂哄け snapshot_id 鏃?blocked銆?5. strategy_signal_result 涓虹┖鏃?blocked銆?6. Gann placeholder / not_implemented 涓嶅鑷磋仛鍚堝け璐ャ€?7. 瓒嬪娍鍋忓 + 椋庨櫓浣庯紝analysis_hypothesis_direction 鍙互涓?long銆?8. 瓒嬪娍鍋忓 + 椋庨櫓鏋侀珮锛宑andidate_direction 搴斿彉鎴?wait 鎴?stop_trading銆?9. 澶氱┖绛栫暐鍐茬獊鏃?conflict_level 鍗囬珮銆?10. material_pack 鍖呭惈 swing high / swing low銆?11. material_pack 鍖呭惈 ATR_14 鍜?ATR_PERCENT銆?12. material_pack 鍖呭惈 3 / 6 / 20 鏍瑰钩鍧囨尟骞呫€?13. material_pack 鍖呭惈鏀拺鍘嬪姏鍊欓€夈€?14. material_pack 鍖呭惈鍊欓€夊満鏅€?15. 鍊欓€夊満鏅寘鍚垚绔嬫潯浠躲€佸け鏁堟潯浠躲€佺洰鏍囪瀵熷尯銆佸垵姝ラ闄╂敹鐩婃瘮銆?16. material_pack 鍖呭惈澶фā鍨嬮棶棰樻竻鍗曘€?17. material_pack 鍖呭惈 data_window_json銆?18. material_pack 鍖呭惈 future_leakage_guard_json銆?19. 闃叉湭鏉ュ嚱鏁版鏌ヨ兘闃绘浣跨敤 target close 涔嬪悗鐨?K绾裤€?20. 鍚屼竴涓?strategy_signal_run_id + 鐗堟湰缁勫悎涓嶉噸澶嶇敓鎴愯仛鍚堢粨鏋溿€?21. dry-run 涓嶅啓 strategy_aggregation_run銆?22. dry-run 涓嶅啓 analysis_material_pack銆?23. confirm-write 鎵嶅啓鍏ャ€?24. Hermes 鍏抽棴鏃朵笉鍙戦€併€?25. Hermes 寮€鍚椂鍙戦€佺瓥鐣ヨ仛鍚堥€氱煡骞惰褰曞彂閫佺粨鏋溿€?26. 绗?18 涓嶈皟鐢ㄧ 15銆?27. 绗?18 涓嶈皟鐢ㄧ 16銆?28. 绗?18 涓嶈皟鐢ㄥぇ妯″瀷銆?29. 绗?18 涓嶈姹?Binance銆?30. 绗?18 涓嶇敓鎴愭渶缁堜氦鏄撳缓璁瓧娈点€?```
 
 ---
 
-## 18. 测试要求
+## 19. 楠屾敹鍛戒护
 
-至少覆盖：
-
-```text
-1. success 的 strategy_signal_run 可以进入聚合。
-2. partial_success 的 strategy_signal_run 可以进入聚合。
-3. blocked / failed 的 strategy_signal_run 不允许聚合。
-4. strategy_signal_run 缺失 snapshot_id 时 blocked。
-5. strategy_signal_result 为空时 blocked。
-6. Gann placeholder / not_implemented 不导致聚合失败。
-7. 趋势偏多 + 风险低，candidate_direction 可以为 long。
-8. 趋势偏多 + 风险极高，candidate_direction 应变成 wait 或 stop_trading。
-9. 多空策略冲突时 conflict_level 升高。
-10. material_pack 包含 swing high / swing low。
-11. material_pack 包含 ATR_14 和 ATR_PERCENT。
-12. material_pack 包含 3 / 6 / 20 根平均振幅。
-13. material_pack 包含支撑压力候选。
-14. material_pack 包含候选场景。
-15. 候选场景包含成立条件、失效条件、目标观察区、初步风险收益比。
-16. material_pack 包含大模型问题清单。
-17. material_pack 包含 data_window_json。
-18. material_pack 包含 future_leakage_guard_json。
-19. 防未来函数检查能阻止使用 target close 之后的 K线。
-20. 同一个 strategy_signal_run_id + 版本组合不重复生成聚合结果。
-21. dry-run 不写 strategy_aggregation_run。
-22. dry-run 不写 analysis_material_pack。
-23. confirm-write 才写入。
-24. Hermes 关闭时不发送。
-25. Hermes 开启时发送策略聚合通知并记录发送结果。
-26. 第 18 不调用第 15。
-27. 第 18 不调用第 16。
-28. 第 18 不调用大模型。
-29. 第 18 不请求 Binance。
-30. 第 18 不生成最终交易建议字段。
-```
-
----
-
-## 19. 验收命令
-
-开发完成后至少运行：
-
+寮€鍙戝畬鎴愬悗鑷冲皯杩愯锛?
 ```bash
 python -m compileall app migrations scripts tests
 python -m pytest tests/strategy_aggregation tests/strategy tests/scheduler
@@ -1040,14 +842,12 @@ python -m scripts.check_project_invariants
 python -m alembic upgrade head
 ```
 
-如 `tests/strategy_aggregation` 尚不存在，应创建对应测试目录。
-
+濡?`tests/strategy_aggregation` 灏氫笉瀛樺湪锛屽簲鍒涘缓瀵瑰簲娴嬭瘯鐩綍銆?
 ---
 
-## 20. 手动验证流程
+## 20. 鎵嬪姩楠岃瘉娴佺▼
 
-第 16 / 第 17 已经生成 `strategy_signal_run` 后，可以手动运行：
-
+绗?16 / 绗?17 宸茬粡鐢熸垚 `strategy_signal_run` 鍚庯紝鍙互鎵嬪姩杩愯锛?
 ```bash
 python -m scripts.run_strategy_aggregation \
   --strategy-signal-run-id <run_id> \
@@ -1055,8 +855,7 @@ python -m scripts.run_strategy_aggregation \
   --dry-run
 ```
 
-确认输出合理后再执行：
-
+纭杈撳嚭鍚堢悊鍚庡啀鎵ц锛?
 ```bash
 python -m scripts.run_strategy_aggregation \
   --strategy-signal-run-id <run_id> \
@@ -1064,39 +863,32 @@ python -m scripts.run_strategy_aggregation \
   --confirm-write
 ```
 
-然后查库：
-
+鐒跺悗鏌ュ簱锛?
 ```sql
 SELECT * FROM strategy_aggregation_run ORDER BY id DESC LIMIT 5;
 SELECT * FROM analysis_material_pack ORDER BY id DESC LIMIT 5;
 ```
 
-重点确认：
-
+閲嶇偣纭锛?
 ```text
-aggregation_run.strategy_signal_run_id 正确
-aggregation_run.snapshot_id 正确
-candidate_direction 合理
-risk_gate_status 合理
-conflict_level 合理
-candidate_scenarios_json 非空
-validation_plan_json 非空
-analysis_material_pack.material_json 非空
-analysis_material_pack.question_json 非空
-analysis_material_pack.data_window_json 非空
-analysis_material_pack.future_leakage_guard_json 显示未使用未来 K线
-没有最终交易建议字段
-没有自动交易行为
+aggregation_run.strategy_signal_run_id 姝ｇ‘
+aggregation_run.snapshot_id 姝ｇ‘
+analysis_hypothesis_direction 鍚堢悊
+risk_gate_status 鍚堢悊
+conflict_level 鍚堢悊
+candidate_scenarios_json 闈炵┖
+validation_plan_json 闈炵┖
+analysis_material_pack.material_json 闈炵┖
+analysis_material_pack.question_json 闈炵┖
+analysis_material_pack.data_window_json 闈炵┖
+analysis_material_pack.future_leakage_guard_json 鏄剧ず鏈娇鐢ㄦ湭鏉?K绾?娌℃湁鏈€缁堜氦鏄撳缓璁瓧娈?娌℃湁鑷姩浜ゆ槗琛屼负
 ```
 
 ---
 
-## 21. 与后续阶段关系
-
-第 18 的输出将作为第 19 大模型分析层的输入。
-
-第 19 不应重新从 K线表临时拼接核心数学材料，而应读取：
-
+## 21. 涓庡悗缁樁娈靛叧绯?
+绗?18 鐨勮緭鍑哄皢浣滀负绗?19 澶фā鍨嬪垎鏋愬眰鐨勮緭鍏ャ€?
+绗?19 涓嶅簲閲嶆柊浠?K绾胯〃涓存椂鎷兼帴鏍稿績鏁板鏉愭枡锛岃€屽簲璇诲彇锛?
 ```text
 analysis_material_pack.material_json
 analysis_material_pack.question_json
@@ -1104,7 +896,7 @@ strategy_aggregation_run.summary_json
 strategy_aggregation_run.candidate_scenarios_json
 ```
 
-第 20 最终建议生命周期层再读取：
+绗?20 鏈€缁堝缓璁敓鍛藉懆鏈熷眰鍐嶈鍙栵細
 
 ```text
 strategy_signal_run
@@ -1113,29 +905,17 @@ analysis_material_pack
 llm_analysis_run
 ```
 
-最终决定：
+鏈€缁堝喅瀹氾細
 
 ```text
 new / continue / update / close / invalidate / complete / wait
 ```
 
-第 18 不做这些生命周期动作。
-
+绗?18 涓嶅仛杩欎簺鐢熷懡鍛ㄦ湡鍔ㄤ綔銆?
 ---
 
-## 22. 结束标准
+## 22. 缁撴潫鏍囧噯
 
-第 18 阶段完成标准：
-
+绗?18 闃舵瀹屾垚鏍囧噯锛?
 ```text
-1. 可以基于已有 strategy_signal_run 生成 strategy_aggregation_run。
-2. 可以基于 snapshot / K线窗口生成 analysis_material_pack。
-3. 可以生成可验证的 candidate_scenarios_json。
-4. 可以生成 validation_plan_json，为后续复盘预留依据。
-5. 支持 CLI dry-run 与 confirm-write。
-6. 支持第 17 后置自动触发，但受 .env 控制。
-7. 支持 Hermes 策略聚合通知，但受 .env 控制。
-8. 幂等规则有效，同一 strategy_signal_run + 版本组合不重复生成聚合结果。
-9. 单元测试覆盖成功、阻断、失败、幂等、Hermes、材料计算、防未来函数、候选场景。
-10. 不调用大模型，不生成最终建议，不自动交易。
-```
+1. 鍙互鍩轰簬宸叉湁 strategy_signal_run 鐢熸垚 strategy_aggregation_run銆?2. 鍙互鍩轰簬 snapshot / K绾跨獥鍙ｇ敓鎴?analysis_material_pack銆?3. 鍙互鐢熸垚鍙獙璇佺殑 candidate_scenarios_json銆?4. 鍙互鐢熸垚 validation_plan_json锛屼负鍚庣画澶嶇洏棰勭暀渚濇嵁銆?5. 鏀寔 CLI dry-run 涓?confirm-write銆?6. 鏀寔绗?17 鍚庣疆鑷姩瑙﹀彂锛屼絾鍙?.env 鎺у埗銆?7. 鏀寔 Hermes 绛栫暐鑱氬悎閫氱煡锛屼絾鍙?.env 鎺у埗銆?8. 骞傜瓑瑙勫垯鏈夋晥锛屽悓涓€ strategy_signal_run + 鐗堟湰缁勫悎涓嶉噸澶嶇敓鎴愯仛鍚堢粨鏋溿€?9. 鍗曞厓娴嬭瘯瑕嗙洊鎴愬姛銆侀樆鏂€佸け璐ャ€佸箓绛夈€丠ermes銆佹潗鏂欒绠椼€侀槻鏈潵鍑芥暟銆佸€欓€夊満鏅€?10. 涓嶈皟鐢ㄥぇ妯″瀷锛屼笉鐢熸垚鏈€缁堝缓璁紝涓嶈嚜鍔ㄤ氦鏄撱€?```

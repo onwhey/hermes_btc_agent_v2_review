@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import inspect
 import json
@@ -12,7 +12,7 @@ from app.alerting.types import AlertSendResult, AlertSendStatus
 from app.core.config import AppSettings
 from app.strategy.aggregation.service import StrategyAggregationService
 from app.strategy.aggregation.types import (
-    CandidateDirection,
+    AnalysisHypothesisDirection,
     ConflictLevel,
     RiskGateStatus,
     StrategyAggregationRequest,
@@ -235,7 +235,7 @@ def test_success_and_partial_strategy_signal_runs_can_project_long_hypothesis() 
     result = service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request())
 
     assert result.status == StrategyAggregationStatus.PARTIAL_SUCCESS
-    assert result.candidate_direction == CandidateDirection.LONG
+    assert result.analysis_hypothesis_direction == AnalysisHypothesisDirection.LONG
     assert result.risk_gate_status in {RiskGateStatus.PASS, RiskGateStatus.CAUTION}
     assert result.effective_strategy_count == 2
 
@@ -284,9 +284,9 @@ def test_short_hypothesis_projection_and_conflict_level_rules() -> None:
     short_result = service_with_repo(short_repo).run_strategy_aggregation(FakeSession(), request=run_request())
     conflict_result = service_with_repo(conflict_repo).run_strategy_aggregation(FakeSession(), request=run_request())
 
-    assert short_result.candidate_direction == CandidateDirection.SHORT
+    assert short_result.analysis_hypothesis_direction == AnalysisHypothesisDirection.SHORT
     assert conflict_result.conflict_level == ConflictLevel.HIGH
-    assert conflict_result.candidate_direction == CandidateDirection.WAIT
+    assert conflict_result.analysis_hypothesis_direction == AnalysisHypothesisDirection.WAIT
 
 
 def test_extreme_risk_blocks_direction_to_wait_or_stop_trading() -> None:
@@ -302,7 +302,7 @@ def test_extreme_risk_blocks_direction_to_wait_or_stop_trading() -> None:
     result = service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request())
 
     assert result.risk_gate_status == RiskGateStatus.BLOCKED_BY_VOLATILITY
-    assert result.candidate_direction in {CandidateDirection.WAIT, CandidateDirection.STOP_TRADING}
+    assert result.analysis_hypothesis_direction in {AnalysisHypothesisDirection.WAIT, AnalysisHypothesisDirection.STOP_TRADING}
 
 
 def test_confirm_write_persists_aggregation_and_material_pack_with_required_sections() -> None:
@@ -328,6 +328,17 @@ def test_confirm_write_persists_aggregation_and_material_pack_with_required_sect
     assert session.commits >= 1
     assert len(repo.aggregation_rows) == 1
     assert len(repo.material_rows) == 1
+    aggregation = repo.aggregation_rows[0]
+    assert aggregation.analysis_hypothesis_direction == "long"
+    assert aggregation.analysis_hypothesis_semantics == "analysis_hypothesis_only"
+    assert aggregation.direction_projection_source == "fixture_or_existing_signal_projection"
+    assert aggregation.is_strategy_signal is False
+    assert aggregation.is_trading_advice is False
+    assert aggregation.is_executable is False
+    assert aggregation.strategy_logic_implemented is False
+    assert aggregation.promotion_allowed is False
+    assert aggregation.promotion_requires_future_strategy_and_llm_stage is True
+    assert not hasattr(aggregation, "candidate_direction")
     material = repo.material_rows[0].material_json
     assert material["swing"]["recent_swing_highs"]
     assert material["swing"]["recent_swing_lows"]
@@ -368,6 +379,8 @@ def test_direction_hypothesis_outputs_are_not_strategy_signals_or_advice() -> No
     assert scenario["strategy_logic_implemented"] is False
     assert scenario["promotion_allowed"] is False
     assert scenario["promotion_requires_future_strategy_and_llm_stage"] is True
+    assert scenario["direction_projection_source"] == "fixture_or_existing_signal_projection"
+    assert scenario["stop_trading_source"] is None
 
 
 def test_no_upstream_direction_fixture_defaults_to_wait_hypothesis() -> None:
@@ -390,6 +403,27 @@ def test_no_upstream_direction_fixture_defaults_to_wait_hypothesis() -> None:
     assert scenario["strategy_logic_implemented"] is False
 
 
+def test_stop_trading_hypothesis_keeps_explicit_risk_gate_projection_source() -> None:
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(
+            fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.80"),
+            fake_stage16_signal("fixture_risk_gate_projection", direction="not_applicable", risk="extreme", strength="0.90"),
+        ),
+        restored_snapshot=restored_snapshot(),
+    )
+
+    result = service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+
+    scenario = repo.aggregation_rows[0].candidate_scenarios_json["candidate_scenarios"][0]
+    assert result.analysis_hypothesis_direction == AnalysisHypothesisDirection.STOP_TRADING
+    assert result.stop_trading_source == "upstream_risk_gate_projection"
+    assert scenario["scenario_type"] == "stop_trading_hypothesis"
+    assert scenario["stop_trading_source"] == "upstream_risk_gate_projection"
+    assert scenario["risk_gate_projection_source"] == "upstream_risk_gate_projection"
+    assert scenario["is_trading_advice"] is False
+
+
 def test_future_leakage_guard_blocks_rows_after_snapshot_window() -> None:
     repo = FakeAggregationRepository(
         strategy_run=strategy_run(),
@@ -409,7 +443,7 @@ def test_same_strategy_signal_run_version_is_skipped_when_existing() -> None:
         aggregation_run_id="SAR-existing",
         snapshot_id="MCS-stage18",
         status="success",
-        candidate_direction="long",
+        analysis_hypothesis_direction="long",
         risk_level="low",
         risk_gate_status="pass",
         conflict_level="low",
@@ -479,7 +513,18 @@ def test_cli_dry_run_and_confirm_write_only_call_stage18_service(monkeypatch: An
             material_pack_id="AMP-test" if request.confirm_write else "",
             strategy_signal_run_id=request.strategy_signal_run_id,
             snapshot_id="MCS-test",
-            candidate_direction=CandidateDirection.LONG,
+            analysis_hypothesis_direction=AnalysisHypothesisDirection.LONG,
+            analysis_hypothesis_confidence=SimpleNamespace(value="medium"),
+            analysis_hypothesis_semantics="analysis_hypothesis_only",
+            direction_projection_source="fixture_or_existing_signal_projection",
+            stop_trading_source=None,
+            risk_gate_projection_source=None,
+            is_strategy_signal=False,
+            is_trading_advice=False,
+            is_executable=False,
+            strategy_logic_implemented=False,
+            promotion_allowed=False,
+            promotion_requires_future_strategy_and_llm_stage=True,
             risk_level=SimpleNamespace(value="low"),
             risk_gate_status=SimpleNamespace(value="pass"),
             conflict_level=SimpleNamespace(value="low"),
@@ -561,7 +606,20 @@ def test_material_pack_does_not_generate_final_advice_fields() -> None:
     }
     text = json.dumps(payload, ensure_ascii=False, default=str)
 
-    for forbidden in ("final_advice", "open_position", "close_position", "take_profit", "stop_loss", "leverage"):
+    assert "context_upside_downside_ratio" in text
+    for forbidden in (
+        "final_advice",
+        "open_position",
+        "close_position",
+        "take_profit",
+        "stop_loss",
+        "leverage",
+        "reward_risk_ratio",
+        "entry_price",
+        "exit_price",
+        "position_size",
+        "candidate_direction",
+    ):
         assert forbidden not in text
 
 

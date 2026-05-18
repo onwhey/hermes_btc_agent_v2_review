@@ -16,7 +16,7 @@ from app.scheduler.strategy_signal_scheduler_types import (
     StrategySignalSchedulerResult,
     StrategySignalSchedulerStatus,
 )
-from app.strategy.aggregation.types import CandidateDirection, StrategyAggregationResult, StrategyAggregationStatus
+from app.strategy.aggregation.types import AnalysisHypothesisDirection, StrategyAggregationResult, StrategyAggregationStatus
 from app.market_data.collector.types import EXIT_SUCCESS, IncrementalKlineCollectResult, KlineCollectStatus
 
 
@@ -135,7 +135,7 @@ def test_scheduler_auto_runs_stage18_only_after_stage17_success() -> None:
             strategy_signal_run_id="SSR-test",
             snapshot_id="MCS-test",
             trace_id="trace-18",
-            candidate_direction=CandidateDirection.LONG,
+            analysis_hypothesis_direction=AnalysisHypothesisDirection.LONG,
             message="stage18 ok",
         )
 
