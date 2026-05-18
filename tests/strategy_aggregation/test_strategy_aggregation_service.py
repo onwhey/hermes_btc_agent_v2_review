@@ -519,7 +519,7 @@ def test_confirm_write_blocked_attempt_persists_only_aggregation_audit_row() -> 
     assert len(repo.material_rows) == 0
 
 
-def test_strategy_aggregation_run_schema_uses_status_index_not_version_unique() -> None:
+def test_strategy_aggregation_run_schema_uses_small_indexes_not_large_version_index() -> None:
     from sqlalchemy import UniqueConstraint
 
     from app.storage.mysql.models.strategy_aggregation import AnalysisMaterialPack, StrategyAggregationRun
@@ -533,20 +533,22 @@ def test_strategy_aggregation_run_schema_uses_status_index_not_version_unique() 
     assert "uk_strategy_aggregation_version" not in aggregation_unique_names
     assert "uq_strategy_aggregation_run_id" in aggregation_unique_names
 
-    version_status_index = next(
+    index_names = {index.name for index in aggregation_table.indexes}
+    assert "idx_strategy_aggregation_version_status" not in index_names
+    assert "idx_strategy_aggregation_signal_status" in index_names
+    assert "idx_strategy_aggregation_created_at" in index_names
+
+    signal_status_index = next(
         index
         for index in aggregation_table.indexes
-        if index.name == "idx_strategy_aggregation_version_status"
+        if index.name == "idx_strategy_aggregation_signal_status"
     )
-    assert version_status_index.unique is False
-    assert [column.name for column in version_status_index.columns] == [
-        "strategy_signal_run_id",
-        "aggregation_version",
-        "material_schema_version",
-        "indicator_version",
-        "candidate_scenario_version",
-        "status",
-    ]
+    assert signal_status_index.unique is False
+    assert [column.name for column in signal_status_index.columns] == ["strategy_signal_run_id", "status"]
+
+    created_at_index = next(index for index in aggregation_table.indexes if index.name == "idx_strategy_aggregation_created_at")
+    assert created_at_index.unique is False
+    assert [column.name for column in created_at_index.columns] == ["created_at_utc"]
 
     material_table = AnalysisMaterialPack.__table__
     material_unique_names = {
@@ -554,18 +556,22 @@ def test_strategy_aggregation_run_schema_uses_status_index_not_version_unique() 
         for constraint in material_table.constraints
         if isinstance(constraint, UniqueConstraint)
     }
-    assert "uk_analysis_material_pack_version" in material_unique_names
+    assert "uk_analysis_material_pack_version" not in material_unique_names
+    assert "uk_analysis_material_pack_version_key" in material_unique_names
 
 
-def test_stage18_followup_migration_relaxes_attempt_uniqueness() -> None:
-    migration_path = Path("migrations/versions/20260519_18_relax_strategy_aggregation_attempt_uniqueness.py")
-    source = migration_path.read_text(encoding="utf-8")
+def test_stage18_migrations_do_not_create_large_strategy_aggregation_indexes() -> None:
+    migration_18 = Path("migrations/versions/20260518_18_create_strategy_aggregation_material_pack.py")
+    migration_19 = Path("migrations/versions/20260519_18_relax_strategy_aggregation_attempt_uniqueness.py")
+    source_18 = migration_18.read_text(encoding="utf-8")
+    source_19 = migration_19.read_text(encoding="utf-8")
 
-    assert "op.drop_constraint(" in source
-    assert "\"uk_strategy_aggregation_version\"" in source
-    assert "op.create_index(" in source
-    assert "\"idx_strategy_aggregation_version_status\"" in source
-    assert "unique=False" in source
+    for source in (source_18, source_19):
+        assert "\"uk_strategy_aggregation_version\"" not in source
+        assert "\"idx_strategy_aggregation_version_status\"" not in source
+    assert "\"idx_strategy_aggregation_signal_status\"" in source_18
+    assert "\"idx_strategy_aggregation_created_at\"" in source_18
+    assert "pass" in source_19
 
 
 def test_concurrent_final_unique_conflict_returns_skipped_already_exists() -> None:
@@ -593,7 +599,7 @@ def test_concurrent_final_unique_conflict_returns_skipped_already_exists() -> No
         results=(fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.80"),),
         restored_snapshot=restored_snapshot(),
         existing_after_unique_conflict=existing_final,
-        create_material_pack_error=RuntimeError("UNIQUE constraint failed: uk_analysis_material_pack_version"),
+        create_material_pack_error=RuntimeError("UNIQUE constraint failed: uk_analysis_material_pack_version_key"),
     )
 
     result = service_with_repo(repo).run_strategy_aggregation(session, request=run_request(confirm=True))

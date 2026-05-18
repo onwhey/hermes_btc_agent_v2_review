@@ -107,18 +107,14 @@ def upgrade() -> None:
             name="fk_strategy_aggregation_signal_run_id",
         ),
         sa.UniqueConstraint("aggregation_run_id", name="uq_strategy_aggregation_run_id"),
-        sa.UniqueConstraint(
-            "strategy_signal_run_id",
-            "aggregation_version",
-            "material_schema_version",
-            "indicator_version",
-            "candidate_scenario_version",
-            name="uk_strategy_aggregation_version",
-        ),
     )
-    op.create_index("idx_strategy_aggregation_strategy_signal_run", "strategy_aggregation_run", ["strategy_signal_run_id"])
+    op.create_index(
+        "idx_strategy_aggregation_signal_status",
+        "strategy_aggregation_run",
+        ["strategy_signal_run_id", "status"],
+    )
     op.create_index("idx_strategy_aggregation_snapshot_id", "strategy_aggregation_run", ["snapshot_id"])
-    op.create_index("idx_strategy_aggregation_status_created", "strategy_aggregation_run", ["status", "created_at_utc"])
+    op.create_index("idx_strategy_aggregation_created_at", "strategy_aggregation_run", ["created_at_utc"])
     op.create_index(
         "idx_strategy_aggregation_hypothesis",
         "strategy_aggregation_run",
@@ -140,6 +136,7 @@ def upgrade() -> None:
         sa.Column("material_schema_version", sa.String(length=64), nullable=False),
         sa.Column("indicator_version", sa.String(length=64), nullable=False),
         sa.Column("candidate_scenario_version", sa.String(length=64), nullable=False),
+        sa.Column("material_version_key", sa.String(length=64), nullable=False),
         sa.Column("status", sa.String(length=32), nullable=False),
         sa.Column("material_json", sa.Text(), nullable=False),
         sa.Column("question_json", sa.Text(), nullable=False),
@@ -163,14 +160,7 @@ def upgrade() -> None:
         ),
         sa.UniqueConstraint("material_pack_id", name="uq_analysis_material_pack_id"),
         sa.UniqueConstraint("aggregation_run_id", name="uq_analysis_material_pack_aggregation_run_id"),
-        sa.UniqueConstraint(
-            "strategy_signal_run_id",
-            "aggregation_version",
-            "material_schema_version",
-            "indicator_version",
-            "candidate_scenario_version",
-            name="uk_analysis_material_pack_version",
-        ),
+        sa.UniqueConstraint("material_version_key", name="uk_analysis_material_pack_version_key"),
     )
     op.create_index("idx_analysis_material_pack_strategy_signal_run", "analysis_material_pack", ["strategy_signal_run_id"])
     op.create_index("idx_analysis_material_pack_snapshot_id", "analysis_material_pack", ["snapshot_id"])
@@ -189,7 +179,7 @@ def downgrade() -> None:
 
     op.drop_index("idx_strategy_aggregation_trace_id", table_name="strategy_aggregation_run")
     op.drop_index("idx_strategy_aggregation_hypothesis", table_name="strategy_aggregation_run")
-    op.drop_index("idx_strategy_aggregation_status_created", table_name="strategy_aggregation_run")
+    op.drop_index("idx_strategy_aggregation_created_at", table_name="strategy_aggregation_run")
     op.drop_index("idx_strategy_aggregation_snapshot_id", table_name="strategy_aggregation_run")
-    op.drop_index("idx_strategy_aggregation_strategy_signal_run", table_name="strategy_aggregation_run")
+    op.drop_index("idx_strategy_aggregation_signal_status", table_name="strategy_aggregation_run")
     op.drop_table("strategy_aggregation_run")

@@ -16,6 +16,7 @@ Trading execution: none.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any, Mapping
 
@@ -220,6 +221,7 @@ class StrategyAggregationRepository:
             material_schema_version=payload.material_schema_version,
             indicator_version=payload.indicator_version,
             candidate_scenario_version=payload.candidate_scenario_version,
+            material_version_key=_material_version_key(payload),
             status=payload.status.value,
             material_json=_json_text(payload.material_json),
             question_json=_json_text(payload.question_json),
@@ -265,6 +267,21 @@ def create_default_strategy_aggregation_repository() -> StrategyAggregationRepos
 
 def _json_text(value: Mapping[str, Any] | list[Any] | tuple[Any, ...]) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _material_version_key(payload: AnalysisMaterialPackPersistencePayload) -> str:
+    """Return a short deterministic uniqueness key for one final material pack."""
+
+    raw_key = "|".join(
+        (
+            payload.strategy_signal_run_id,
+            payload.aggregation_version,
+            payload.material_schema_version,
+            payload.indicator_version,
+            payload.candidate_scenario_version,
+        )
+    )
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
 def _require_sqlalchemy() -> None:

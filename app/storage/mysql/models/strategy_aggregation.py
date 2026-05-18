@@ -41,18 +41,9 @@ if mapped_column is not None:
         __tablename__ = "strategy_aggregation_run"
         __table_args__ = (
             UniqueConstraint("aggregation_run_id", name="uq_strategy_aggregation_run_id"),
-            Index(
-                "idx_strategy_aggregation_version_status",
-                "strategy_signal_run_id",
-                "aggregation_version",
-                "material_schema_version",
-                "indicator_version",
-                "candidate_scenario_version",
-                "status",
-            ),
-            Index("idx_strategy_aggregation_strategy_signal_run", "strategy_signal_run_id"),
+            Index("idx_strategy_aggregation_signal_status", "strategy_signal_run_id", "status"),
             Index("idx_strategy_aggregation_snapshot_id", "snapshot_id"),
-            Index("idx_strategy_aggregation_status_created", "status", "created_at_utc"),
+            Index("idx_strategy_aggregation_created_at", "created_at_utc"),
             Index("idx_strategy_aggregation_hypothesis", "analysis_hypothesis_direction", "risk_gate_status"),
             Index("idx_strategy_aggregation_trace_id", "trace_id"),
         )
@@ -139,14 +130,7 @@ if mapped_column is not None:
         __table_args__ = (
             UniqueConstraint("material_pack_id", name="uq_analysis_material_pack_id"),
             UniqueConstraint("aggregation_run_id", name="uq_analysis_material_pack_aggregation_run_id"),
-            UniqueConstraint(
-                "strategy_signal_run_id",
-                "aggregation_version",
-                "material_schema_version",
-                "indicator_version",
-                "candidate_scenario_version",
-                name="uk_analysis_material_pack_version",
-            ),
+            UniqueConstraint("material_version_key", name="uk_analysis_material_pack_version_key"),
             Index("idx_analysis_material_pack_strategy_signal_run", "strategy_signal_run_id"),
             Index("idx_analysis_material_pack_snapshot_id", "snapshot_id"),
             Index("idx_analysis_material_pack_status_created", "status", "created_at_utc"),
@@ -173,6 +157,7 @@ if mapped_column is not None:
         material_schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
         indicator_version: Mapped[str] = mapped_column(String(64), nullable=False)
         candidate_scenario_version: Mapped[str] = mapped_column(String(64), nullable=False)
+        material_version_key: Mapped[str] = mapped_column(String(64), nullable=False)
         status: Mapped[str] = mapped_column(String(32), nullable=False)
         material_json: Mapped[str] = mapped_column(Text, nullable=False)
         question_json: Mapped[str] = mapped_column(Text, nullable=False)
@@ -270,6 +255,7 @@ else:
         material_schema_version: str = ""
         indicator_version: str = ""
         candidate_scenario_version: str = ""
+        material_version_key: str = ""
         status: str = ""
         material_json: str = "{}"
         question_json: str = "{}"
