@@ -24,6 +24,82 @@
 
 第 17 不新增独立固定时间策略任务，不通过 `scripts/run_strategy_signals.py` 调用，也不把策略逻辑写入 collector service。
 
+### 2.1 手动验证入口
+
+新增检查脚本：
+
+`scripts/check_strategy_signal_scheduler.py`
+
+入口方法：
+
+`main()`
+
+发起方式：
+
+```bash
+python -m scripts.check_strategy_signal_scheduler \
+  --symbol BTCUSDT \
+  --base-interval 4h \
+  --higher-interval 1d \
+  --upstream-job-name kline_4h_incremental \
+  --upstream-slot-time-utc 2026-05-18T12:05:00Z
+```
+
+该脚本默认 dry-run，只验证第 17 scheduler 编排是否会触发、等待或跳过。它不是策略信号正式 CLI，不替代 `scripts/run_strategy_signals.py`，也不直接调用第 16 阶段 `StrategySignalService` 或第 15 阶段 MarketContextSnapshot service。
+
+dry-run 调用链：
+
+```text
+scripts/check_strategy_signal_scheduler.py::main
+    -> app/scheduler/strategy_signal_scheduler_service.py::StrategySignalSchedulerService.preview_after_collector_success
+    -> app/scheduler/strategy_signal_scheduler_preview.py::preview_strategy_signal_scheduler_after_collect
+    -> app/strategy/scheduler_event_repository.py::StrategySignalSchedulerEventRepository.get_event_by_target
+```
+
+dry-run 只读 `strategy_signal_scheduler_event_log` 用于判断幂等状态，不写入 `strategy_signal_scheduler_event_log`，不写入 `strategy_signal_run` / `strategy_signal_result`，不懒生成 MarketContextSnapshot，不发送 Hermes，不请求 Binance REST / WebSocket，不修改 `market_kline_4h` / `market_kline_1d`。
+
+显式写入验证：
+
+```bash
+python -m scripts.check_strategy_signal_scheduler \
+  --symbol BTCUSDT \
+  --base-interval 4h \
+  --higher-interval 1d \
+  --upstream-job-name kline_4h_incremental \
+  --upstream-slot-time-utc 2026-05-18T12:05:00Z \
+  --confirm-write
+```
+
+`--confirm-write` 时，脚本先做同一套只读 preview 取得目标 K线和配置状态；若 `STRATEGY_SIGNAL_SCHEDULER_ENABLED=false`，输出 `status=disabled` 并停止，不绕过配置强制执行。若配置开启，脚本调用：
+
+```text
+app/scheduler/strategy_signal_scheduler_service.py::StrategySignalSchedulerService.run_after_collector_success
+```
+
+正式写入仍由第 17 service 控制：它按唯一键 `symbol + base_interval + higher_interval + target_base_open_time_ms` 做幂等；同一目标已有记录时只返回 `skipped`，不重复生成第 16 策略信号。
+
+脚本固定输出：
+
+```text
+status
+exit_code
+event_id
+run_id
+snapshot_id
+target_base_open_time_utc
+target_base_close_time_utc
+target_higher_open_time_utc
+strategy_count
+success_count
+failed_count
+invalid_count
+not_implemented_count
+message
+error_message
+```
+
+本验证入口涉及 `scripts`，但只作为人工检查入口。它不允许 scheduler 调用，不承载业务逻辑，不直接访问 Binance，不直接写 repository，不直接发送 Hermes，不自动修复数据，不自动交易。
+
 ## 3. 核心调用链
 
 ```text
@@ -39,6 +115,17 @@ app/scheduler/runner.py::SchedulerRunner.run_once
     -> app/strategy/runner.py::StrategyRunner.run_strategies
     -> app/strategy/result_repository.py::StrategySignalResultRepository.create_strategy_signal_run_with_results
 ```
+
+手动验证确认写入调用链：
+
+```text
+scripts/check_strategy_signal_scheduler.py::main
+    -> app/scheduler/strategy_signal_scheduler_service.py::StrategySignalSchedulerService.preview_after_collector_success
+    -> app/scheduler/strategy_signal_scheduler_service.py::StrategySignalSchedulerService.run_after_collector_success
+    -> app/strategy/signal_service.py::StrategySignalService.run_strategy_signals
+```
+
+注意：该脚本不通过 `scripts/run_strategy_signals.py` 间接触发第 16；第 16 只由第 17 service 内部在 confirm-write 且配置开启时调用。
 
 UTC 00:00 close boundary:
 
@@ -193,6 +280,13 @@ STRATEGY_SIGNAL_HERMES_NOTIFY_SKIPPED=false
 5. 第 16 抛异常：写入 `failed`，`error_code=strategy_signal_service_exception`。
 6. Hermes 抛异常或返回失败：只记录 Hermes 失败，不修改策略状态。
 
+手动验证入口异常处理：
+
+1. `scripts/check_strategy_signal_scheduler.py::_parse_utc_datetime` 发现 `--upstream-slot-time-utc` 非 UTC aware 时间时，脚本输出 `status=failed`、`exit_code=1`，不打开正式写入流程。
+2. dry-run 的 repository 读取异常由脚本外层返回异常；因为没有创建 event、没有调用第 16，所以不会产生部分写入。
+3. `STRATEGY_SIGNAL_SCHEDULER_ENABLED=false` 时输出 `status=disabled`、`exit_code=0`，不调用正式 `run_after_collector_success`，不写任何策略信号表。
+4. confirm-write 已进入第 17 后，异常仍按第 17 原有规则写入或更新 `strategy_signal_scheduler_event_log`，再返回 `failed` / `blocked` / `skipped` 等状态。
+
 ## 11. 测试
 
 新增测试：
@@ -210,6 +304,11 @@ STRATEGY_SIGNAL_HERMES_NOTIFY_SKIPPED=false
 7. Hermes 开关关闭不发送，开启发送并记录结果。
 8. skipped 默认不发送 Hermes。
 9. 第 17 只处理最近一根理论已收盘 4h K线。
+10. `scripts/check_strategy_signal_scheduler.py` dry-run 不写数据库、不调用第 16。
+11. `--confirm-write` 通过第 17 service 调用第 16。
+12. 检查脚本不直接导入第 16 service 或第 15 MarketContextSnapshot 模块。
+13. 配置关闭时输出 `disabled` 且不写入。
+14. 普通 4h slot、UTC 00:00 4h slot、1d 接续 waiting_upstream、已有 event 幂等 skipped 均可验证。
 
 运行：
 

@@ -152,6 +152,24 @@ class StrategySignalSchedulerService:
             trigger_reason=trigger_reason,
         )
 
+    def preview_after_collector_success(
+        self,
+        db_session: Any,
+        *,
+        request: StrategySignalSchedulerRequest,
+    ) -> StrategySignalSchedulerResult:
+        """Preview a post-collector scheduler attempt without writing data."""
+
+        from app.scheduler.strategy_signal_scheduler_preview import (
+            preview_strategy_signal_scheduler_after_collect,
+        )
+
+        return preview_strategy_signal_scheduler_after_collect(
+            service=self,
+            db_session=db_session,
+            request=request,
+        )
+
     def _handle_4h_success(
         self,
         db_session: Any,

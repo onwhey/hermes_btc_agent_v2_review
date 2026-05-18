@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -633,3 +634,218 @@ def test_event_log_model_and_migration_have_unique_target_constraint() -> None:
     assert "strategy_signal_scheduler_event_log" in migration_text
     assert "uk_strategy_signal_scheduler_target" in migration_text
     assert "target_base_open_time_ms" in migration_text
+
+
+def test_check_strategy_signal_scheduler_dry_run_does_not_write_or_call_stage16(capsys: Any) -> None:
+    import scripts.check_strategy_signal_scheduler as check_script
+
+    service, repo, strategy, _alert = service_with_fakes()
+    session = FakeSession()
+
+    exit_code = check_script.main(
+        [
+            "--upstream-slot-time-utc",
+            "2026-05-16T08:05:00Z",
+        ],
+        service=service,
+        settings=AppSettings(),
+        config=runtime_config(),
+        session_scope_factory=_fake_session_scope_factory(session),
+        current_time_utc=utc_at(16, 8, 6),
+    )
+    output = _captured_key_values(capsys)
+
+    assert exit_code == 0
+    assert output["status"] == "would_trigger"
+    assert output["target_base_open_time_utc"] == "2026-05-16T04:00:00Z"
+    assert output["target_base_close_time_utc"] == "2026-05-16T08:00:00Z"
+    assert output["target_higher_open_time_utc"] == "2026-05-15T00:00:00Z"
+    assert repo.rows == []
+    assert strategy.calls == []
+    assert session.commits == 0
+
+
+def test_check_strategy_signal_scheduler_confirm_write_calls_stage17(capsys: Any) -> None:
+    import scripts.check_strategy_signal_scheduler as check_script
+
+    service, repo, strategy, _alert = service_with_fakes()
+
+    exit_code = check_script.main(
+        [
+            "--upstream-slot-time-utc",
+            "2026-05-16T08:05:00Z",
+            "--confirm-write",
+        ],
+        service=service,
+        settings=AppSettings(),
+        config=runtime_config(),
+        session_scope_factory=_fake_session_scope_factory(FakeSession()),
+        current_time_utc=utc_at(16, 8, 6),
+    )
+    output = _captured_key_values(capsys)
+
+    assert exit_code == 0
+    assert output["status"] == "success"
+    assert output["event_id"].startswith("SSS-BTCUSDT-4H-1D-20260516T080000Z")
+    assert output["run_id"] == "SSR-test"
+    assert output["snapshot_id"] == "MCS-test"
+    assert len(repo.rows) == 1
+    assert len(strategy.calls) == 1
+    assert strategy.calls[0].trigger_source == "scheduler"
+    assert strategy.calls[0].ensure_latest_snapshot is True
+    assert strategy.calls[0].dry_run is False
+    assert strategy.calls[0].confirm_write is True
+
+
+def test_check_strategy_signal_scheduler_does_not_import_stage16_or_stage15_directly() -> None:
+    import scripts.check_strategy_signal_scheduler as check_script
+
+    source = inspect.getsource(check_script)
+
+    assert "app.strategy.signal_service" not in source
+    assert "app.market_context" not in source
+    assert "scripts.run_strategy_signals" not in source
+    assert "build_market_context_snapshot" not in source
+
+
+def test_check_strategy_signal_scheduler_disabled_outputs_disabled_without_write(capsys: Any) -> None:
+    import scripts.check_strategy_signal_scheduler as check_script
+
+    service, repo, strategy, _alert = service_with_fakes(
+        config=runtime_config(strategy_signal_scheduler_enabled=False)
+    )
+
+    exit_code = check_script.main(
+        [
+            "--upstream-slot-time-utc",
+            "2026-05-16T08:05:00Z",
+            "--confirm-write",
+        ],
+        service=service,
+        settings=AppSettings(),
+        config=runtime_config(strategy_signal_scheduler_enabled=False),
+        session_scope_factory=_fake_session_scope_factory(FakeSession()),
+        current_time_utc=utc_at(16, 8, 6),
+    )
+    output = _captured_key_values(capsys)
+
+    assert exit_code == 0
+    assert output["status"] == "disabled"
+    assert repo.rows == []
+    assert strategy.calls == []
+
+
+def test_check_strategy_signal_scheduler_utc_midnight_4h_dry_run_waits(capsys: Any) -> None:
+    import scripts.check_strategy_signal_scheduler as check_script
+
+    service, repo, strategy, _alert = service_with_fakes()
+
+    exit_code = check_script.main(
+        [
+            "--upstream-slot-time-utc",
+            "2026-05-18T00:05:00Z",
+            "--upstream-job-name",
+            KLINE_4H_INCREMENTAL_JOB_NAME,
+        ],
+        service=service,
+        settings=AppSettings(),
+        config=runtime_config(),
+        session_scope_factory=_fake_session_scope_factory(FakeSession()),
+        current_time_utc=utc_at(18, 0, 6),
+    )
+    output = _captured_key_values(capsys)
+
+    assert exit_code == 0
+    assert output["status"] == "would_waiting_upstream"
+    assert output["target_base_open_time_utc"] == "2026-05-17T20:00:00Z"
+    assert output["target_base_close_time_utc"] == "2026-05-18T00:00:00Z"
+    assert repo.rows == []
+    assert strategy.calls == []
+
+
+def test_check_strategy_signal_scheduler_1d_dry_run_continues_waiting_upstream(capsys: Any) -> None:
+    import scripts.check_strategy_signal_scheduler as check_script
+
+    repo = FakeSchedulerEventRepository()
+    service, _repo, strategy, _alert = service_with_fakes(repository=repo)
+    service.run_after_collector_success(
+        FakeSession(),
+        request=StrategySignalSchedulerRequest(
+            upstream_job_name=KLINE_4H_INCREMENTAL_JOB_NAME,
+            current_time_utc=utc_at(18, 0, 6),
+            upstream_slot_time_utc=utc_at(18, 0, 5),
+            trace_id="trace-waiting",
+        ),
+    )
+    strategy.calls.clear()
+
+    exit_code = check_script.main(
+        [
+            "--upstream-job-name",
+            KLINE_1D_INCREMENTAL_JOB_NAME,
+            "--upstream-slot-time-utc",
+            "2026-05-18T00:10:00Z",
+        ],
+        service=service,
+        settings=AppSettings(),
+        config=runtime_config(),
+        session_scope_factory=_fake_session_scope_factory(FakeSession()),
+        current_time_utc=utc_at(18, 0, 12),
+    )
+    output = _captured_key_values(capsys)
+
+    assert exit_code == 0
+    assert output["status"] == "would_trigger"
+    assert output["event_id"].startswith("SSS-BTCUSDT-4H-1D-20260518T000000Z")
+    assert len(repo.rows) == 1
+    assert repo.rows[0].status == StrategySignalSchedulerStatus.WAITING_UPSTREAM.value
+    assert strategy.calls == []
+
+
+def test_check_strategy_signal_scheduler_existing_event_dry_run_is_skipped(capsys: Any) -> None:
+    import scripts.check_strategy_signal_scheduler as check_script
+
+    service, repo, strategy, _alert = service_with_fakes()
+    service.run_after_collector_success(
+        FakeSession(),
+        request=StrategySignalSchedulerRequest(
+            upstream_job_name=KLINE_4H_INCREMENTAL_JOB_NAME,
+            current_time_utc=utc_at(16, 8, 6),
+            upstream_slot_time_utc=utc_at(16, 8, 5),
+            trace_id="trace-existing",
+        ),
+    )
+    strategy.calls.clear()
+
+    exit_code = check_script.main(
+        [
+            "--upstream-slot-time-utc",
+            "2026-05-16T08:05:00Z",
+        ],
+        service=service,
+        settings=AppSettings(),
+        config=runtime_config(),
+        session_scope_factory=_fake_session_scope_factory(FakeSession()),
+        current_time_utc=utc_at(16, 8, 7),
+    )
+    output = _captured_key_values(capsys)
+
+    assert exit_code == 0
+    assert output["status"] == "skipped"
+    assert output["event_id"].startswith("SSS-BTCUSDT-4H-1D-20260516T080000Z")
+    assert len(repo.rows) == 1
+    assert repo.rows[0].skip_count == 0
+    assert strategy.calls == []
+
+
+def _fake_session_scope_factory(session: FakeSession) -> Any:
+    @contextmanager
+    def _scope(**_kwargs: Any) -> Any:
+        yield session
+
+    return _scope
+
+
+def _captured_key_values(capsys: Any) -> dict[str, str]:
+    captured = capsys.readouterr().out.strip().splitlines()
+    return dict(line.split("=", 1) for line in captured if "=" in line)
