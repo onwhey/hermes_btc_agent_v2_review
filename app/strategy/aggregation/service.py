@@ -16,15 +16,17 @@ app/scheduler/jobs/strategy_aggregation_job.py::run_strategy_aggregation_after_s
 
 This file belongs to `app/strategy/aggregation`. It consumes existing stage-16
 strategy signal rows and the stage-15 snapshot restore contract, performs only
-deterministic aggregation/material-pack construction, and optionally writes the
+deterministic aggregation/material-pack construction, projects analysis
+hypothesis directions from existing upstream rows, and optionally writes the
 stage-18 tables.
 
 It does not call `scripts/run_strategy_signals.py`, does not call the stage-16
 StrategySignalService, does not call the stage-15 snapshot service, does not
 request Binance REST/WebSocket, does not modify formal Kline tables, does not
-read/write Redis, does not call DeepSeek or any large language model, does not
-generate final trading advice, does not read private trading state, and does
-not perform trading.
+read/write Redis, does not implement real strategy classes, does not judge
+long/short from Klines, does not call DeepSeek or any large language model,
+does not generate strategy signals or final trading advice, does not read
+private trading state, and does not perform trading.
 """
 
 from __future__ import annotations
@@ -550,7 +552,11 @@ class StrategyAggregationService:
                 "snapshot_id": result.snapshot_id or "",
                 "status": result.status.value,
                 "candidate_direction": result.candidate_direction.value if result.candidate_direction else "",
-                "candidate_direction_only": True,
+                "candidate_direction_is_analysis_hypothesis_only": True,
+                "is_strategy_signal": False,
+                "is_trading_advice": False,
+                "is_executable": False,
+                "strategy_logic_implemented": False,
                 "no_large_model_call": True,
                 "no_advice_lifecycle": True,
                 "no_auto_trading": True,

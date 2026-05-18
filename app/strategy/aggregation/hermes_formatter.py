@@ -8,8 +8,9 @@ Called by: `app/strategy/aggregation/service.py`.
 
 External services: none. MySQL: none. Redis: none. Hermes: this file only
 formats text; it does not send. DeepSeek/large models: none. Trading execution:
-none. The message explicitly states that candidate_direction is not a final
-suggestion and no automatic trading happened.
+none. The message explicitly states that candidate_direction is an analysis
+hypothesis only, not a strategy signal, not a final suggestion, and no
+automatic trading happened.
 """
 
 from __future__ import annotations
@@ -55,9 +56,9 @@ def build_strategy_aggregation_visible_body(result: StrategyAggregationResult, a
         lines.append(f"message: {_compact_text(str(message), max_length=260)}")
     lines.extend(
         [
-            "Boundary: this is a strategy aggregation candidate, not final trading advice.",
-            "Stage 18 did not call a large model, did not enter the advice lifecycle, and did not auto-trade.",
-            "candidate_direction is only a candidate direction for later analysis layers.",
+            "Boundary: this is a strategy aggregation analysis hypothesis, not final trading advice.",
+            "Stage 18 did not implement real strategy logic, did not call a large model, did not enter the advice lifecycle, and did not auto-trade.",
+            "candidate_direction is only an analysis hypothesis projection for later analysis layers.",
         ]
     )
     return "\n".join(lines)

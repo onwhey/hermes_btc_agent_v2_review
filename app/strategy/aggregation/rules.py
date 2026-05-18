@@ -1,14 +1,16 @@
 """Deterministic aggregation rules for stage-18.
 
 This file belongs to `app/strategy/aggregation`. It classifies stage-16
-strategy result rows, computes candidate direction, risk gate, conflict level,
-and builds evidence groupings.
+result rows, projects already persisted direction labels into analysis
+hypothesis directions, computes risk/conflict metadata, and builds evidence
+groupings.
 
 Called by: `app/strategy/aggregation/service.py`.
 
 External services: none. MySQL: none. Redis: none. Hermes: none.
 DeepSeek/large models: none. Trading execution: none. It does not request
-market data, write formal Kline tables, or generate final suggestions.
+market data, write formal Kline tables, implement real strategy classes, judge
+long/short from Klines, or generate final suggestions.
 """
 
 from __future__ import annotations
@@ -108,7 +110,7 @@ def classify_strategy_results(strategy_results: tuple[Any, ...]) -> StrategyVote
 
 
 def build_aggregation_decision(summary: StrategyVoteSummary) -> AggregationDecision:
-    """Build the deterministic stage-18 candidate decision."""
+    """Project existing stage-16 direction rows into a stage-18 hypothesis."""
 
     risk_level = summary.max_risk_level
     conflict_level = _conflict_level(summary, risk_level=risk_level)
@@ -141,7 +143,7 @@ def build_aggregation_decision(summary: StrategyVoteSummary) -> AggregationDecis
 
 
 def build_support_resistance_probe(*, restored_snapshot: Any, latest_close: Decimal, strategy_run: Any) -> Mapping[str, Any]:
-    """Build support/resistance plus structure/volatility state for scenarios."""
+    """Build context for hypotheses without choosing a long/short direction."""
 
     swing = build_swing_structure(
         restored_snapshot.rows_4h,
@@ -175,7 +177,11 @@ def build_evidence_json(vote_summary: StrategyVoteSummary) -> Mapping[str, Any]:
         "not_implemented_strategies": list(vote_summary.not_implemented_strategies),
         "failed_strategies": list(vote_summary.failed_strategies),
         "invalid_strategies": list(vote_summary.invalid_strategies),
-        "candidate_direction_is_not_execution_decision": True,
+        "candidate_direction_is_analysis_hypothesis_only": True,
+        "is_strategy_signal": False,
+        "is_trading_advice": False,
+        "is_executable": False,
+        "strategy_logic_implemented": False,
     }
 
 
@@ -312,9 +318,9 @@ def _decision_message(
     conflict_level: ConflictLevel,
 ) -> str:
     return (
-        f"Stage-18 aggregation produced candidate_direction={direction.value}; "
+        f"Stage-18 aggregation projected candidate_direction={direction.value}; "
         f"risk_gate_status={risk_gate.value}; conflict_level={conflict_level.value}. "
-        "This is a candidate scenario only, not a final trading suggestion."
+        "This is an analysis hypothesis only, not a strategy signal or trading suggestion."
     )
 
 

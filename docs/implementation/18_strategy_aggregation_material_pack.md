@@ -1,5 +1,35 @@
 # 18 Strategy Aggregation Material Pack 实现说明
 
+## 0. 2026-05-19 boundary correction: analysis hypotheses only
+
+Stage 18 does not implement real strategies, does not independently judge
+long/short direction, does not generate strategy signals, does not generate
+operation advice, and does not generate executable trading fields.
+
+`long` / `short` / `wait` / `stop_trading` in stage 18 only mean analysis
+hypotheses or direction placeholders projected from existing stage-16 rows or
+test fixtures. They are not strategy conclusions and not trading advice.
+
+`candidate_scenarios_json` uses `long_hypothesis`, `short_hypothesis`,
+`wait_hypothesis`, and `stop_trading_hypothesis`. Every hypothesis must include:
+
+```text
+scenario_semantics = analysis_hypothesis_only
+is_strategy_signal = false
+is_trading_advice = false
+is_executable = false
+source = fixture_or_existing_signal_projection
+strategy_logic_implemented = false
+promotion_allowed = false
+promotion_requires_future_strategy_and_llm_stage = true
+```
+
+Stage-18 swing, ATR, range, support/resistance, and preliminary reward/risk
+values are deterministic material-pack context only. They must not be read as
+real long/short strategy logic. Real Gann, trend, support/resistance, risk
+control, and other strategies must be developed later as independent
+plugin-style strategy classes.
+
 ## 1. 功能：策略聚合与材料包构建
 
 ### 1.1 发起方式
@@ -432,8 +462,8 @@ tests/scheduler/test_strategy_aggregation_auto_hook.py
 2. `blocked` / `failed` 不允许聚合。
 3. Gann placeholder / not_implemented 不导致聚合失败。
 4. 有效策略不足会 blocked。
-5. 趋势偏多 + 风险低/中生成 long candidate。
-6. 趋势偏空生成 short candidate。
+5. 上游 fixture / 第 16 结果明确偏多 + 风险低/中时，仅投影 `long_hypothesis`。
+6. 上游 fixture / 第 16 结果明确偏空时，仅投影 `short_hypothesis`。
 7. 趋势偏多 + 风险极高降级 wait / stop_trading。
 8. 多空冲突提升 conflict_level。
 9. material pack 包含 swing、ATR、振幅、支撑压力、候选场景和问题清单。

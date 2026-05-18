@@ -9,7 +9,8 @@ Called by: `app/strategy/aggregation/service.py`.
 External services: none. MySQL: none in this file. Redis: none. Hermes: none.
 DeepSeek/large models: none. Trading execution: none. Formal Kline impact:
 none; all Kline rows are caller-provided read-only rows from the snapshot
-restore contract.
+restore contract. Stage 18 does not implement real strategies and does not
+convert Kline indicators into executable long/short signals.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from app.strategy.aggregation.candidate_scenario_builder import (
+    ANALYSIS_HYPOTHESIS_SEMANTICS,
     build_stage19_question_list,
     build_validation_plan,
 )
@@ -167,9 +169,10 @@ def build_material_pack(
         },
         "support_resistance": support_resistance,
         "candidate_direction": decision.candidate_direction.value,
-        "candidate_invalidation_condition": _first_scenario_value(
+        "candidate_direction_semantics": ANALYSIS_HYPOTHESIS_SEMANTICS,
+        "hypothesis_invalidation_check": _first_scenario_value(
             candidate_scenarios_json,
-            "invalidation_condition",
+            "invalidation_check",
         ),
         "candidate_target_observation_zone": _first_scenario_value(
             candidate_scenarios_json,
@@ -185,6 +188,11 @@ def build_material_pack(
         "boundary": {
             "deterministic_material_only": True,
             "candidate_direction_only": True,
+            "candidate_direction_is_analysis_hypothesis_only": True,
+            "is_strategy_signal": False,
+            "is_trading_advice": False,
+            "is_executable": False,
+            "strategy_logic_implemented": False,
             "no_large_model_call": True,
             "no_automatic_trading": True,
         },
@@ -244,6 +252,16 @@ def _build_strategy_conflict_json(
         "not_implemented_strategy_count": len(vote_summary.not_implemented_strategies),
         "failed_strategy_count": len(vote_summary.failed_strategies),
         "invalid_strategy_count": len(vote_summary.invalid_strategies),
+        "analysis_hypothesis_only": True,
+        "why_stage18_is_not_strategy_logic": (
+            "Stage 18 only stores analysis hypotheses projected from existing "
+            "stage-16 rows. Later strategy, model, and advice lifecycle stages "
+            "have not run."
+        ),
+        "is_strategy_signal": False,
+        "is_trading_advice": False,
+        "is_executable": False,
+        "strategy_logic_implemented": False,
         "why_candidate_is_not_execution_decision": (
             "第18只输出可验证候选方向，后续分析层和生命周期层尚未运行。"
         ),

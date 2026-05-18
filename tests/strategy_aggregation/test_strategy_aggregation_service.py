@@ -179,7 +179,7 @@ def strategy_run(*, status: str = "success", run_id: str = "SSR-stage18", snapsh
     )
 
 
-def signal(
+def fake_stage16_signal(
     name: str,
     *,
     status: str = "success",
@@ -196,7 +196,7 @@ def signal(
         risk_level=risk,
         signal_strength=Decimal(strength),
         reason_codes_json=json.dumps([f"{name}_code"], ensure_ascii=False),
-        reason_text=f"{name} deterministic strategy signal.",
+        reason_text=f"{name} fake stage16 signal row.",
         metrics_json=json.dumps({"metric": "1"}, ensure_ascii=False),
         debug_json="{}",
         error_message=None,
@@ -217,13 +217,18 @@ def run_request(*, confirm: bool = False) -> StrategyAggregationRequest:
     )
 
 
-def test_success_and_partial_strategy_signal_runs_can_aggregate_long_candidate() -> None:
+def test_success_and_partial_strategy_signal_runs_can_project_long_hypothesis() -> None:
     repo = FakeAggregationRepository(
         strategy_run=strategy_run(status="partial_success"),
         results=(
-            signal("trend_structure", direction="bullish_bias", risk="low", strength="0.80"),
-            signal("volatility_risk", direction="not_applicable", risk="medium", strength="0.30"),
-            signal("gann_placeholder", status="not_implemented", direction="not_applicable", risk="not_applicable"),
+            fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.80"),
+            fake_stage16_signal("fixture_risk_projection", direction="not_applicable", risk="medium", strength="0.30"),
+            fake_stage16_signal(
+                "fixture_not_implemented_placeholder",
+                status="not_implemented",
+                direction="not_applicable",
+                risk="not_applicable",
+            ),
         ),
         restored_snapshot=restored_snapshot(),
     )
@@ -258,20 +263,20 @@ def test_empty_results_and_missing_snapshot_are_blocked() -> None:
     assert empty_results.error_code == "strategy_signal_result_empty"
 
 
-def test_short_candidate_and_conflict_level_rules() -> None:
+def test_short_hypothesis_projection_and_conflict_level_rules() -> None:
     short_repo = FakeAggregationRepository(
         strategy_run=strategy_run(),
         results=(
-            signal("trend_structure", direction="bearish_bias", risk="low", strength="0.80"),
-            signal("volatility_risk", direction="not_applicable", risk="low", strength="0.20"),
+            fake_stage16_signal("fixture_direction_hypothesis_short", direction="bearish_bias", risk="low", strength="0.80"),
+            fake_stage16_signal("fixture_risk_projection", direction="not_applicable", risk="low", strength="0.20"),
         ),
         restored_snapshot=restored_snapshot(),
     )
     conflict_repo = FakeAggregationRepository(
         strategy_run=strategy_run(),
         results=(
-            signal("trend_structure", direction="bullish_bias", risk="low", strength="0.70"),
-            signal("least_resistance", direction="bearish_bias", risk="low", strength="0.72"),
+            fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.70"),
+            fake_stage16_signal("fixture_direction_hypothesis_short", direction="bearish_bias", risk="low", strength="0.72"),
         ),
         restored_snapshot=restored_snapshot(),
     )
@@ -288,8 +293,8 @@ def test_extreme_risk_blocks_direction_to_wait_or_stop_trading() -> None:
     repo = FakeAggregationRepository(
         strategy_run=strategy_run(),
         results=(
-            signal("trend_structure", direction="bullish_bias", risk="low", strength="0.90"),
-            signal("volatility_risk", direction="not_applicable", risk="extreme", strength="0.90"),
+            fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.90"),
+            fake_stage16_signal("fixture_risk_projection", direction="not_applicable", risk="extreme", strength="0.90"),
         ),
         restored_snapshot=restored_snapshot(),
     )
@@ -305,9 +310,14 @@ def test_confirm_write_persists_aggregation_and_material_pack_with_required_sect
     repo = FakeAggregationRepository(
         strategy_run=strategy_run(status="partial_success"),
         results=(
-            signal("trend_structure", direction="bullish_bias", risk="low", strength="0.80"),
-            signal("volatility_risk", direction="not_applicable", risk="medium", strength="0.30"),
-            signal("gann_placeholder", status="not_implemented", direction="not_applicable", risk="not_applicable"),
+            fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.80"),
+            fake_stage16_signal("fixture_risk_projection", direction="not_applicable", risk="medium", strength="0.30"),
+            fake_stage16_signal(
+                "fixture_not_implemented_placeholder",
+                status="not_implemented",
+                direction="not_applicable",
+                risk="not_applicable",
+            ),
         ),
         restored_snapshot=restored_snapshot(),
     )
@@ -328,16 +338,62 @@ def test_confirm_write_persists_aggregation_and_material_pack_with_required_sect
     assert material["volatility"]["avg_range_percent_20"] is not None
     assert material["support_resistance"]["support_candidates"]
     assert material["support_resistance"]["resistance_candidates"]
-    assert repo.aggregation_rows[0].candidate_scenarios_json["candidate_scenarios"][0]["activation_condition"]
+    scenario = repo.aggregation_rows[0].candidate_scenarios_json["candidate_scenarios"][0]
+    assert scenario["scenario_type"] == "long_hypothesis"
+    assert scenario["activation_check"]
+    assert scenario["validation_plan"]["activation_check"]
     assert repo.material_rows[0].question_json["questions"]
     assert repo.material_rows[0].data_window_json["base_kline_count"] == 40
     assert repo.material_rows[0].future_leakage_guard_json["uses_future_klines"] is False
 
 
+def test_direction_hypothesis_outputs_are_not_strategy_signals_or_advice() -> None:
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(
+            fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.80"),
+        ),
+        restored_snapshot=restored_snapshot(),
+    )
+
+    service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+
+    scenario = repo.aggregation_rows[0].candidate_scenarios_json["candidate_scenarios"][0]
+    assert scenario["scenario_type"] == "long_hypothesis"
+    assert scenario["scenario_semantics"] == "analysis_hypothesis_only"
+    assert scenario["source"] == "fixture_or_existing_signal_projection"
+    assert scenario["is_strategy_signal"] is False
+    assert scenario["is_trading_advice"] is False
+    assert scenario["is_executable"] is False
+    assert scenario["strategy_logic_implemented"] is False
+    assert scenario["promotion_allowed"] is False
+    assert scenario["promotion_requires_future_strategy_and_llm_stage"] is True
+
+
+def test_no_upstream_direction_fixture_defaults_to_wait_hypothesis() -> None:
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(
+            fake_stage16_signal("fixture_neutral_projection", direction="neutral", risk="low", strength="0.10"),
+            fake_stage16_signal("fixture_risk_projection", direction="not_applicable", risk="medium", strength="0.20"),
+        ),
+        restored_snapshot=restored_snapshot(),
+    )
+
+    service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+
+    scenario = repo.aggregation_rows[0].candidate_scenarios_json["candidate_scenarios"][0]
+    assert scenario["scenario_type"] == "wait_hypothesis"
+    assert scenario["hypothesis_direction"] == "wait"
+    assert scenario["is_strategy_signal"] is False
+    assert scenario["is_trading_advice"] is False
+    assert scenario["strategy_logic_implemented"] is False
+
+
 def test_future_leakage_guard_blocks_rows_after_snapshot_window() -> None:
     repo = FakeAggregationRepository(
         strategy_run=strategy_run(),
-        results=(signal("trend_structure", direction="bullish_bias", risk="low", strength="0.80"),),
+        results=(fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.80"),),
         restored_snapshot=restored_snapshot(future_base_row=True),
     )
 
@@ -377,7 +433,7 @@ def test_hermes_off_does_not_send_and_on_records_status() -> None:
     off_alert = FakeAlertSender()
     off_repo = FakeAggregationRepository(
         strategy_run=strategy_run(),
-        results=(signal("trend_structure", direction="bullish_bias", risk="low", strength="0.80"),),
+        results=(fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.80"),),
         restored_snapshot=restored_snapshot(),
     )
     off_result = service_with_repo(off_repo, alert=off_alert).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
@@ -385,7 +441,7 @@ def test_hermes_off_does_not_send_and_on_records_status() -> None:
     on_alert = FakeAlertSender()
     on_repo = FakeAggregationRepository(
         strategy_run=strategy_run(),
-        results=(signal("trend_structure", direction="bullish_bias", risk="low", strength="0.80"),),
+        results=(fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.80"),),
         restored_snapshot=restored_snapshot(),
     )
     on_settings = AppSettings(strategy_aggregation_hermes_enabled=True)
@@ -399,7 +455,7 @@ def test_hermes_off_does_not_send_and_on_records_status() -> None:
     assert on_result.hermes_status.value == "sent"
     assert len(on_alert.calls) == 1
     body = on_repo.aggregation_rows[0].hermes_message
-    assert "strategy aggregation candidate" in body
+    assert "strategy aggregation analysis hypothesis" in body
     assert "not final trading advice" in body
     assert "did not call a large model" in body
     assert "did not auto-trade" in body
@@ -452,11 +508,15 @@ def test_cli_dry_run_and_confirm_write_only_call_stage18_service(monkeypatch: An
 
 
 def test_stage18_source_does_not_call_stage15_stage16_llm_or_binance() -> None:
+    import app.strategy.aggregation.candidate_scenario_builder as candidate_module
+    import app.strategy.aggregation.material_builder as material_module
     import app.strategy.aggregation.repository as repository_module
+    import app.strategy.aggregation.rules as rules_module
     import app.strategy.aggregation.service as service_module
     import scripts.run_strategy_aggregation as script_module
 
-    source = "\n".join(inspect.getsource(module) for module in (repository_module, service_module, script_module))
+    modules = (candidate_module, material_module, repository_module, rules_module, service_module, script_module)
+    source = "\n".join(inspect.getsource(module) for module in modules)
 
     assert "from app.strategy.signal_service" not in source
     assert "scripts.run_strategy_signals" not in source
@@ -468,10 +528,30 @@ def test_stage18_source_does_not_call_stage15_stage16_llm_or_binance() -> None:
     assert "/fapi/v1" not in source
 
 
+def test_stage18_source_does_not_instantiate_future_strategy_classes() -> None:
+    import app.strategy.aggregation.candidate_scenario_builder as candidate_module
+    import app.strategy.aggregation.material_builder as material_module
+    import app.strategy.aggregation.repository as repository_module
+    import app.strategy.aggregation.rules as rules_module
+    import app.strategy.aggregation.service as service_module
+    import scripts.run_strategy_aggregation as script_module
+
+    modules = (candidate_module, material_module, repository_module, rules_module, service_module, script_module)
+    source = "\n".join(inspect.getsource(module) for module in modules)
+
+    for future_class_name in (
+        "GannStrategy",
+        "TrendStrategy",
+        "SupportResistanceStrategy",
+        "RiskControlStrategy",
+    ):
+        assert future_class_name not in source
+
+
 def test_material_pack_does_not_generate_final_advice_fields() -> None:
     repo = FakeAggregationRepository(
         strategy_run=strategy_run(),
-        results=(signal("trend_structure", direction="bullish_bias", risk="low", strength="0.80"),),
+        results=(fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.80"),),
         restored_snapshot=restored_snapshot(),
     )
     service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))

@@ -1,17 +1,21 @@
-"""Candidate scenario builder for stage-18 strategy aggregation.
+"""Analysis-hypothesis builder for stage-18 material packs.
 
-This file belongs to `app/strategy/aggregation`. It converts a deterministic
-aggregation decision and market-material indicators into candidate scenarios
-with activation conditions, invalidation conditions, target observation zones,
-preliminary reward/risk estimates, evidence, opposing evidence, and validation
-plans.
+This file belongs to `app/strategy/aggregation`. It projects already persisted
+stage-16 direction labels into analysis hypotheses for the stage-19 material
+pack.
 
 Called by: `app/strategy/aggregation/service.py` and
 `app/strategy/aggregation/material_builder.py`.
 
+Stage 18 does not implement real strategies, does not judge long/short from
+Klines, does not generate strategy signals, does not generate trading advice,
+and does not produce executable instructions. The long/short/wait/stop_trading
+values emitted here are hypothesis placeholders only. Real strategy classes
+must be developed later as independent stages/modules/classes.
+
 External services: none. MySQL: none. Redis: none. Hermes: none.
-DeepSeek/large models: none. Trading execution: none. It never outputs an
-entry, exit, position size, leverage, order, or final suggestion field.
+DeepSeek/large models: none. Trading execution: none. It never outputs entry,
+exit, position size, leverage, order, or final suggestion fields.
 """
 
 from __future__ import annotations
@@ -27,6 +31,9 @@ from app.strategy.aggregation.types import (
     StrategyVoteSummary,
 )
 
+ANALYSIS_HYPOTHESIS_SEMANTICS = "analysis_hypothesis_only"
+ANALYSIS_HYPOTHESIS_SOURCE = "fixture_or_existing_signal_projection"
+
 
 def build_candidate_scenarios(
     *,
@@ -37,75 +44,90 @@ def build_candidate_scenarios(
     structure_state: str,
     volatility_state: str,
 ) -> Mapping[str, Any]:
-    """Build JSON-ready candidate scenarios from deterministic inputs.
+    """Build JSON-ready analysis hypotheses from deterministic inputs.
 
-    Parameters: aggregation decision, strategy votes, latest close, support /
-    resistance candidates, and structural/volatility states.
-    Return value: mapping with one or more candidate scenarios and warnings.
-    Failure scenarios: malformed candidate prices are skipped, leaving a
-    nullable reward/risk estimate rather than failing the aggregation.
+    Parameters: aggregation decision projected from existing stage-16 rows,
+    normalized stage-16 vote summary, latest close, support/resistance context,
+    and structure/volatility context.
+    Return value: mapping with exactly one analysis hypothesis plus explicit
+    boundary flags.
+    Failure scenarios: malformed context prices are skipped, leaving a nullable
+    observation ratio rather than failing the aggregation.
     External effects: none.
     """
 
-    direction = decision.candidate_direction
-    supporting = _supporting_strategy_names(direction, vote_summary)
-    opposing = _opposing_evidence(direction, vote_summary, structure_state, volatility_state, decision)
+    projected_direction = _project_direction_from_existing_signal(decision.candidate_direction, vote_summary)
+    supporting = _supporting_projection_names(projected_direction, vote_summary)
+    opposing = _opposing_evidence(projected_direction, vote_summary, structure_state, volatility_state, decision)
     risk_notes = _risk_notes(decision)
 
-    if direction == CandidateDirection.LONG:
-        scenario = _build_long_scenario(
+    if projected_direction == CandidateDirection.LONG:
+        hypothesis = _build_long_hypothesis(
             latest_close=latest_close,
             support_resistance=support_resistance,
             supporting_evidence=supporting,
             opposing_evidence=opposing,
             risk_notes=risk_notes,
         )
-    elif direction == CandidateDirection.SHORT:
-        scenario = _build_short_scenario(
+    elif projected_direction == CandidateDirection.SHORT:
+        hypothesis = _build_short_hypothesis(
             latest_close=latest_close,
             support_resistance=support_resistance,
             supporting_evidence=supporting,
             opposing_evidence=opposing,
             risk_notes=risk_notes,
         )
-    elif direction == CandidateDirection.STOP_TRADING:
-        scenario = _build_stop_trading_scenario(
+    elif projected_direction == CandidateDirection.STOP_TRADING:
+        hypothesis = _build_stop_trading_hypothesis(
             supporting_evidence=supporting,
             opposing_evidence=opposing,
             risk_notes=risk_notes,
         )
     else:
-        scenario = _build_wait_scenario(
+        hypothesis = _build_wait_hypothesis(
             supporting_evidence=supporting,
             opposing_evidence=opposing,
             risk_notes=risk_notes,
         )
 
     return {
-        "candidate_direction": direction.value,
+        "candidate_direction": projected_direction.value,
+        "candidate_direction_semantics": ANALYSIS_HYPOTHESIS_SEMANTICS,
+        "requested_candidate_direction": decision.candidate_direction.value,
         "candidate_direction_confidence": decision.candidate_direction_confidence.value,
         "risk_gate_status": decision.risk_gate_status.value,
         "conflict_level": decision.conflict_level.value,
-        "candidate_scenarios": [scenario],
-        "boundary": {
-            "candidate_direction_only": True,
-            "not_a_trading_instruction": True,
-            "no_large_model_call": True,
-            "no_automatic_trading": True,
-        },
+        "direction_projection_source": ANALYSIS_HYPOTHESIS_SOURCE,
+        "candidate_scenarios": [hypothesis],
+        "boundary": _analysis_hypothesis_boundary(),
     }
 
 
 def build_validation_plan() -> Mapping[str, Any]:
-    """Return the reusable stage-18 validation plan for later evaluation."""
+    """Return the keyed stage-18 validation plan for later evaluation."""
 
     return {
         "evaluation_horizons_base_bars": [1, 3, 6],
-        "activation_check": "以后续已收盘 4h K线判断候选成立条件是否被满足。",
-        "invalidation_check": "以后续已收盘 4h K线判断候选失效条件是否被满足。",
-        "floating_range_check": "以后续 K线 high/low 估算候选方向的最大有利与不利波动。",
-        "target_observation_check": "检查候选目标观察区是否被触达或被明显拒绝。",
-        "notes": "本阶段只生成验证计划，不执行复盘，也不生成最终建议。",
+        "activation_check": (
+            "Later layers may check whether already-closed future 4h bars make "
+            "the analysis hypothesis worth reviewing."
+        ),
+        "invalidation_check": (
+            "Later layers may check whether already-closed future 4h bars make "
+            "the analysis hypothesis invalid as a research path."
+        ),
+        "floating_range_check": (
+            "Later layers may estimate favorable/unfavorable movement for "
+            "evaluation only; this is not an execution rule."
+        ),
+        "target_observation_check": (
+            "Later layers may check whether the observation zone was touched or "
+            "rejected for post-analysis review."
+        ),
+        "notes": (
+            "Stage 18 only prepares a validation plan. It does not backtest, "
+            "does not call a model, and does not generate final advice."
+        ),
     }
 
 
@@ -115,25 +137,52 @@ def build_stage19_question_list() -> Mapping[str, Any]:
     return {
         "question_schema_version": "stage19_question_v1",
         "questions": [
-            "当前候选方向是否被价格结构支持？",
-            "当前波动率是否支持候选失效条件的距离？",
-            "当前目标观察区与候选失效条件之间的初步风险收益比是否合理？",
-            "当前结构是否存在假突破或追涨追跌风险？",
-            "多个策略是否真正独立，还是重复表达同一个趋势因子？",
-            "如果策略信号与风控冲突，应优先等待还是停止交易？",
-            "哪些条件必须成立，才允许候选方向从 wait 转为 long 或 short？",
-            "当前候选场景的反方证据是否足以否决方向？",
-            "如果当前候选判断错误，最可能错在哪里？",
+            "Does the projected analysis hypothesis deserve model review, or should it stay wait?",
+            "Which evidence supports the projection, and which evidence weakens it?",
+            "Is volatility too high for the hypothesis to be useful as analysis material?",
+            "Are the support/resistance observations context only, or are they being over-interpreted?",
+            "Which future strategy module would be required before this could become a real signal?",
+            "Which later LLM/advice lifecycle checks are still missing?",
+            "What would invalidate the hypothesis as analysis material?",
+            "What is the strongest opposing evidence?",
+            "Where could the deterministic aggregation be misleading?",
         ],
         "boundary": {
             "questions_only": True,
             "no_model_call_in_stage18": True,
-            "candidate_direction_is_not_an_execution_decision": True,
+            "candidate_direction_is_analysis_hypothesis_only": True,
+            "is_strategy_signal": False,
+            "is_trading_advice": False,
+            "is_executable": False,
+            "strategy_logic_implemented": False,
         },
     }
 
 
-def _build_long_scenario(
+def _project_direction_from_existing_signal(
+    requested_direction: CandidateDirection,
+    vote_summary: StrategyVoteSummary,
+) -> CandidateDirection:
+    """Project only explicit upstream direction labels into a hypothesis.
+
+    Stage 18 must not invent a long/short hypothesis from Klines, support /
+    resistance, reward/risk, or other material-pack indicators. If the existing
+    stage-16 rows do not explicitly provide the requested directional side, the
+    safe output is wait.
+    """
+
+    if requested_direction == CandidateDirection.LONG and vote_summary.long_strategies:
+        return CandidateDirection.LONG
+    if requested_direction == CandidateDirection.SHORT and vote_summary.short_strategies:
+        return CandidateDirection.SHORT
+    if requested_direction == CandidateDirection.STOP_TRADING and vote_summary.risk_strategies:
+        return CandidateDirection.STOP_TRADING
+    if requested_direction == CandidateDirection.STOP_TRADING:
+        return CandidateDirection.STOP_TRADING
+    return CandidateDirection.WAIT
+
+
+def _build_long_hypothesis(
     *,
     latest_close: Decimal,
     support_resistance: Mapping[str, object],
@@ -145,32 +194,42 @@ def _build_long_scenario(
     resistance = _nearest_candidate_above(support_resistance.get("resistance_candidates"), latest_close)
     support_price = _candidate_price(support)
     resistance_price = _candidate_price(resistance)
-    reward_risk = _reward_risk_ratio(
+    observation_ratio = _reward_risk_ratio(
         latest_close=latest_close,
         favorable_target=resistance_price,
         invalidation_level=support_price,
         direction="long",
     )
-    return {
-        "scenario_type": "long_candidate",
-        "activation_condition": _condition_with_candidate(
-            "4h 收盘价重新站上最近压力候选上方，且后续回落不迅速跌回区间内。",
-            resistance,
-        ),
-        "invalidation_condition": _condition_with_candidate(
-            "4h 收盘价跌破最近支撑候选下方，则该多头候选场景失效。",
-            support,
-        ),
-        "target_observation_zone": _zone_text(resistance, fallback="观察最近 swing high 至上方压力候选区域。"),
-        "preliminary_reward_risk_ratio": _decimal_to_float(reward_risk),
-        "supporting_evidence": supporting_evidence,
-        "opposing_evidence": opposing_evidence,
-        "risk_notes": risk_notes,
-        "validation_plan": list(build_validation_plan().values())[:4],
-    }
+    scenario = _base_hypothesis(
+        scenario_type="long_hypothesis",
+        hypothesis_direction="long",
+        supporting_evidence=supporting_evidence,
+        opposing_evidence=opposing_evidence,
+        risk_notes=risk_notes,
+    )
+    scenario.update(
+        {
+            "activation_check": _context_with_candidate(
+                "Review only whether the upstream long-side projection remains plausible near resistance context.",
+                resistance,
+            ),
+            "invalidation_check": _context_with_candidate(
+                "Review only whether the upstream long-side projection becomes weak near support context.",
+                support,
+            ),
+            "target_observation_zone": _zone_text(
+                resistance,
+                fallback="Observe recent swing-high and resistance context only.",
+            ),
+            "preliminary_reward_risk_ratio": _decimal_to_float(observation_ratio),
+            "preliminary_reward_risk_ratio_semantics": "observation_math_only_not_strategy_signal",
+            "support_resistance_context": _support_resistance_context(support=support, resistance=resistance),
+        }
+    )
+    return scenario
 
 
-def _build_short_scenario(
+def _build_short_hypothesis(
     *,
     latest_close: Decimal,
     support_resistance: Mapping[str, object],
@@ -182,79 +241,134 @@ def _build_short_scenario(
     resistance = _nearest_candidate_above(support_resistance.get("resistance_candidates"), latest_close)
     support_price = _candidate_price(support)
     resistance_price = _candidate_price(resistance)
-    reward_risk = _reward_risk_ratio(
+    observation_ratio = _reward_risk_ratio(
         latest_close=latest_close,
         favorable_target=support_price,
         invalidation_level=resistance_price,
         direction="short",
     )
-    return {
-        "scenario_type": "short_candidate",
-        "activation_condition": _condition_with_candidate(
-            "4h 收盘价跌破最近支撑候选下方，且后续反抽不能重新站回区间内。",
-            support,
-        ),
-        "invalidation_condition": _condition_with_candidate(
-            "4h 收盘价重新站上最近压力候选上方，则该空头候选场景失效。",
-            resistance,
-        ),
-        "target_observation_zone": _zone_text(support, fallback="观察最近 swing low 至下方支撑候选区域。"),
-        "preliminary_reward_risk_ratio": _decimal_to_float(reward_risk),
-        "supporting_evidence": supporting_evidence,
-        "opposing_evidence": opposing_evidence,
-        "risk_notes": risk_notes,
-        "validation_plan": list(build_validation_plan().values())[:4],
-    }
+    scenario = _base_hypothesis(
+        scenario_type="short_hypothesis",
+        hypothesis_direction="short",
+        supporting_evidence=supporting_evidence,
+        opposing_evidence=opposing_evidence,
+        risk_notes=risk_notes,
+    )
+    scenario.update(
+        {
+            "activation_check": _context_with_candidate(
+                "Review only whether the upstream short-side projection remains plausible near support context.",
+                support,
+            ),
+            "invalidation_check": _context_with_candidate(
+                "Review only whether the upstream short-side projection becomes weak near resistance context.",
+                resistance,
+            ),
+            "target_observation_zone": _zone_text(
+                support,
+                fallback="Observe recent swing-low and support context only.",
+            ),
+            "preliminary_reward_risk_ratio": _decimal_to_float(observation_ratio),
+            "preliminary_reward_risk_ratio_semantics": "observation_math_only_not_strategy_signal",
+            "support_resistance_context": _support_resistance_context(support=support, resistance=resistance),
+        }
+    )
+    return scenario
 
 
-def _build_wait_scenario(
+def _build_wait_hypothesis(
     *,
     supporting_evidence: list[str],
     opposing_evidence: list[str],
     risk_notes: list[str],
 ) -> Mapping[str, Any]:
-    return {
-        "scenario_type": "wait_candidate",
-        "activation_condition": "等待多空结构或风险状态进一步清晰，至少观察后续 1 到 3 根 4h 收盘。",
-        "invalidation_condition": "如果风险门禁继续否决或多空冲突加剧，wait 候选继续有效。",
-        "target_observation_zone": "观察最近支撑压力候选之间的震荡区间。",
-        "preliminary_reward_risk_ratio": None,
-        "supporting_evidence": supporting_evidence,
-        "opposing_evidence": opposing_evidence,
-        "risk_notes": risk_notes,
-        "validation_plan": list(build_validation_plan().values())[:4],
-    }
+    scenario = _base_hypothesis(
+        scenario_type="wait_hypothesis",
+        hypothesis_direction="wait",
+        supporting_evidence=supporting_evidence,
+        opposing_evidence=opposing_evidence,
+        risk_notes=risk_notes,
+    )
+    scenario.update(
+        {
+            "activation_check": "Keep the analysis path neutral until an upstream stage explicitly provides direction.",
+            "invalidation_check": "Wait remains valid while directional evidence is missing or conflicted.",
+            "target_observation_zone": "Observe range/context only; no directional target is produced.",
+            "preliminary_reward_risk_ratio": None,
+            "preliminary_reward_risk_ratio_semantics": "not_applicable_to_wait_hypothesis",
+        }
+    )
+    return scenario
 
 
-def _build_stop_trading_scenario(
+def _build_stop_trading_hypothesis(
     *,
     supporting_evidence: list[str],
     opposing_evidence: list[str],
     risk_notes: list[str],
 ) -> Mapping[str, Any]:
+    scenario = _base_hypothesis(
+        scenario_type="stop_trading_hypothesis",
+        hypothesis_direction="stop_trading",
+        supporting_evidence=supporting_evidence,
+        opposing_evidence=opposing_evidence,
+        risk_notes=risk_notes,
+    )
+    scenario.update(
+        {
+            "activation_check": "Review risk context only; no directional analysis should be promoted.",
+            "invalidation_check": "The stop-trading hypothesis expires only after later risk context normalizes.",
+            "target_observation_zone": "Observe volatility and risk normalization only.",
+            "preliminary_reward_risk_ratio": None,
+            "preliminary_reward_risk_ratio_semantics": "not_applicable_to_stop_trading_hypothesis",
+        }
+    )
+    return scenario
+
+
+def _base_hypothesis(
+    *,
+    scenario_type: str,
+    hypothesis_direction: str,
+    supporting_evidence: list[str],
+    opposing_evidence: list[str],
+    risk_notes: list[str],
+) -> dict[str, Any]:
     return {
-        "scenario_type": "stop_trading_candidate",
-        "activation_condition": "波动率或风险门禁极端，候选场景要求先停止新的方向判断。",
-        "invalidation_condition": "风险状态回落到可评估区间，且 4h 结构重新稳定后，该停止候选失效。",
-        "target_observation_zone": "只观察风险回落和结构恢复，不观察方向目标。",
-        "preliminary_reward_risk_ratio": None,
+        "scenario_type": scenario_type,
+        "scenario_semantics": ANALYSIS_HYPOTHESIS_SEMANTICS,
+        "hypothesis_direction": hypothesis_direction,
+        "source": ANALYSIS_HYPOTHESIS_SOURCE,
+        "projected_from_existing_stage16_signal": True,
         "supporting_evidence": supporting_evidence,
         "opposing_evidence": opposing_evidence,
         "risk_notes": risk_notes,
-        "validation_plan": list(build_validation_plan().values())[:4],
+        "validation_plan": build_validation_plan(),
+        **_analysis_hypothesis_boundary(),
     }
 
 
-def _supporting_strategy_names(direction: CandidateDirection, summary: StrategyVoteSummary) -> list[str]:
+def _analysis_hypothesis_boundary() -> dict[str, Any]:
+    return {
+        "is_strategy_signal": False,
+        "is_trading_advice": False,
+        "is_executable": False,
+        "strategy_logic_implemented": False,
+        "promotion_allowed": False,
+        "promotion_requires_future_strategy_and_llm_stage": True,
+    }
+
+
+def _supporting_projection_names(direction: CandidateDirection, summary: StrategyVoteSummary) -> list[str]:
     if direction == CandidateDirection.LONG:
         return _strategy_names(summary.long_strategies)
     if direction == CandidateDirection.SHORT:
         return _strategy_names(summary.short_strategies)
     if direction == CandidateDirection.STOP_TRADING:
-        return _strategy_names(summary.risk_strategies) or ["风险门禁否决"]
+        return _strategy_names(summary.risk_strategies) or ["risk_gate_projection"]
     names = _strategy_names(summary.neutral_strategies) + _strategy_names(summary.risk_strategies)
     if not names:
-        names = ["聚合规则倾向等待"]
+        names = ["stage18_wait_boundary"]
     return names
 
 
@@ -267,28 +381,29 @@ def _opposing_evidence(
 ) -> list[str]:
     evidence: list[str] = []
     if direction == CandidateDirection.LONG:
-        evidence.extend(f"{name} 支持空头或反向风险" for name in _strategy_names(summary.short_strategies))
+        evidence.extend(f"{name} projects the opposite or risk side" for name in _strategy_names(summary.short_strategies))
     elif direction == CandidateDirection.SHORT:
-        evidence.extend(f"{name} 支持多头或反向风险" for name in _strategy_names(summary.long_strategies))
+        evidence.extend(f"{name} projects the opposite or risk side" for name in _strategy_names(summary.long_strategies))
     else:
-        evidence.extend(f"{name} 支持多头" for name in _strategy_names(summary.long_strategies))
-        evidence.extend(f"{name} 支持空头" for name in _strategy_names(summary.short_strategies))
+        evidence.extend(f"{name} projects long-side context" for name in _strategy_names(summary.long_strategies))
+        evidence.extend(f"{name} projects short-side context" for name in _strategy_names(summary.short_strategies))
     if structure_state in {"range", "mixed", "insufficient_data"}:
-        evidence.append(f"价格结构为 {structure_state}，方向确认度不足")
+        evidence.append(f"structure_state={structure_state}; direction confidence is limited")
     if volatility_state in {"expanded", "extreme"}:
-        evidence.append(f"波动率状态为 {volatility_state}，候选条件更容易被噪音影响")
+        evidence.append(f"volatility_state={volatility_state}; hypothesis review is riskier")
     if decision.conflict_level in {ConflictLevel.MEDIUM, ConflictLevel.HIGH}:
-        evidence.append(f"策略冲突等级为 {decision.conflict_level.value}")
+        evidence.append(f"conflict_level={decision.conflict_level.value}")
     return evidence
 
 
 def _risk_notes(decision: AggregationDecision) -> list[str]:
     notes = [
-        "candidate_direction 只是聚合层候选方向，不是最终建议。",
-        "成立条件、失效条件和目标观察区只用于后续验证，不是操作指令。",
+        "candidate_direction is an analysis hypothesis placeholder only.",
+        "It is not a strategy signal, not trading advice, and not executable.",
+        "Real strategy logic must be implemented later in independent strategy modules.",
     ]
     if decision.risk_gate_status != RiskGateStatus.PASS:
-        notes.append(f"风控门禁状态：{decision.risk_gate_status.value}")
+        notes.append(f"risk_gate_status={decision.risk_gate_status.value}")
     return notes
 
 
@@ -327,18 +442,32 @@ def _candidate_price(candidate: Mapping[str, Any] | None) -> Decimal | None:
         return None
 
 
-def _condition_with_candidate(base_text: str, candidate: Mapping[str, Any] | None) -> str:
+def _context_with_candidate(base_text: str, candidate: Mapping[str, Any] | None) -> str:
     price = _candidate_price(candidate)
     if price is None:
         return base_text
-    return f"{base_text} 参考价位：{_decimal_text(price)}。"
+    return f"{base_text} Context price: {_decimal_text(price)}."
 
 
 def _zone_text(candidate: Mapping[str, Any] | None, *, fallback: str) -> str:
     price = _candidate_price(candidate)
     if price is None:
         return fallback
-    return f"观察 {_decimal_text(price)} 附近的候选区域及其上/下方反应。"
+    return f"Observe context around {_decimal_text(price)}; this is not a target instruction."
+
+
+def _support_resistance_context(
+    *,
+    support: Mapping[str, Any] | None,
+    resistance: Mapping[str, Any] | None,
+) -> Mapping[str, Any]:
+    return {
+        "support_context": support or {},
+        "resistance_context": resistance or {},
+        "semantics": "observation_context_only",
+        "is_strategy_signal": False,
+        "is_trading_advice": False,
+    }
 
 
 def _reward_risk_ratio(
@@ -372,6 +501,8 @@ def _decimal_to_float(value: Decimal | None) -> float | None:
 
 
 __all__ = [
+    "ANALYSIS_HYPOTHESIS_SEMANTICS",
+    "ANALYSIS_HYPOTHESIS_SOURCE",
     "build_candidate_scenarios",
     "build_stage19_question_list",
     "build_validation_plan",
