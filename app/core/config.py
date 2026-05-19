@@ -90,6 +90,7 @@ from app.core.constants import (
     DEFAULT_MARKET_CONTEXT_SYMBOL,
     DEFAULT_MODEL_REVIEW_DRY_RUN,
     DEFAULT_MODEL_REVIEW_ENABLED,
+    DEFAULT_MODEL_REVIEW_CONFIG_DIR,
     DEFAULT_MODEL_REVIEW_HERMES_ENABLED,
     DEFAULT_MODEL_REVIEW_MAX_INPUT_BYTES,
     DEFAULT_MODEL_REVIEW_MAX_INPUT_CHARS,
@@ -247,6 +248,7 @@ class AppSettings:
     model_review_enabled: bool = DEFAULT_MODEL_REVIEW_ENABLED
     model_review_dry_run: bool = DEFAULT_MODEL_REVIEW_DRY_RUN
     model_review_provider: str = DEFAULT_MODEL_REVIEW_PROVIDER
+    model_review_config_dir: str = DEFAULT_MODEL_REVIEW_CONFIG_DIR
     model_review_max_input_chars: int = DEFAULT_MODEL_REVIEW_MAX_INPUT_CHARS
     model_review_max_output_chars: int = DEFAULT_MODEL_REVIEW_MAX_OUTPUT_CHARS
     model_review_max_input_bytes: int = DEFAULT_MODEL_REVIEW_MAX_INPUT_BYTES
@@ -1093,6 +1095,11 @@ def load_settings(
             merged_values,
             "MODEL_REVIEW_PROVIDER",
             DEFAULT_MODEL_REVIEW_PROVIDER,
+        ),
+        model_review_config_dir=_get_config_value(
+            merged_values,
+            "MODEL_REVIEW_CONFIG_DIR",
+            DEFAULT_MODEL_REVIEW_CONFIG_DIR,
         ),
         model_review_max_input_chars=_parse_int_config(
             _get_config_value(

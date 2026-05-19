@@ -13,6 +13,7 @@ from app.core.config import AppSettings
 from app.model_analysis.hermes_formatter import build_model_analysis_visible_body
 from app.model_analysis.prompt_builder import build_model_review_prompt
 from app.model_analysis.providers.mock import MockModelReviewProvider, build_custom_mock_provider
+from app.model_analysis.schema_validator import validate_model_review_output
 from app.model_analysis.service import ModelAnalysisService
 from app.model_analysis.types import (
     EXIT_PARAMETER_ERROR,
@@ -186,6 +187,64 @@ def test_dry_run_does_not_write_and_is_allowed_when_disabled() -> None:
     assert repo.result_rows == []
 
 
+def test_model_registry_missing_empty_disabled_and_non_mock_are_blocked(tmp_path: Path) -> None:
+    missing_dir = tmp_path / "missing"
+    missing_dir.mkdir()
+    missing = service_with_repo(
+        FakeModelAnalysisRepository(material_pack=material_pack()),
+        settings=AppSettings(model_review_config_dir=str(missing_dir)),
+    ).run_model_analysis(FakeSession(), request=run_request())
+
+    empty_dir = tmp_path / "empty"
+    _write_model_registry(empty_dir, enabled_models=[])
+    empty = service_with_repo(
+        FakeModelAnalysisRepository(material_pack=material_pack()),
+        settings=AppSettings(model_review_config_dir=str(empty_dir)),
+    ).run_model_analysis(FakeSession(), request=run_request())
+
+    disabled_dir = tmp_path / "disabled"
+    _write_model_registry(disabled_dir, model_enabled=False)
+    disabled = service_with_repo(
+        FakeModelAnalysisRepository(material_pack=material_pack()),
+        settings=AppSettings(model_review_config_dir=str(disabled_dir)),
+    ).run_model_analysis(FakeSession(), request=run_request())
+
+    future_dir = tmp_path / "future"
+    _write_model_registry(future_dir, model_key="future_review", provider="future_provider")
+    future = service_with_repo(
+        FakeModelAnalysisRepository(material_pack=material_pack()),
+        settings=AppSettings(model_review_config_dir=str(future_dir)),
+    ).run_model_analysis(FakeSession(), request=run_request())
+
+    assert missing.status == ModelAnalysisStatus.BLOCKED
+    assert missing.error_code == "model_registry_not_found"
+    assert empty.status == ModelAnalysisStatus.BLOCKED
+    assert empty.error_code == "model_registry_empty"
+    assert disabled.status == ModelAnalysisStatus.BLOCKED
+    assert disabled.error_code == "no_enabled_model_config"
+    assert future.status == ModelAnalysisStatus.BLOCKED
+    assert future.error_code == "no_enabled_mock_model_config"
+
+
+def test_enabled_mock_registry_allows_dry_run_and_supplies_metadata(tmp_path: Path) -> None:
+    config_dir = tmp_path / "enabled"
+    _write_model_registry(config_dir)
+    repo = FakeModelAnalysisRepository(material_pack=material_pack())
+
+    result = service_with_repo(
+        repo,
+        settings=AppSettings(model_review_config_dir=str(config_dir), model_review_enabled=False),
+    ).run_model_analysis(FakeSession(), request=run_request())
+
+    assert result.status == ModelAnalysisStatus.SUCCESS
+    assert result.model_key == "mock_review"
+    assert result.model_role == "review_gate"
+    assert result.analysis_mode == "single"
+    assert result.details["mock_provider_only"] is True
+    assert repo.run_rows == []
+    assert repo.result_rows == []
+
+
 def test_confirm_write_is_blocked_when_model_review_disabled() -> None:
     repo = FakeModelAnalysisRepository(material_pack=material_pack())
 
@@ -218,6 +277,13 @@ def test_confirm_write_persists_run_and_result_only_with_enabled_config() -> Non
     assert repo.run_rows[0].is_trading_signal is False
     assert repo.run_rows[0].is_executable is False
     assert repo.run_rows[0].auto_trading_allowed is False
+    assert repo.run_rows[0].model_key == "mock_review"
+    assert repo.run_rows[0].model_role == "review_gate"
+    assert repo.run_rows[0].analysis_mode == "single"
+    assert repo.run_rows[0].chain_id is None
+    assert repo.run_rows[0].chain_step is None
+    assert repo.run_rows[0].parent_model_analysis_run_id is None
+    assert repo.run_rows[0].comparison_group_id is None
     assert repo.result_rows[0].review_version_key == result.review_version_key
 
 
@@ -294,6 +360,21 @@ def test_invalid_schema_and_forbidden_trading_fields_are_blocked() -> None:
         assert result.error_code == "schema_forbidden_trading_field"
 
 
+def test_schema_requires_human_review_required_boolean_and_not_trading_advice_true() -> None:
+    not_boolean = _valid_provider_output(human_review_required=False)
+    not_boolean["human_review_required"] = "false"
+    not_boolean_result = validate_model_review_output(not_boolean)
+
+    not_advice = _valid_provider_output()
+    not_advice["not_trading_advice"] = False
+    not_advice_result = validate_model_review_output(not_advice)
+
+    assert not_boolean_result.is_valid is False
+    assert not_boolean_result.error_code == "schema_human_review_required_not_boolean"
+    assert not_advice_result.is_valid is False
+    assert not_advice_result.error_code == "schema_not_trading_advice_false"
+
+
 def test_existing_success_result_skips_and_blocked_failed_attempts_do_not_lock_rerun() -> None:
     existing = SimpleNamespace(
         model_analysis_result_id="MARES-existing",
@@ -302,8 +383,10 @@ def test_existing_success_result_skips_and_blocked_failed_attempts_do_not_lock_r
         aggregation_run_id="SAR-stage19",
         strategy_signal_run_id="SSR-stage19",
         review_decision="wait",
+        human_review_required=False,
         evidence_quality="moderate",
         risk_acceptability="caution",
+        strategy_conflict_level="low",
     )
     existing_repo = FakeModelAnalysisRepository(material_pack=material_pack(), existing_result=existing)
     skipped = service_with_repo(
@@ -334,8 +417,10 @@ def test_unique_conflict_is_recovered_as_skipped() -> None:
         aggregation_run_id="SAR-stage19",
         strategy_signal_run_id="SSR-stage19",
         review_decision="wait",
+        human_review_required=False,
         evidence_quality="moderate",
         risk_acceptability="caution",
+        strategy_conflict_level="low",
     )
     repo = FakeModelAnalysisRepository(
         material_pack=material_pack(),
@@ -357,7 +442,10 @@ def test_unique_conflict_is_recovered_as_skipped() -> None:
 
 def test_human_review_required_is_success_not_blocked() -> None:
     provider = MockModelReviewProvider(
-        override_response=_valid_provider_output(review_decision=ReviewDecision.HUMAN_REVIEW_REQUIRED.value)
+        override_response=_valid_provider_output(
+            review_decision=ReviewDecision.HUMAN_REVIEW_REQUIRED.value,
+            human_review_required=True,
+        )
     )
     repo = FakeModelAnalysisRepository(material_pack=material_pack())
 
@@ -371,6 +459,7 @@ def test_human_review_required_is_success_not_blocked() -> None:
     assert result.review_decision == "human_review_required"
     assert result.human_review_required is True
     assert len(repo.result_rows) == 1
+    assert repo.result_rows[0].human_review_required is True
 
 
 def test_hermes_visible_body_is_chinese_and_hermes_failure_does_not_fail_review() -> None:
@@ -387,6 +476,7 @@ def test_hermes_visible_body_is_chinese_and_hermes_failure_does_not_fail_review(
         review_decision="wait",
         evidence_quality="moderate",
         risk_acceptability="caution",
+        strategy_conflict_level="low",
         human_review_required=False,
     )
     body = build_model_analysis_visible_body(base_result)
@@ -394,6 +484,7 @@ def test_hermes_visible_body_is_chinese_and_hermes_failure_does_not_fail_review(
     assert "本阶段未自动交易" in body
     assert "本阶段未生成订单" in body
     assert "本阶段未给出仓位或杠杆" in body
+    assert "是否需要人工判断" in body
 
     repo = FakeModelAnalysisRepository(material_pack=material_pack())
     result = service_with_repo(
@@ -451,6 +542,7 @@ def test_model_analysis_schema_uses_attempt_key_and_single_result_unique_key() -
     assert "uk_model_analysis_run_review_version_key" not in run_unique_names
 
     result_table = ModelAnalysisResult.__table__
+    result_columns = {column.name for column in result_table.columns}
     result_unique_names = {
         constraint.name
         for constraint in result_table.constraints
@@ -458,9 +550,20 @@ def test_model_analysis_schema_uses_attempt_key_and_single_result_unique_key() -
     }
     assert "uq_model_analysis_result_id" in result_unique_names
     assert "uk_model_analysis_result_review_version_key" in result_unique_names
+    assert "human_review_required" in result_columns
 
+    run_columns = {column.name for column in run_table.columns}
+    assert "model_key" in run_columns
+    assert "model_role" in run_columns
+    assert "analysis_mode" in run_columns
+    assert "chain_id" in run_columns
+    assert "chain_step" in run_columns
+    assert "parent_model_analysis_run_id" in run_columns
+    assert "comparison_group_id" in run_columns
     run_index_names = {index.name for index in run_table.indexes}
     assert "idx_model_analysis_run_review_version_key" in run_index_names
+    assert "idx_model_analysis_run_model_key" in run_index_names
+    assert "idx_model_analysis_run_analysis_mode" in run_index_names
     assert "idx_model_analysis_version_status" not in run_index_names
     for index in run_table.indexes:
         assert len(index.columns) <= 2
@@ -468,17 +571,24 @@ def test_model_analysis_schema_uses_attempt_key_and_single_result_unique_key() -
 
 
 def test_stage19_migration_does_not_create_large_composite_varchar_indexes() -> None:
-    migration = Path("migrations/versions/20260520_19_create_model_analysis_tables.py")
-    source = migration.read_text(encoding="utf-8")
+    source = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "migrations/versions/20260520_19_create_model_analysis_tables.py",
+            "migrations/versions/20260521_19a_model_review_registry_fields.py",
+        )
+    )
 
     assert "uk_model_analysis_run_review_version_key" not in source
     assert "uk_model_analysis_result_review_version_key" in source
     assert "idx_model_analysis_version_status" not in source
     assert "review_version_key\", \"material_pack_id" not in source
     assert "strategy_signal_run_id\", \"review_version_key" not in source
+    assert "human_review_required" in source
 
 
 def test_model_analysis_source_does_not_call_real_model_strategy_or_trading_interfaces() -> None:
+    import app.model_analysis.model_registry as registry_module
     import app.model_analysis.prompt_builder as prompt_module
     import app.model_analysis.providers.mock as mock_module
     import app.model_analysis.schema_validator as schema_module
@@ -487,7 +597,7 @@ def test_model_analysis_source_does_not_call_real_model_strategy_or_trading_inte
 
     source = "\n".join(
         inspect.getsource(module)
-        for module in (prompt_module, mock_module, schema_module, service_module, script_module)
+        for module in (prompt_module, registry_module, mock_module, schema_module, service_module, script_module)
     )
 
     assert "from app.exchange" not in source
@@ -526,6 +636,7 @@ def test_cli_dry_run_confirm_write_and_real_model_rejection(monkeypatch: Any, ca
             review_decision="wait",
             evidence_quality="moderate",
             risk_acceptability="caution",
+            strategy_conflict_level="low",
             human_review_required=False,
             message="ok",
         )
@@ -559,10 +670,16 @@ def test_cli_dry_run_confirm_write_and_real_model_rejection(monkeypatch: Any, ca
 def _valid_provider_output(
     *,
     review_decision: str = "wait",
+    human_review_required: bool | None = None,
     summary_text: str = "这是 mock 审查结果，不是最终交易建议。",
 ) -> dict[str, Any]:
     return {
         "review_decision": review_decision,
+        "human_review_required": (
+            review_decision == ReviewDecision.HUMAN_REVIEW_REQUIRED.value
+            if human_review_required is None
+            else human_review_required
+        ),
         "evidence_quality": "moderate",
         "logic_consistency": "consistent",
         "risk_acceptability": "caution",
@@ -577,6 +694,40 @@ def _valid_provider_output(
         "not_trading_advice": True,
         "not_trading_advice_text": "这是大模型审查结果，不是最终交易建议。",
     }
+
+
+def _write_model_registry(
+    base_dir: Path,
+    *,
+    enabled_models: list[str] | None = None,
+    model_key: str = "mock_review",
+    provider: str = "mock",
+    model_enabled: bool = True,
+) -> None:
+    base_dir.mkdir(parents=True, exist_ok=True)
+    active_models = [model_key] if enabled_models is None else enabled_models
+    registry_lines = ["enabled_models:"]
+    registry_lines.extend(f"  - {item}" for item in active_models)
+    registry_lines.append("")
+    registry_lines.append("default_mode: single")
+    (base_dir / "model_registry.yaml").write_text("\n".join(registry_lines), encoding="utf-8")
+    if model_key in active_models:
+        (base_dir / f"{model_key}.yaml").write_text(
+            "\n".join(
+                [
+                    f"model_key: {model_key}",
+                    f"provider: {provider}",
+                    f"enabled: {str(model_enabled).lower()}",
+                    "model_name: mock-reviewer",
+                    "model_version: mock_v1",
+                    "model_role: review_gate",
+                    "analysis_mode: single",
+                    "prompt_template_version: review_gate_v1",
+                    "review_schema_version: review_schema_v1",
+                ]
+            ),
+            encoding="utf-8",
+        )
 
 
 def _captured_key_values(capsys: Any) -> dict[str, str]:

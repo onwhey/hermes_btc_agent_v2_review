@@ -300,3 +300,122 @@ python -m pytest tests/strategy_aggregation -q
 python -m pytest tests/scheduler -q
 python -m pytest tests -q
 ```
+
+## 2. 19 addendum 补充实现说明
+
+### 2.1 模型配置注册表
+
+新增配置目录：
+
+```text
+configs/model_review/
+```
+
+新增配置文件：
+
+```text
+configs/model_review/model_registry.yaml
+configs/model_review/mock_review.yaml
+```
+
+加载链路：
+
+```text
+app/model_analysis/service.py::ModelAnalysisService._resolve_provider
+    ↓
+app/model_analysis/model_registry.py::load_enabled_model_review_configs
+    ↓
+app/model_analysis/model_registry.py::select_stage19a_mock_model_config
+```
+
+`MODEL_REVIEW_CONFIG_DIR` 只指定配置目录；具体模型启停由
+`configs/model_review/*.yaml` 中的 `enabled` 控制。19A 只执行第一个
+`enabled=true`、`provider=mock`、`analysis_mode=single` 的模型配置。
+非 mock provider 可被配置文件识别为未来 provider，但 19A 不会执行真实调用。
+找不到可执行 mock 配置时，service 返回 `blocked`，不会调用真实模型。
+
+本功能不请求外部接口，不读取 Redis，不写正式 K 线表，不调用真实大模型，不自动交易。
+
+### 2.2 横向对比与分析接力预留字段
+
+新增安全修正迁移：
+
+```text
+migrations/versions/20260521_19a_model_review_registry_fields.py
+```
+
+`model_analysis_run` 追加字段：
+
+```text
+model_key
+model_role
+analysis_mode
+chain_id
+chain_step
+parent_model_analysis_run_id
+comparison_group_id
+```
+
+`analysis_mode` 当前只执行 `single`。`relay_chain` 和
+`parallel_comparison` 只作为未来字段预留，19A 没有实现接力执行逻辑，
+也没有实现横向对比执行逻辑。
+
+新增索引都是单字段小索引：
+
+```text
+idx_model_analysis_run_model_key
+idx_model_analysis_run_analysis_mode
+idx_model_analysis_run_chain_id
+idx_model_analysis_run_comparison_group_id
+```
+
+没有新增大复合 VARCHAR 唯一索引。`model_analysis_run.review_version_key`
+仍然不是唯一约束。
+
+### 2.3 human_review_required 落表
+
+`model_analysis_result` 新增字段：
+
+```text
+human_review_required Boolean NOT NULL DEFAULT false
+```
+
+写入链路：
+
+```text
+app/model_analysis/schema_validator.py::validate_model_review_output
+    ↓
+app/model_analysis/payloads.py::build_result_payload
+    ↓
+app/model_analysis/repository.py::create_model_analysis_result
+```
+
+`human_review_required` 必须来自 schema 合法输出中的布尔字段。它表示审查成功后
+需要人工进一步判断，不等于 `blocked`，也不等于 `failed`。
+`blocked` / `failed` 仍只写 `model_analysis_run`，不写 `model_analysis_result`。
+`success` / `partial_success` 才写最终结果表。
+
+### 2.4 人工补充材料链路规则
+
+19A 只记录 `human_review_required` 和 `human_review_questions`，不实现微信回复入口，
+不实现自然语言解析 Skill，不实现确认流程，不新增 `human_review_input` 表。
+
+未来人工补充材料链路约束如下：
+
+```text
+微信自然语言回复
+    ↓
+Skill 解析成结构化草稿
+    ↓
+微信发给用户确认
+    ↓
+用户确认 / 修改 / 取消
+    ↓
+系统业务校验
+    ↓
+正式入库
+    ↓
+绑定 review_id / material_pack_id / model_analysis_run_id
+```
+
+Skill 解析结果只是草稿，不是事实。未经用户确认，不得写入核心业务事实表。

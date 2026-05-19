@@ -1,0 +1,4 @@
+enabled_models:
+  - mock_review
+
+default_mode: single

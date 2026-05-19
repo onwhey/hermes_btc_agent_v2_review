@@ -1,0 +1,9 @@
+model_key: mock_review
+provider: mock
+enabled: true
+model_name: mock-reviewer
+model_version: mock_v1
+model_role: review_gate
+analysis_mode: single
+prompt_template_version: review_gate_v1
+review_schema_version: review_schema_v1

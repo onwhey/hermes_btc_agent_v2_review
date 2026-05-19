@@ -20,9 +20,11 @@ from uuid import uuid4
 from app.market_data.kline_constants import TRIGGER_SOURCE_CLI
 
 MODEL_REVIEW_PROVIDER_MOCK = "mock"
-MODEL_REVIEW_MOCK_MODEL_NAME = "stage19a_mock_reviewer"
+MODEL_REVIEW_MOCK_MODEL_NAME = "mock-reviewer"
 MODEL_REVIEW_MOCK_MODEL_VERSION = "mock_v1"
-MODEL_REVIEW_MODE_DEFAULT = "review_gate"
+MODEL_REVIEW_MODE_DEFAULT = "single"
+MODEL_REVIEW_MODEL_KEY_DEFAULT = "mock_review"
+MODEL_REVIEW_MODEL_ROLE_DEFAULT = "review_gate"
 MODEL_ANALYSIS_EVENT_SOURCE = "app.model_analysis.service"
 
 EXIT_SUCCESS = 0
@@ -141,6 +143,13 @@ class ModelAnalysisRunPersistencePayload:
     model_name: str
     model_version: str
     review_mode: str
+    model_key: str
+    model_role: str
+    analysis_mode: str
+    chain_id: str | None
+    chain_step: int | None
+    parent_model_analysis_run_id: str | None
+    comparison_group_id: str | None
     status: ModelAnalysisStatus
     input_material_hash: str
     input_summary_json: Mapping[str, Any]
@@ -176,6 +185,7 @@ class ModelAnalysisResultPersistencePayload:
     aggregation_run_id: str
     strategy_signal_run_id: str
     review_decision: str
+    human_review_required: bool
     evidence_quality: str
     logic_consistency: str
     risk_acceptability: str
@@ -204,9 +214,13 @@ class ModelAnalysisServiceResult:
     strategy_signal_run_id: str | None
     trace_id: str
     review_decision: str | None = None
+    model_key: str | None = None
+    model_role: str | None = None
+    analysis_mode: str | None = None
     evidence_quality: str | None = None
     risk_acceptability: str | None = None
-    human_review_required: bool = True
+    strategy_conflict_level: str | None = None
+    human_review_required: bool = False
     is_final_trading_advice: bool = False
     is_trading_signal: bool = False
     is_executable: bool = False
@@ -234,9 +248,13 @@ def format_model_analysis_result_lines(result: ModelAnalysisServiceResult) -> li
         f"aggregation_run_id={result.aggregation_run_id or ''}",
         f"strategy_signal_run_id={result.strategy_signal_run_id or ''}",
         f"review_version_key={result.review_version_key or ''}",
+        f"model_key={result.model_key or ''}",
+        f"model_role={result.model_role or ''}",
+        f"analysis_mode={result.analysis_mode or ''}",
         f"review_decision={result.review_decision or ''}",
         f"evidence_quality={result.evidence_quality or ''}",
         f"risk_acceptability={result.risk_acceptability or ''}",
+        f"strategy_conflict_level={result.strategy_conflict_level or ''}",
         f"human_review_required={str(result.human_review_required).lower()}",
         f"is_final_trading_advice={str(result.is_final_trading_advice).lower()}",
         f"is_trading_signal={str(result.is_trading_signal).lower()}",
@@ -259,6 +277,8 @@ __all__ = [
     "MODEL_ANALYSIS_EVENT_SOURCE",
     "MODEL_REVIEW_MOCK_MODEL_NAME",
     "MODEL_REVIEW_MOCK_MODEL_VERSION",
+    "MODEL_REVIEW_MODEL_KEY_DEFAULT",
+    "MODEL_REVIEW_MODEL_ROLE_DEFAULT",
     "MODEL_REVIEW_MODE_DEFAULT",
     "MODEL_REVIEW_PROVIDER_MOCK",
     "ModelAnalysisHermesStatus",

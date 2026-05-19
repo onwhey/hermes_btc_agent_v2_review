@@ -50,6 +50,10 @@ if mapped_column is not None:
             Index("idx_model_analysis_run_review_version_key", "review_version_key"),
             Index("idx_model_analysis_run_status_created", "status", "created_at_utc"),
             Index("idx_model_analysis_run_trace_id", "trace_id"),
+            Index("idx_model_analysis_run_model_key", "model_key"),
+            Index("idx_model_analysis_run_analysis_mode", "analysis_mode"),
+            Index("idx_model_analysis_run_chain_id", "chain_id"),
+            Index("idx_model_analysis_run_comparison_group_id", "comparison_group_id"),
         )
 
         id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -68,6 +72,13 @@ if mapped_column is not None:
         model_name: Mapped[str] = mapped_column(String(96), nullable=False)
         model_version: Mapped[str] = mapped_column(String(96), nullable=False)
         review_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+        model_key: Mapped[str | None] = mapped_column(String(96), nullable=True)
+        model_role: Mapped[str | None] = mapped_column(String(96), nullable=True)
+        analysis_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="single")
+        chain_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+        chain_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+        parent_model_analysis_run_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+        comparison_group_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
         status: Mapped[str] = mapped_column(String(32), nullable=False)
         input_material_hash: Mapped[str] = mapped_column(String(64), nullable=False)
         input_summary_json: Mapped[str] = mapped_column(Text, nullable=False)
@@ -79,7 +90,7 @@ if mapped_column is not None:
         is_trading_signal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
         is_executable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
         auto_trading_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-        human_review_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+        human_review_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
         trigger_source: Mapped[str] = mapped_column(String(32), nullable=False)
         created_by: Mapped[str] = mapped_column(String(64), nullable=False)
         trace_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -138,6 +149,7 @@ if mapped_column is not None:
             nullable=False,
         )
         review_decision: Mapped[str] = mapped_column(String(64), nullable=False)
+        human_review_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
         evidence_quality: Mapped[str] = mapped_column(String(32), nullable=False)
         logic_consistency: Mapped[str] = mapped_column(String(32), nullable=False)
         risk_acceptability: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -174,7 +186,14 @@ else:
         model_provider: str = "mock"
         model_name: str = ""
         model_version: str = ""
-        review_mode: str = "review_gate"
+        review_mode: str = "single"
+        model_key: str | None = None
+        model_role: str | None = None
+        analysis_mode: str = "single"
+        chain_id: str | None = None
+        chain_step: int | None = None
+        parent_model_analysis_run_id: str | None = None
+        comparison_group_id: str | None = None
         status: str = ""
         input_material_hash: str = ""
         input_summary_json: str = "{}"
@@ -186,7 +205,7 @@ else:
         is_trading_signal: bool = False
         is_executable: bool = False
         auto_trading_allowed: bool = False
-        human_review_required: bool = True
+        human_review_required: bool = False
         trigger_source: str = ""
         created_by: str = ""
         trace_id: str = ""
@@ -213,6 +232,7 @@ else:
         aggregation_run_id: str = ""
         strategy_signal_run_id: str = ""
         review_decision: str = ""
+        human_review_required: bool = False
         evidence_quality: str = ""
         logic_consistency: str = ""
         risk_acceptability: str = ""

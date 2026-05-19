@@ -46,8 +46,12 @@ from app.model_analysis.payloads import (
     build_run_payload,
     build_skipped_result_from_existing,
     build_success_result,
-    is_human_review_decision,
     optional_text,
+)
+from app.model_analysis.model_registry import (
+    ModelRegistryError,
+    load_enabled_model_review_configs,
+    select_stage19a_mock_model_config,
 )
 from app.model_analysis.prompt_builder import build_model_review_prompt
 from app.model_analysis.providers.mock import MockModelReviewProvider
@@ -58,8 +62,8 @@ from app.model_analysis.repository import (
 from app.model_analysis.schema_validator import validate_model_review_output
 from app.model_analysis.types import (
     MODEL_ANALYSIS_EVENT_SOURCE,
-    MODEL_REVIEW_MOCK_MODEL_NAME,
-    MODEL_REVIEW_MOCK_MODEL_VERSION,
+    MODEL_REVIEW_MODEL_KEY_DEFAULT,
+    MODEL_REVIEW_MODEL_ROLE_DEFAULT,
     MODEL_REVIEW_MODE_DEFAULT,
     MODEL_REVIEW_PROVIDER_MOCK,
     ModelAnalysisHermesStatus,
@@ -130,24 +134,27 @@ class ModelAnalysisService:
         if invalid_result is not None:
             return invalid_result
 
-        provider_result = self._resolve_provider()
+        provider_resolution = self._resolve_provider()
         review_version_key = build_review_version_key(
             material_pack_id=request.material_pack_id,
-            model_provider=provider_result.provider_name,
-            model_name=provider_result.model_name,
-            model_version=provider_result.model_version,
-            prompt_template_version=self._settings.model_review_prompt_template_version,
-            review_schema_version=self._settings.model_review_schema_version,
-            review_mode=MODEL_REVIEW_MODE_DEFAULT,
+            model_provider=provider_resolution.provider_name,
+            model_name=provider_resolution.model_name,
+            model_version=provider_resolution.model_version,
+            prompt_template_version=provider_resolution.prompt_template_version,
+            review_schema_version=provider_resolution.review_schema_version,
+            review_mode=provider_resolution.analysis_mode,
         )
-        if provider_result.blocked_message:
+        if provider_resolution.blocked_message:
             return build_blocked_result(
                 request,
                 model_analysis_run_id=run_id,
                 review_version_key=review_version_key,
                 trace_id=trace_id,
-                message=provider_result.blocked_message,
-                error_code="provider_not_supported",
+                message=provider_resolution.blocked_message,
+                error_code=provider_resolution.blocked_error_code or "provider_not_supported",
+                model_key=provider_resolution.model_key,
+                model_role=provider_resolution.model_role,
+                analysis_mode=provider_resolution.analysis_mode,
             )
         if request.confirm_write and not self._settings.model_review_enabled:
             return build_blocked_result(
@@ -157,6 +164,9 @@ class ModelAnalysisService:
                 trace_id=trace_id,
                 message="MODEL_REVIEW_ENABLED=false blocks confirmed writes.",
                 error_code="model_review_disabled",
+                model_key=provider_resolution.model_key,
+                model_role=provider_resolution.model_role,
+                analysis_mode=provider_resolution.analysis_mode,
             )
 
         try:
@@ -181,6 +191,7 @@ class ModelAnalysisService:
                 material_pack=None,
                 prompt=None,
                 provider_result=None,
+                provider_metadata=provider_resolution,
                 model_analysis_run_id=run_id,
                 review_version_key=review_version_key,
                 trace_id=trace_id,
@@ -194,6 +205,7 @@ class ModelAnalysisService:
                 material_pack=material_pack,
                 prompt=None,
                 provider_result=None,
+                provider_metadata=provider_resolution,
                 model_analysis_run_id=run_id,
                 review_version_key=review_version_key,
                 trace_id=trace_id,
@@ -240,6 +252,7 @@ class ModelAnalysisService:
                 material_pack=material_pack,
                 prompt=prompt,
                 provider_result=None,
+                provider_metadata=provider_resolution,
                 model_analysis_run_id=run_id,
                 review_version_key=review_version_key,
                 trace_id=trace_id,
@@ -247,7 +260,7 @@ class ModelAnalysisService:
                 error_code=input_limit_error["error_code"],
             )
 
-        provider_output = provider_result.provider.review_material(prompt)
+        provider_output = provider_resolution.provider.review_material(prompt)
         output_limit_error = _limit_error(
             char_count=provider_output.output_char_count,
             byte_count=provider_output.output_byte_count,
@@ -262,6 +275,7 @@ class ModelAnalysisService:
                 material_pack=material_pack,
                 prompt=prompt,
                 provider_result=provider_output,
+                provider_metadata=provider_resolution,
                 model_analysis_run_id=run_id,
                 review_version_key=review_version_key,
                 trace_id=trace_id,
@@ -277,6 +291,7 @@ class ModelAnalysisService:
                 material_pack=material_pack,
                 prompt=prompt,
                 provider_result=provider_output,
+                provider_metadata=provider_resolution,
                 model_analysis_run_id=run_id,
                 review_version_key=review_version_key,
                 trace_id=trace_id,
@@ -293,6 +308,7 @@ class ModelAnalysisService:
                 material_pack=material_pack,
                 prompt=prompt,
                 provider_result=provider_output,
+                provider_metadata=provider_resolution,
                 model_analysis_run_id=run_id,
                 review_version_key=review_version_key,
                 trace_id=trace_id,
@@ -300,7 +316,7 @@ class ModelAnalysisService:
                 error_code="provider_review_blocked",
             )
 
-        human_review_required = is_human_review_decision(str(normalized["review_decision"]))
+        human_review_required = bool(normalized["human_review_required"])
         result_id = build_model_analysis_result_id(request.material_pack_id)
         result = build_success_result(
             request,
@@ -312,8 +328,13 @@ class ModelAnalysisService:
             prompt=prompt,
             provider_result=provider_output,
             details={
-                "provider": provider_result.provider_name,
-                "model_name": provider_result.model_name,
+                "provider": provider_resolution.provider_name,
+                "model_key": provider_resolution.model_key,
+                "model_name": provider_resolution.model_name,
+                "model_role": provider_resolution.model_role,
+                "analysis_mode": provider_resolution.analysis_mode,
+                "prompt_template_version": provider_resolution.prompt_template_version,
+                "review_schema_version": provider_resolution.review_schema_version,
                 "mock_provider_only": True,
                 "no_real_model_call": True,
                 "not_final_trading_advice": True,
@@ -326,7 +347,7 @@ class ModelAnalysisService:
             request=request,
             material_pack=material_pack,
             prompt=prompt,
-            provider_metadata=provider_result,
+            provider_metadata=provider_resolution,
             provider_result=provider_output,
             model_analysis_run_id=run_id,
             review_version_key=review_version_key,
@@ -373,27 +394,65 @@ class ModelAnalysisService:
         return self._record_hermes_and_return(db_session, run_row=run_row, result=result)
 
     def _resolve_provider(self) -> "_ProviderResolution":
-        provider = self._provider
-        configured_provider = self._settings.model_review_provider.strip().lower()
-        if provider is None and configured_provider == MODEL_REVIEW_PROVIDER_MOCK:
-            provider = MockModelReviewProvider()
-        provider_name = str(getattr(provider, "provider_name", configured_provider or MODEL_REVIEW_PROVIDER_MOCK))
-        model_name = str(getattr(provider, "model_name", MODEL_REVIEW_MOCK_MODEL_NAME))
-        model_version = str(getattr(provider, "model_version", MODEL_REVIEW_MOCK_MODEL_VERSION))
-        if configured_provider != MODEL_REVIEW_PROVIDER_MOCK:
+        try:
+            configs = load_enabled_model_review_configs(self._settings.model_review_config_dir)
+        except ModelRegistryError as exc:
             return _ProviderResolution(
-                provider=provider,
-                provider_name=provider_name,
-                model_name=model_name,
-                model_version=model_version,
+                provider=None,
+                provider_name=MODEL_REVIEW_PROVIDER_MOCK,
+                model_name="",
+                model_version="",
+                model_key=MODEL_REVIEW_MODEL_KEY_DEFAULT,
+                model_role=MODEL_REVIEW_MODEL_ROLE_DEFAULT,
+                analysis_mode=MODEL_REVIEW_MODE_DEFAULT,
+                prompt_template_version=self._settings.model_review_prompt_template_version,
+                review_schema_version=self._settings.model_review_schema_version,
+                blocked_message=exc.message,
+                blocked_error_code=exc.error_code,
+            )
+        selected_config = select_stage19a_mock_model_config(configs)
+        if selected_config is None:
+            return _ProviderResolution(
+                provider=None,
+                provider_name=MODEL_REVIEW_PROVIDER_MOCK,
+                model_name="",
+                model_version="",
+                model_key=MODEL_REVIEW_MODEL_KEY_DEFAULT,
+                model_role=MODEL_REVIEW_MODEL_ROLE_DEFAULT,
+                analysis_mode=MODEL_REVIEW_MODE_DEFAULT,
+                prompt_template_version=self._settings.model_review_prompt_template_version,
+                review_schema_version=self._settings.model_review_schema_version,
+                blocked_message="no enabled mock model config is executable in stage 19A",
+                blocked_error_code="no_enabled_mock_model_config",
+            )
+        provider = self._provider or MockModelReviewProvider()
+        injected_provider_name = str(getattr(provider, "provider_name", selected_config.provider)).strip().lower()
+        if injected_provider_name != MODEL_REVIEW_PROVIDER_MOCK:
+            return _ProviderResolution(
+                provider=None,
+                provider_name=selected_config.provider,
+                model_name=selected_config.model_name,
+                model_version=selected_config.model_version,
+                model_key=selected_config.model_key,
+                model_role=selected_config.model_role,
+                analysis_mode=selected_config.analysis_mode,
+                prompt_template_version=selected_config.prompt_template_version,
+                review_schema_version=selected_config.review_schema_version,
                 blocked_message="real model provider is not implemented in stage 19A",
+                blocked_error_code="provider_not_supported",
             )
         return _ProviderResolution(
             provider=provider,
-            provider_name=provider_name,
-            model_name=model_name,
-            model_version=model_version,
+            provider_name=selected_config.provider,
+            model_name=selected_config.model_name,
+            model_version=selected_config.model_version,
+            model_key=selected_config.model_key,
+            model_role=selected_config.model_role,
+            analysis_mode=selected_config.analysis_mode,
+            prompt_template_version=selected_config.prompt_template_version,
+            review_schema_version=selected_config.review_schema_version,
             blocked_message=None,
+            blocked_error_code=None,
         )
 
     def _return_or_persist_blocked(
@@ -404,6 +463,7 @@ class ModelAnalysisService:
         material_pack: Any | None,
         prompt: PromptBuildResult | None,
         provider_result: ModelProviderResult | None,
+        provider_metadata: "_ProviderResolution",
         model_analysis_run_id: str,
         review_version_key: str,
         trace_id: str,
@@ -425,10 +485,12 @@ class ModelAnalysisService:
             message=message,
             error_code=error_code,
             error_message=error_message,
+            model_key=provider_metadata.model_key,
+            model_role=provider_metadata.model_role,
+            analysis_mode=provider_metadata.analysis_mode,
         )
         if request.dry_run or not request.confirm_write or not self._settings.model_review_enabled:
             return result
-        provider_metadata = self._resolve_provider()
         payload = build_run_payload(
             request=request,
             material_pack=material_pack,
@@ -439,7 +501,7 @@ class ModelAnalysisService:
             review_version_key=review_version_key,
             trace_id=trace_id,
             status=ModelAnalysisStatus.BLOCKED,
-            human_review_required=True,
+            human_review_required=False,
             error_code=error_code,
             error_message=error_message or message,
             settings=self._settings,
@@ -542,6 +604,7 @@ class ModelAnalysisService:
                 "review_decision": result.review_decision or "",
                 "evidence_quality": result.evidence_quality or "",
                 "risk_acceptability": result.risk_acceptability or "",
+                "strategy_conflict_level": result.strategy_conflict_level or "",
                 "human_review_required": result.human_review_required,
                 "not_final_trading_advice": True,
                 "no_auto_trading": True,
@@ -580,13 +643,29 @@ class _ProviderResolution:
         provider_name: str,
         model_name: str,
         model_version: str,
+        model_key: str,
+        model_role: str,
+        analysis_mode: str,
+        prompt_template_version: str,
+        review_schema_version: str,
         blocked_message: str | None,
+        blocked_error_code: str | None,
     ) -> None:
         self.provider = provider
         self.provider_name = provider_name
         self.model_name = model_name
         self.model_version = model_version
+        self.model_key = model_key
+        self.model_role = model_role
+        self.analysis_mode = analysis_mode
+        self.prompt_template_version = prompt_template_version
+        self.review_schema_version = review_schema_version
+        self.chain_id = None
+        self.chain_step = None
+        self.parent_model_analysis_run_id = None
+        self.comparison_group_id = None
         self.blocked_message = blocked_message
+        self.blocked_error_code = blocked_error_code
 
 
 def run_model_analysis(

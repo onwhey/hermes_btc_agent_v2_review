@@ -1,7 +1,7 @@
 """Chinese Hermes formatter for stage-19 model analysis review gate.
 
-This file belongs to `app/model_analysis`. It formats a compact, Chinese
-visible body for Hermes alerts.
+This file belongs to `app/model_analysis`. It formats only compact Chinese
+visible text for Hermes alerts.
 
 Called by `app/model_analysis/service.py`.
 External services: none. MySQL: none. Redis: none. Real model calls: none.
@@ -17,11 +17,17 @@ def build_model_analysis_visible_body(result: ModelAnalysisServiceResult) -> str
     """Build the user-visible Hermes body for one model review result.
 
     Parameters: compact service result.
-    Return value: Chinese text suitable for `WECHAT_VISIBLE_BODY_DETAIL_KEY`.
+    Return value: Chinese text suitable for Hermes visible body.
     Failure scenarios: none expected.
-    External effects: none.
+    External effects: none; this function does not send Hermes by itself.
     """
 
+    human_review_text = "是" if result.human_review_required else "否"
+    extra_human_review_line = (
+        "本次审查需要人工进一步判断。"
+        if result.human_review_required
+        else "本次审查未标记为必须人工进一步判断。"
+    )
     return "\n".join(
         [
             "【标题】BTC 大模型审查候选结果",
@@ -35,7 +41,9 @@ def build_model_analysis_visible_body(result: ModelAnalysisServiceResult) -> str
             f"- 当前 review_decision：{result.review_decision or 'unknown'}",
             f"- 证据质量：{result.evidence_quality or 'unknown'}",
             f"- 风险接受度：{result.risk_acceptability or 'unknown'}",
-            f"- 是否需要人工审核：{'是' if result.human_review_required else '否'}",
+            f"- 策略冲突程度：{result.strategy_conflict_level or 'unknown'}",
+            f"- 是否需要人工判断：{human_review_text}",
+            extra_human_review_line,
             "",
             "【边界声明】",
             "这是审查门控输出，不是交易信号。",

@@ -26,6 +26,7 @@ REQUIRED_FIELDS = frozenset(
         "risk_warnings",
         "human_review_questions",
         "validation_focus",
+        "human_review_required",
         "not_trading_advice",
     }
 )
@@ -81,6 +82,12 @@ def validate_model_review_output(output: Mapping[str, Any]) -> SchemaValidationR
             error_code="schema_not_trading_advice_false",
             error_message="not_trading_advice must be true",
         )
+    if not isinstance(output.get("human_review_required"), bool):
+        return SchemaValidationResult(
+            is_valid=False,
+            error_code="schema_human_review_required_not_boolean",
+            error_message="human_review_required must be boolean",
+        )
 
     checks = (
         ("review_decision", set(item.value for item in ReviewDecision)),
@@ -104,6 +111,7 @@ def validate_model_review_output(output: Mapping[str, Any]) -> SchemaValidationR
         "logic_consistency": str(output["logic_consistency"]),
         "risk_acceptability": str(output["risk_acceptability"]),
         "strategy_conflict_level": str(output["strategy_conflict_level"]),
+        "human_review_required": bool(output["human_review_required"]),
         "missing_evidence": _list_field(output.get("missing_evidence")),
         "rejection_reasons": _list_field(output.get("rejection_reasons")),
         "risk_warnings": _list_field(output.get("risk_warnings")),

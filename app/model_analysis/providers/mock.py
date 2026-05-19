@@ -91,11 +91,27 @@ def _build_mock_output(input_summary: Mapping[str, Any]) -> dict[str, Any]:
         for item in strategies
         if isinstance(item, Mapping)
     }
+    hypothesis_directions = {
+        str(item.get("analysis_hypothesis_direction", "")).lower()
+        for item in strategies
+        if isinstance(item, Mapping) and item.get("analysis_hypothesis_direction")
+    }
     missing_evidence = [
         item.get("missing_evidence")
         for item in strategies
         if isinstance(item, Mapping) and item.get("missing_evidence")
     ]
+    if len(hypothesis_directions) > 1:
+        return _base_output(
+            review_decision=ReviewDecision.HUMAN_REVIEW_REQUIRED.value,
+            evidence_quality="moderate",
+            logic_consistency="conflicting",
+            risk_acceptability="caution",
+            strategy_conflict_level="high",
+            risk_warnings=["材料中的分析假设方向存在明显冲突，需要人工判断冲突解释。"],
+            human_review_questions=["这些分析假设冲突是否来自不同周期、不同证据质量或材料缺口？"],
+            validation_focus=["复核分析假设冲突、证据来源和风险说明。"],
+        )
     if {"high", "extreme"} & risk_values:
         return _base_output(
             review_decision=ReviewDecision.HUMAN_REVIEW_REQUIRED.value,
@@ -138,9 +154,15 @@ def _base_output(
     risk_warnings: list[str] | None = None,
     human_review_questions: list[str] | None = None,
     validation_focus: list[str] | None = None,
+    human_review_required: bool | None = None,
 ) -> dict[str, Any]:
     return {
         "review_decision": review_decision,
+        "human_review_required": (
+            review_decision == ReviewDecision.HUMAN_REVIEW_REQUIRED.value
+            if human_review_required is None
+            else human_review_required
+        ),
         "evidence_quality": evidence_quality,
         "logic_consistency": logic_consistency,
         "risk_acceptability": risk_acceptability,
