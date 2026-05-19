@@ -62,6 +62,7 @@ class AlertType(str, Enum):
     MANUAL_BACKFILL_NOTICE = "manual_backfill_notice"
     STRATEGY_SIGNAL_SCHEDULER = "strategy_signal_scheduler"
     STRATEGY_AGGREGATION = "strategy_aggregation"
+    MODEL_ANALYSIS = "model_analysis"
     MANUAL_TEST_ALERT = "manual_test_alert"
 
 

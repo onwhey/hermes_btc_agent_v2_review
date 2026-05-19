@@ -88,6 +88,18 @@ from app.core.constants import (
     DEFAULT_MARKET_CONTEXT_BASE_INTERVAL,
     DEFAULT_MARKET_CONTEXT_HIGHER_INTERVAL,
     DEFAULT_MARKET_CONTEXT_SYMBOL,
+    DEFAULT_MODEL_REVIEW_DRY_RUN,
+    DEFAULT_MODEL_REVIEW_ENABLED,
+    DEFAULT_MODEL_REVIEW_HERMES_ENABLED,
+    DEFAULT_MODEL_REVIEW_MAX_INPUT_BYTES,
+    DEFAULT_MODEL_REVIEW_MAX_INPUT_CHARS,
+    DEFAULT_MODEL_REVIEW_MAX_OUTPUT_BYTES,
+    DEFAULT_MODEL_REVIEW_MAX_OUTPUT_CHARS,
+    DEFAULT_MODEL_REVIEW_MAX_REASON_ITEMS_PER_STRATEGY,
+    DEFAULT_MODEL_REVIEW_MAX_STRATEGY_ITEMS,
+    DEFAULT_MODEL_REVIEW_PROMPT_TEMPLATE_VERSION,
+    DEFAULT_MODEL_REVIEW_PROVIDER,
+    DEFAULT_MODEL_REVIEW_SCHEMA_VERSION,
     DEFAULT_STRATEGY_AGGREGATION_AUTO_RUN_ENABLED,
     DEFAULT_STRATEGY_AGGREGATION_HERMES_ENABLED,
     DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_BLOCKED,
@@ -232,6 +244,18 @@ class AppSettings:
     strategy_aggregation_hermes_notify_blocked: bool = DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_BLOCKED
     strategy_aggregation_hermes_notify_failed: bool = DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_FAILED
     strategy_aggregation_hermes_notify_skipped: bool = DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED
+    model_review_enabled: bool = DEFAULT_MODEL_REVIEW_ENABLED
+    model_review_dry_run: bool = DEFAULT_MODEL_REVIEW_DRY_RUN
+    model_review_provider: str = DEFAULT_MODEL_REVIEW_PROVIDER
+    model_review_max_input_chars: int = DEFAULT_MODEL_REVIEW_MAX_INPUT_CHARS
+    model_review_max_output_chars: int = DEFAULT_MODEL_REVIEW_MAX_OUTPUT_CHARS
+    model_review_max_input_bytes: int = DEFAULT_MODEL_REVIEW_MAX_INPUT_BYTES
+    model_review_max_output_bytes: int = DEFAULT_MODEL_REVIEW_MAX_OUTPUT_BYTES
+    model_review_max_strategy_items: int = DEFAULT_MODEL_REVIEW_MAX_STRATEGY_ITEMS
+    model_review_max_reason_items_per_strategy: int = DEFAULT_MODEL_REVIEW_MAX_REASON_ITEMS_PER_STRATEGY
+    model_review_hermes_enabled: bool = DEFAULT_MODEL_REVIEW_HERMES_ENABLED
+    model_review_prompt_template_version: str = DEFAULT_MODEL_REVIEW_PROMPT_TEMPLATE_VERSION
+    model_review_schema_version: str = DEFAULT_MODEL_REVIEW_SCHEMA_VERSION
     hermes_webhook_url: str = ""
     hermes_secret: str = ""
     hermes_timeout_seconds: float = DEFAULT_HERMES_TIMEOUT_SECONDS
@@ -1046,6 +1070,102 @@ def load_settings(
             ),
             "STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED",
             DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED,
+        ),
+        model_review_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_ENABLED",
+                str(DEFAULT_MODEL_REVIEW_ENABLED).lower(),
+            ),
+            "MODEL_REVIEW_ENABLED",
+            DEFAULT_MODEL_REVIEW_ENABLED,
+        ),
+        model_review_dry_run=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_DRY_RUN",
+                str(DEFAULT_MODEL_REVIEW_DRY_RUN).lower(),
+            ),
+            "MODEL_REVIEW_DRY_RUN",
+            DEFAULT_MODEL_REVIEW_DRY_RUN,
+        ),
+        model_review_provider=_get_config_value(
+            merged_values,
+            "MODEL_REVIEW_PROVIDER",
+            DEFAULT_MODEL_REVIEW_PROVIDER,
+        ),
+        model_review_max_input_chars=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_MAX_INPUT_CHARS",
+                str(DEFAULT_MODEL_REVIEW_MAX_INPUT_CHARS),
+            ),
+            "MODEL_REVIEW_MAX_INPUT_CHARS",
+            DEFAULT_MODEL_REVIEW_MAX_INPUT_CHARS,
+        ),
+        model_review_max_output_chars=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_MAX_OUTPUT_CHARS",
+                str(DEFAULT_MODEL_REVIEW_MAX_OUTPUT_CHARS),
+            ),
+            "MODEL_REVIEW_MAX_OUTPUT_CHARS",
+            DEFAULT_MODEL_REVIEW_MAX_OUTPUT_CHARS,
+        ),
+        model_review_max_input_bytes=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_MAX_INPUT_BYTES",
+                str(DEFAULT_MODEL_REVIEW_MAX_INPUT_BYTES),
+            ),
+            "MODEL_REVIEW_MAX_INPUT_BYTES",
+            DEFAULT_MODEL_REVIEW_MAX_INPUT_BYTES,
+        ),
+        model_review_max_output_bytes=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_MAX_OUTPUT_BYTES",
+                str(DEFAULT_MODEL_REVIEW_MAX_OUTPUT_BYTES),
+            ),
+            "MODEL_REVIEW_MAX_OUTPUT_BYTES",
+            DEFAULT_MODEL_REVIEW_MAX_OUTPUT_BYTES,
+        ),
+        model_review_max_strategy_items=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_MAX_STRATEGY_ITEMS",
+                str(DEFAULT_MODEL_REVIEW_MAX_STRATEGY_ITEMS),
+            ),
+            "MODEL_REVIEW_MAX_STRATEGY_ITEMS",
+            DEFAULT_MODEL_REVIEW_MAX_STRATEGY_ITEMS,
+        ),
+        model_review_max_reason_items_per_strategy=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_MAX_REASON_ITEMS_PER_STRATEGY",
+                str(DEFAULT_MODEL_REVIEW_MAX_REASON_ITEMS_PER_STRATEGY),
+            ),
+            "MODEL_REVIEW_MAX_REASON_ITEMS_PER_STRATEGY",
+            DEFAULT_MODEL_REVIEW_MAX_REASON_ITEMS_PER_STRATEGY,
+        ),
+        model_review_hermes_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_HERMES_ENABLED",
+                str(DEFAULT_MODEL_REVIEW_HERMES_ENABLED).lower(),
+            ),
+            "MODEL_REVIEW_HERMES_ENABLED",
+            DEFAULT_MODEL_REVIEW_HERMES_ENABLED,
+        ),
+        model_review_prompt_template_version=_get_config_value(
+            merged_values,
+            "MODEL_REVIEW_PROMPT_TEMPLATE_VERSION",
+            DEFAULT_MODEL_REVIEW_PROMPT_TEMPLATE_VERSION,
+        ),
+        model_review_schema_version=_get_config_value(
+            merged_values,
+            "MODEL_REVIEW_SCHEMA_VERSION",
+            DEFAULT_MODEL_REVIEW_SCHEMA_VERSION,
         ),
         hermes_webhook_url=_get_config_value(merged_values, "HERMES_WEBHOOK_URL"),
         hermes_secret=_get_config_value(merged_values, "HERMES_SECRET"),
