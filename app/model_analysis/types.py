@@ -62,6 +62,7 @@ class ModelAnalysisHermesStatus(str, Enum):
 
     DISABLED = "disabled"
     NOT_REQUIRED = "not_required"
+    SKIPPED_DRY_RUN = "skipped_dry_run"
     SENT = "sent"
     FAILED = "failed"
 

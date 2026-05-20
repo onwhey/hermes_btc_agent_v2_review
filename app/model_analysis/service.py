@@ -44,6 +44,7 @@ from app.model_analysis.cost_estimator import estimate_provider_call_cost
 from app.model_analysis.hermes_formatter import (
     build_model_analysis_artifact_write_failed_visible_body,
     build_model_analysis_oversized_response_visible_body,
+    build_model_analysis_provider_call_failed_visible_body,
     build_model_analysis_visible_body,
 )
 from app.model_analysis.material_pack_reviewability import validate_material_pack_reviewability
@@ -309,7 +310,7 @@ class ModelAnalysisService:
                 return running_result
             running_run_row = running_result
 
-        if provider_resolution.is_real_model and (
+        if not request.dry_run and provider_resolution.is_real_model and (
             request.capture_raw_request or self._settings.model_review_capture_raw_request
         ):
             request_artifact = self._write_request_artifact_or_return_failure(
@@ -354,7 +355,7 @@ class ModelAnalysisService:
             max_bytes=self._settings.model_review_max_output_bytes,
             prefix="raw_response",
         )
-        if provider_resolution.is_real_model and (
+        if not request.dry_run and provider_resolution.is_real_model and (
             raw_response_oversized is not None or request.capture_raw_response or self._settings.model_review_capture_raw_response
         ):
             artifact = self._write_response_artifact_if_allowed(
@@ -499,17 +500,12 @@ class ModelAnalysisService:
         if request.dry_run:
             dry_result = replace(result, details={**dict(result.details), "dry_run": True})
             if raw_response_oversized is not None and provider_resolution.is_real_model:
-                hermes_status, hermes_message, hermes_error, hermes_sent_at = self._send_or_skip_oversized_hermes(
-                    result=dry_result
-                )
                 return replace(
                     dry_result,
-                    hermes_status=hermes_status,
+                    hermes_status=ModelAnalysisHermesStatus.SKIPPED_DRY_RUN,
                     details={
                         **dict(dry_result.details),
-                        "oversized_hermes_message": hermes_message,
-                        "oversized_hermes_error": hermes_error,
-                        "oversized_hermes_sent_at_utc": hermes_sent_at.isoformat() if hermes_sent_at else None,
+                        "oversized_hermes_skipped_reason": "dry_run",
                     },
                 )
             return dry_result
@@ -1154,7 +1150,9 @@ class ModelAnalysisService:
                 "raw_response_storage_ref": provider_metadata.raw_response_storage_ref,
             },
         )
-        if request.dry_run or not request.confirm_write or not self._settings.model_review_enabled:
+        if request.dry_run:
+            return replace(result, hermes_status=ModelAnalysisHermesStatus.SKIPPED_DRY_RUN)
+        if not request.confirm_write or not self._settings.model_review_enabled:
             return result
         payload = build_run_payload(
             request=request,
@@ -1173,13 +1171,15 @@ class ModelAnalysisService:
         )
         try:
             if running_run_row is not None:
-                self._repository.update_model_analysis_run(db_session, running_run_row, payload=payload)
+                run_row = self._repository.update_model_analysis_run(db_session, running_run_row, payload=payload)
             else:
-                self._repository.create_model_analysis_run(db_session, payload=payload)
+                run_row = self._repository.create_model_analysis_run(db_session, payload=payload)
             _commit_if_possible(db_session)
         except Exception:
             _rollback_if_possible(db_session)
             return result
+        if provider_metadata.is_real_model and error_code == "provider_call_failed":
+            return self._record_provider_failed_hermes_and_return(db_session, run_row=run_row, result=result)
         return result
 
     def _return_artifact_write_failed(
@@ -1230,17 +1230,17 @@ class ModelAnalysisService:
             },
         )
         if request.dry_run or not request.confirm_write or not self._settings.model_review_enabled:
-            hermes_status, hermes_message, hermes_error, hermes_sent_at = self._send_or_skip_artifact_failed_hermes(
-                result=result
+            hermes_status = (
+                ModelAnalysisHermesStatus.SKIPPED_DRY_RUN
+                if request.dry_run
+                else ModelAnalysisHermesStatus.NOT_REQUIRED
             )
             return replace(
                 result,
                 hermes_status=hermes_status,
                 details={
                     **dict(result.details),
-                    "artifact_failed_hermes_message": hermes_message,
-                    "artifact_failed_hermes_error": hermes_error,
-                    "artifact_failed_hermes_sent_at_utc": hermes_sent_at.isoformat() if hermes_sent_at else None,
+                    "artifact_failed_hermes_skipped_reason": "dry_run" if request.dry_run else "not_confirm_write",
                 },
             )
         payload = build_run_payload(
@@ -1387,6 +1387,80 @@ class ModelAnalysisService:
                 error_message=result.error_message or f"Artifact failure Hermes status persistence failed: {exc}",
             )
         return replace(result, hermes_status=hermes_status)
+
+    def _record_provider_failed_hermes_and_return(
+        self,
+        db_session: Any,
+        *,
+        run_row: Any,
+        result: ModelAnalysisServiceResult,
+    ) -> ModelAnalysisServiceResult:
+        hermes_status, hermes_message, hermes_error, hermes_sent_at_utc = self._send_or_skip_provider_failed_hermes(
+            result=result
+        )
+        try:
+            self._repository.record_hermes_result(
+                db_session,
+                run_row,
+                hermes_status=hermes_status.value,
+                hermes_message=hermes_message,
+                hermes_error=hermes_error,
+                hermes_sent_at_utc=hermes_sent_at_utc,
+            )
+            _commit_if_possible(db_session)
+        except Exception as exc:  # noqa: BLE001
+            _rollback_if_possible(db_session)
+            return replace(
+                result,
+                hermes_status=ModelAnalysisHermesStatus.FAILED,
+                error_message=result.error_message or f"Provider failure Hermes status persistence failed: {exc}",
+            )
+        return replace(result, hermes_status=hermes_status)
+
+    def _send_or_skip_provider_failed_hermes(
+        self,
+        *,
+        result: ModelAnalysisServiceResult,
+    ) -> tuple[ModelAnalysisHermesStatus, str | None, str | None, datetime | None]:
+        if not self._settings.model_review_hermes_enabled:
+            return ModelAnalysisHermesStatus.DISABLED, None, None, None
+        visible_body = build_model_analysis_provider_call_failed_visible_body(result)
+        alert_event = AlertEvent(
+            alert_type=AlertType.MODEL_ANALYSIS,
+            severity=AlertSeverity.WARNING,
+            title="BTC 大模型请求失败",
+            summary="BTC 大模型请求失败，未生成正式审查结果；这不是最终交易建议，未自动交易。",
+            details={
+                WECHAT_VISIBLE_BODY_DETAIL_KEY: visible_body,
+                "model_analysis_run_id": result.model_analysis_run_id,
+                "material_pack_id": result.material_pack_id,
+                "provider": result.details.get("provider", "") if result.details else "",
+                "model_key": result.model_key or "",
+                "model_name": result.details.get("model_name", "") if result.details else "",
+                "error_code": result.error_code or "provider_call_failed",
+                "not_final_trading_advice": True,
+                "no_auto_trading": True,
+            },
+            source=MODEL_ANALYSIS_EVENT_SOURCE,
+            trace_id=result.trace_id,
+        )
+        try:
+            send_result = self._alert_sender(alert_event, settings=self._settings, send_real_alert=True)
+        except Exception as exc:  # noqa: BLE001
+            return ModelAnalysisHermesStatus.FAILED, visible_body, str(exc), None
+        if getattr(send_result, "status", None) == AlertSendStatus.SUBMITTED_TO_HERMES:
+            return (
+                ModelAnalysisHermesStatus.SENT,
+                visible_body,
+                None,
+                getattr(send_result, "submitted_at_utc", None) or now_utc(),
+            )
+        return (
+            ModelAnalysisHermesStatus.FAILED,
+            visible_body,
+            getattr(send_result, "error_message", "") or getattr(send_result, "message", "") or "Hermes not sent",
+            None,
+        )
 
     def _send_or_skip_artifact_failed_hermes(
         self,

@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Mapping
 
+from app.model_analysis.model_profile import ModelProfile
 from app.model_analysis.provider_response_parser import (
     build_provider_response_metadata_from_raw,
     parse_openai_style_response,
@@ -25,6 +26,58 @@ from app.model_analysis.provider_response_parser import (
 from app.model_analysis.providers.base import ProviderCallError, ProviderRequest, ProviderResponse
 
 SUPPORTED_DEEPSEEK_API_STYLES = frozenset({"openai_chat_completion"})
+SUPPORTED_DEEPSEEK_MODEL_NAMES = frozenset({"deepseek-v4-pro", "deepseek-v4-flash"})
+DEEPSEEK_THINKING_IGNORED_PARAMS = frozenset(
+    {"temperature", "top_p", "presence_penalty", "frequency_penalty"}
+)
+
+
+def validate_deepseek_model_profile(profile: ModelProfile) -> tuple[str, str] | None:
+    """Validate DeepSeek-only profile rules without constraining other providers.
+
+    Parameters: one loaded model profile.
+    Return value: `(error_code, message)` when invalid, otherwise `None`.
+    Failure scenarios: the caller turns the returned error into registry
+    blocked status. External services/MySQL/Redis/Hermes/trading: none.
+    """
+
+    if profile.model_name not in SUPPORTED_DEEPSEEK_MODEL_NAMES:
+        return (
+            "deepseek_profile_model_name_unsupported",
+            f"model_name is not a supported DeepSeek API model string: {profile.model_name}",
+        )
+    for field_name in ("max_tokens", "response_format"):
+        if field_name not in profile.request_params:
+            return (
+                "deepseek_profile_missing_request_param",
+                f"request_params.{field_name} is required for DeepSeek profiles.",
+            )
+    if bool(profile.capabilities.get("thinking")):
+        extra_body = profile.request_params.get("extra_body", {})
+        if not isinstance(extra_body, dict):
+            return (
+                "deepseek_profile_missing_thinking_mode",
+                "request_params.extra_body.thinking.type=enabled is required.",
+            )
+        thinking_body = extra_body.get("thinking", {})
+        if not isinstance(thinking_body, dict) or thinking_body.get("type") != "enabled":
+            return (
+                "deepseek_profile_missing_thinking_mode",
+                "request_params.extra_body.thinking.type=enabled is required.",
+            )
+        if "reasoning_effort" not in profile.request_params:
+            return (
+                "deepseek_profile_missing_reasoning_effort",
+                "request_params.reasoning_effort is required for thinking mode.",
+            )
+        ignored = set(profile.ignored_params_in_thinking_mode)
+        missing_ignored = sorted(DEEPSEEK_THINKING_IGNORED_PARAMS - ignored)
+        if missing_ignored:
+            return (
+                "deepseek_profile_missing_ignored_thinking_params",
+                f"ignored_params_in_thinking_mode missing: {', '.join(missing_ignored)}",
+            )
+    return None
 
 
 class UrllibJsonHttpClient:
@@ -153,4 +206,10 @@ class DeepSeekReviewProvider:
         return payload
 
 
-__all__ = ["DeepSeekReviewProvider", "SUPPORTED_DEEPSEEK_API_STYLES", "UrllibJsonHttpClient"]
+__all__ = [
+    "DeepSeekReviewProvider",
+    "SUPPORTED_DEEPSEEK_API_STYLES",
+    "SUPPORTED_DEEPSEEK_MODEL_NAMES",
+    "UrllibJsonHttpClient",
+    "validate_deepseek_model_profile",
+]

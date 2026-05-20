@@ -7,6 +7,7 @@ model_version: v4_flash
 profile_version: profile_v1
 docs_checked_at: "2026-05-20T00:00:00Z"
 docs_source:
+  - "DeepSeek official API docs: https://api-docs.deepseek.com/api/list-models"
   - "DeepSeek official API docs: https://api-docs.deepseek.com/guides/thinking_mode"
   - "DeepSeek official API docs: https://api-docs.deepseek.com/api/create-chat-completion"
 model_role: fast_low_cost_review

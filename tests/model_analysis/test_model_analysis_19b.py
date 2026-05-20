@@ -10,8 +10,10 @@ from app.core.config import AppSettings
 from app.model_analysis.hermes_formatter import (
     build_model_analysis_artifact_write_failed_visible_body,
     build_model_analysis_oversized_response_visible_body,
+    build_model_analysis_provider_call_failed_visible_body,
 )
-from app.model_analysis.model_registry import resolve_model_review_profile
+from app.model_analysis.model_registry import ModelRegistryError, resolve_model_review_profile
+from app.model_analysis.providers.deepseek import DeepSeekReviewProvider
 from app.model_analysis.providers.base import ProviderCallError, ProviderRequest, ProviderResponse
 from app.model_analysis.service import ModelAnalysisService
 from app.model_analysis.types import ModelAnalysisRequest, ModelAnalysisStatus
@@ -206,6 +208,57 @@ def test_deepseek_profile_hash_and_disabled_flash_profile(tmp_path: Path) -> Non
     assert flash.profile.model_name == "deepseek-v4-flash"
 
 
+def test_generic_registry_does_not_apply_deepseek_thinking_rules_to_other_providers(tmp_path: Path) -> None:
+    config_dir = _write_future_provider_config(tmp_path / "future_config")
+
+    selection = resolve_model_review_profile(str(config_dir), model_key="future_thinking_review")
+
+    assert selection.profile.provider == "future_provider"
+    assert selection.profile.capabilities["thinking"] is True
+    assert selection.profile.ignored_params_in_thinking_mode == ()
+    assert selection.profile.request_params == {"max_output_tokens": 1024}
+
+
+def test_deepseek_profile_validator_requires_explicit_thinking_mode(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    profile_path = config_dir / "profiles" / "deepseek" / "deepseek_v4_pro_review.yaml"
+    profile_text = profile_path.read_text(encoding="utf-8")
+    profile_text = profile_text.replace(
+        "  extra_body:\n    thinking:\n      type: enabled\n",
+        "",
+    )
+    profile_path.write_text(profile_text, encoding="utf-8")
+
+    try:
+        resolve_model_review_profile(str(config_dir), model_key="deepseek_v4_pro_review")
+    except ModelRegistryError as exc:
+        assert exc.error_code == "deepseek_profile_missing_thinking_mode"
+    else:  # pragma: no cover - explicit failure keeps the regression visible.
+        raise AssertionError("DeepSeek profile without explicit thinking mode must be rejected")
+
+
+def test_deepseek_request_payload_uses_profile_model_name_not_model_key(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    selection = resolve_model_review_profile(str(config_dir), model_key="deepseek_v4_pro_review")
+    provider = DeepSeekReviewProvider(http_client=object())
+    prompt = SimpleNamespace(prompt_text="compact prompt")
+
+    payload = provider.build_request_payload(
+        ProviderRequest(
+            prompt=prompt,  # type: ignore[arg-type]
+            profile=selection.profile,
+            provider_config=selection.provider_config,
+            api_key="secret-test-key",
+            trace_id="trace-model-name",
+            material_pack_id="AMP-stage19",
+            model_analysis_run_id="MAR-stage19",
+        )
+    )
+
+    assert payload["model"] == selection.profile.model_name
+    assert payload["model"] != selection.profile.model_key
+
+
 def test_enabled_deepseek_fake_flow_persists_profile_usage_cost_and_hashes(tmp_path: Path) -> None:
     config_dir = _write_deepseek_config(tmp_path / "config")
     repo = ArtifactRepository(material_pack=material_pack())
@@ -272,6 +325,59 @@ def test_real_provider_exception_updates_running_run_failed_without_result(tmp_p
     assert repo.result_rows == []
 
 
+def test_provider_call_failed_dry_run_does_not_send_hermes(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    repo = ArtifactRepository(material_pack=material_pack())
+    provider = FakeDeepSeekProvider(raise_error=ProviderCallError("fake provider failure"))
+    alert = FakeAlertSender()
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir, enabled=True, hermes_enabled=True),
+        repository=repo,
+        provider=provider,
+        alert_sender=alert,
+    ).run_model_analysis(FakeSession(), request=_real_request(confirm=False))
+
+    assert result.status == ModelAnalysisStatus.FAILED
+    assert result.error_code == "provider_call_failed"
+    assert result.hermes_status.value == "skipped_dry_run"
+    assert repo.run_rows == []
+    assert repo.result_rows == []
+    assert alert.calls == []
+
+
+def test_provider_call_failed_confirm_write_sends_generic_chinese_alert(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    repo = ArtifactRepository(material_pack=material_pack())
+    provider = FakeDeepSeekProvider(raise_error=ProviderCallError("fake provider failure"))
+    alert = FakeAlertSender()
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir, enabled=True, hermes_enabled=True),
+        repository=repo,
+        provider=provider,
+        alert_sender=alert,
+    ).run_model_analysis(FakeSession(), request=_real_request(confirm=True))
+
+    assert result.status == ModelAnalysisStatus.FAILED
+    assert result.error_code == "provider_call_failed"
+    assert result.hermes_status.value == "sent"
+    assert repo.run_rows[0].status == "failed"
+    assert repo.run_rows[0].error_code == "provider_call_failed"
+    assert repo.run_rows[0].trace_id == "trace-stage19b"
+    assert repo.run_rows[0].model_provider == "deepseek"
+    assert repo.run_rows[0].model_key == "deepseek_v4_pro_review"
+    assert repo.run_rows[0].model_name == "deepseek-v4-pro"
+    assert repo.result_rows == []
+    assert len(alert.calls) == 1
+    assert alert.calls[0].title == "BTC 大模型请求失败"
+    body = build_model_analysis_provider_call_failed_visible_body(result)
+    assert "BTC 大模型请求失败" in body
+    assert "未生成正式审查结果" in body
+    assert "不是最终交易建议" in body
+    assert "本阶段未自动交易" in body
+
+
 def test_raw_response_artifact_write_failure_updates_run_and_alerts(tmp_path: Path) -> None:
     config_dir = _write_deepseek_config(tmp_path / "config")
     repo = ArtifactRepository(material_pack=material_pack())
@@ -303,6 +409,32 @@ def test_raw_response_artifact_write_failure_updates_run_and_alerts(tmp_path: Pa
     assert "模型返回未能完整隔离保存" in body
     assert "不是最终交易建议" in body
     assert "本阶段未自动交易" in body
+
+
+def test_raw_response_artifact_write_failure_dry_run_has_no_hermes_side_effect(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    repo = ArtifactRepository(material_pack=material_pack())
+    provider = FakeDeepSeekProvider(raw_padding=12_000)
+    alert = FakeAlertSender()
+
+    result = ModelAnalysisService(
+        settings=_real_settings(
+            config_dir,
+            enabled=True,
+            artifact_dir=tmp_path / "artifacts",
+            raw_artifact_max_bytes=200,
+        ),
+        repository=repo,
+        provider=provider,
+        alert_sender=alert,
+    ).run_model_analysis(FakeSession(), request=_real_request(confirm=False))
+
+    assert result.status == ModelAnalysisStatus.SUCCESS
+    assert result.hermes_status.value == "skipped_dry_run"
+    assert repo.run_rows == []
+    assert repo.result_rows == []
+    assert repo.artifact_rows == []
+    assert alert.calls == []
 
 
 def test_oversized_raw_response_without_safe_schema_blocks_without_result(tmp_path: Path) -> None:
@@ -412,7 +544,7 @@ def test_oversized_raw_response_is_artifacted_and_warned_without_main_raw_text(t
     assert "本阶段未自动交易" in body
 
 
-def test_oversized_raw_response_dry_run_keeps_artifact_ref_without_database_write(tmp_path: Path) -> None:
+def test_oversized_raw_response_dry_run_has_no_artifact_or_hermes_side_effect(tmp_path: Path) -> None:
     config_dir = _write_deepseek_config(tmp_path / "config")
     repo = ArtifactRepository(material_pack=material_pack())
     provider = FakeDeepSeekProvider(raw_padding=12_000)
@@ -426,11 +558,12 @@ def test_oversized_raw_response_dry_run_keeps_artifact_ref_without_database_writ
     ).run_model_analysis(FakeSession(), request=_real_request(confirm=False))
 
     assert result.status == ModelAnalysisStatus.SUCCESS
-    assert result.details["raw_response_storage_ref"]
+    assert result.hermes_status.value == "skipped_dry_run"
+    assert not result.details["raw_response_storage_ref"]
     assert not repo.run_rows
     assert not repo.result_rows
     assert not repo.artifact_rows
-    assert len(alert.calls) == 1
+    assert alert.calls == []
 
 
 def test_real_provider_schema_forbidden_trading_fields_are_blocked(tmp_path: Path) -> None:
@@ -470,11 +603,13 @@ def _real_settings(
     enabled: bool = False,
     artifact_dir: Path | None = None,
     raw_artifact_max_bytes: int = 1048576,
+    hermes_enabled: bool = False,
 ) -> AppSettings:
     return AppSettings(
         model_review_config_dir=str(config_dir),
         model_review_real_model_enabled=True,
         model_review_enabled=enabled,
+        model_review_hermes_enabled=hermes_enabled,
         deepseek_api_key="test-deepseek-key",
         model_review_artifact_dir=str(artifact_dir or (config_dir / "artifacts")),
         model_review_raw_artifact_max_bytes=raw_artifact_max_bytes,
@@ -528,10 +663,79 @@ def _write_deepseek_config(
     return base_dir
 
 
+def _write_future_provider_config(base_dir: Path) -> Path:
+    (base_dir / "providers").mkdir(parents=True, exist_ok=True)
+    (base_dir / "profiles" / "future_provider").mkdir(parents=True, exist_ok=True)
+    (base_dir / "model_registry.yaml").write_text(
+        "\n".join(["enabled_models:", "  - future_thinking_review", "", "default_mode: single"]),
+        encoding="utf-8",
+    )
+    (base_dir / "providers" / "future_provider.yaml").write_text(
+        "\n".join(
+            [
+                "provider: future_provider",
+                "enabled: true",
+                "provider_version: future_provider_profile_v1",
+                'docs_checked_at: "2026-05-20T00:00:00Z"',
+                "docs_source:",
+                "  - Future provider official docs fixture.",
+                "api_base_url: https://future-provider.example",
+                "api_key_env: FUTURE_PROVIDER_API_KEY",
+                "timeout_seconds: 60",
+                "max_retries: 0",
+                "retry_backoff_seconds: 0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (base_dir / "profiles" / "future_provider" / "future_thinking_review.yaml").write_text(
+        "\n".join(
+            [
+                "model_key: future_thinking_review",
+                "provider: future_provider",
+                "enabled: true",
+                "api_style: future_chat_completion",
+                "model_name: future-thinking-real-model",
+                "model_version: future_v1",
+                "profile_version: profile_v1",
+                'docs_checked_at: "2026-05-20T00:00:00Z"',
+                "docs_source:",
+                "  - Future provider official docs fixture.",
+                "model_role: future_review",
+                "analysis_mode: single",
+                "prompt_template_version: review_gate_v1",
+                "review_schema_version: review_schema_v1",
+                "",
+                "capabilities:",
+                "  json_output: true",
+                "  thinking: true",
+                "",
+                "request_params:",
+                "  max_output_tokens: 1024",
+                "",
+                "response_mapping:",
+                "  final_content_path: result.content",
+                "  usage_path: usage",
+                "  finish_reason_path: result.finish_reason",
+                "",
+                "unsupported_params:",
+                "  - tools",
+                "",
+                "cost_policy:",
+                "  track_token_usage: true",
+                "  require_cost_confirmation: true",
+                "  currency: USD",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return base_dir
+
+
 def _write_profile(base_dir: Path, model_key: str, *, enabled: bool, model_version: str) -> None:
     model_name = "deepseek-v4-flash" if "flash" in model_key else "deepseek-v4-pro"
     if model_key == "deepseek_other_review":
-        model_name = "deepseek-v4-other"
+        model_name = "deepseek-v4-pro"
     (base_dir / "profiles" / "deepseek" / f"{model_key}.yaml").write_text(
         "\n".join(
             [

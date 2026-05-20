@@ -108,8 +108,38 @@ def build_model_analysis_artifact_write_failed_visible_body(result: ModelAnalysi
     )
 
 
+def build_model_analysis_provider_call_failed_visible_body(result: ModelAnalysisServiceResult) -> str:
+    """Build Chinese Hermes body for real model provider request failures."""
+
+    provider = result.details.get("provider", "unknown") if result.details else "unknown"
+    model_name = result.details.get("model_name", "unknown") if result.details else "unknown"
+    model_key = result.model_key or (result.details.get("model_key", "unknown") if result.details else "unknown")
+    return "\n".join(
+        [
+            "【标题】BTC 大模型请求失败",
+            "",
+            "【处理说明】真实大模型请求失败，系统已记录本次失败，不写入正式审查结果。",
+            f"- provider：{provider}",
+            f"- model_key：{model_key}",
+            f"- model_name：{model_name}",
+            f"- material_pack_id：{result.material_pack_id}",
+            f"- model_analysis_run_id：{result.model_analysis_run_id}",
+            f"- error_code：{result.error_code or 'provider_call_failed'}",
+            f"- error_message：{result.error_message or ''}",
+            f"- trace_id：{result.trace_id}",
+            "- 处理结果：未生成正式审查结果",
+            "",
+            "这不是最终交易建议。",
+            "本阶段未自动交易。",
+            "本阶段未生成订单。",
+            "本阶段未给出仓位或杠杆。",
+        ]
+    )
+
+
 __all__ = [
     "build_model_analysis_artifact_write_failed_visible_body",
     "build_model_analysis_oversized_response_visible_body",
+    "build_model_analysis_provider_call_failed_visible_body",
     "build_model_analysis_visible_body",
 ]

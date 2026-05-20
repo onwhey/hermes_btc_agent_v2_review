@@ -18,7 +18,7 @@ from typing import Any
 
 from app.core.config import ROOT_DIR
 from app.model_analysis.model_profile import ModelProfile, ModelProviderConfig, ModelRegistrySelection
-from app.model_analysis.types import MODEL_REVIEW_PROVIDER_MOCK
+from app.model_analysis.types import MODEL_REVIEW_PROVIDER_DEEPSEEK, MODEL_REVIEW_PROVIDER_MOCK
 
 MODEL_REVIEW_REGISTRY_FILE = "model_registry.yaml"
 MODEL_REVIEW_PROVIDERS_DIR = "providers"
@@ -47,7 +47,6 @@ MODEL_PROFILE_REQUIRED_FIELDS = MODEL_REVIEW_REQUIRED_FIELDS | frozenset(
         "capabilities",
         "request_params",
         "response_mapping",
-        "ignored_params_in_thinking_mode",
         "unsupported_params",
         "cost_policy",
     }
@@ -65,9 +64,6 @@ PROVIDER_REQUIRED_FIELDS = frozenset(
         "docs_checked_at",
         "docs_source",
     }
-)
-THINKING_MODE_IGNORED_PARAMS = frozenset(
-    {"temperature", "top_p", "presence_penalty", "frequency_penalty"}
 )
 
 # Compatibility alias for the 19A tests and service code.
@@ -294,7 +290,7 @@ def _build_model_profile(raw_config: dict[str, Any], *, source_path: Path) -> Mo
         ),
         unsupported_params=tuple(str(item) for item in _list_field(raw_config["unsupported_params"])),
         ignored_params_in_thinking_mode=tuple(
-            str(item) for item in _list_field(raw_config["ignored_params_in_thinking_mode"])
+            str(item) for item in _list_field(raw_config.get("ignored_params_in_thinking_mode", []))
         ),
         cost_policy=_mapping_field(raw_config["cost_policy"], field_name="cost_policy", source_path=source_path),
         docs_checked_at=str(raw_config["docs_checked_at"]).strip(),
@@ -458,7 +454,12 @@ def _text_list_field(value: Any) -> list[str]:
 
 
 def _validate_real_model_profile(profile: ModelProfile, *, source_path: Path) -> None:
-    """Validate that real-provider profiles do not rely on vendor defaults."""
+    """Validate only provider-agnostic real-profile fields.
+
+    Provider-specific request-shape rules, such as DeepSeek thinking mode
+    parameters, are delegated by provider name so GPT/Claude-style profiles are
+    not rejected by DeepSeek-only rules.
+    """
 
     if profile.provider == MODEL_REVIEW_PROVIDER_MOCK:
         return
@@ -468,37 +469,13 @@ def _validate_real_model_profile(profile: ModelProfile, *, source_path: Path) ->
         raise ModelRegistryError("model_profile_missing_docs_source", f"{source_path.name} docs_source is required.")
     if not profile.profile_version:
         raise ModelRegistryError("model_profile_missing_profile_version", f"{source_path.name} profile_version is required.")
-    for field_name in ("max_tokens", "response_format"):
-        if field_name not in profile.request_params:
-            raise ModelRegistryError(
-                "model_profile_missing_request_param",
-                f"{source_path.name} request_params.{field_name} is required for real models.",
-            )
-    if bool(profile.capabilities.get("thinking")):
-        thinking = profile.request_params.get("extra_body", {})
-        if not isinstance(thinking, dict):
-            raise ModelRegistryError(
-                "model_profile_missing_thinking_mode",
-                f"{source_path.name} request_params.extra_body.thinking.type=enabled is required.",
-            )
-        thinking_body = thinking.get("thinking", {})
-        if not isinstance(thinking_body, dict) or thinking_body.get("type") != "enabled":
-            raise ModelRegistryError(
-                "model_profile_missing_thinking_mode",
-                f"{source_path.name} request_params.extra_body.thinking.type=enabled is required.",
-            )
-        if "reasoning_effort" not in profile.request_params:
-            raise ModelRegistryError(
-                "model_profile_missing_reasoning_effort",
-                f"{source_path.name} request_params.reasoning_effort is required for thinking mode.",
-            )
-        ignored = set(profile.ignored_params_in_thinking_mode)
-        missing_ignored = sorted(THINKING_MODE_IGNORED_PARAMS - ignored)
-        if missing_ignored:
-            raise ModelRegistryError(
-                "model_profile_missing_ignored_thinking_params",
-                f"{source_path.name} ignored_params_in_thinking_mode missing: {', '.join(missing_ignored)}",
-            )
+    if profile.provider == MODEL_REVIEW_PROVIDER_DEEPSEEK:
+        from app.model_analysis.providers.deepseek import validate_deepseek_model_profile
+
+        validation_error = validate_deepseek_model_profile(profile)
+        if validation_error is not None:
+            error_code, error_message = validation_error
+            raise ModelRegistryError(error_code, f"{source_path.name} {error_message}")
 
 
 __all__ = [
