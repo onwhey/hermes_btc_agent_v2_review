@@ -11,6 +11,7 @@ in this file. Real model calls: none. Trading execution: none.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -123,6 +124,7 @@ class SchemaValidationResult:
     normalized_output: Mapping[str, Any] = field(default_factory=dict)
     error_code: str | None = None
     error_message: str | None = None
+    missing_fields: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -291,6 +293,7 @@ class ModelAnalysisServiceResult:
 def format_model_analysis_result_lines(result: ModelAnalysisServiceResult) -> list[str]:
     """Format compact CLI output without prompt or provider response dumps."""
 
+    details = result.details or {}
     return [
         f"status={result.status.value}",
         f"exit_code={result.exit_code}",
@@ -323,12 +326,33 @@ def format_model_analysis_result_lines(result: ModelAnalysisServiceResult) -> li
         f"raw_response_byte_count={result.raw_response_byte_count}",
         f"raw_request_storage_ref={result.details.get('raw_request_storage_ref', '') if result.details else ''}",
         f"raw_response_storage_ref={result.details.get('raw_response_storage_ref', '') if result.details else ''}",
+        f"schema_error_code={details.get('schema_error_code', '')}",
+        f"schema_missing_fields={_format_cli_detail(details.get('schema_missing_fields', ''))}",
+        f"sanitized_content_preview={_bounded_cli_preview(str(details.get('sanitized_content_preview', '') or ''))}",
+        f"parsed_json_type={details.get('parsed_json_type', '')}",
+        f"final_content_char_count={details.get('final_content_char_count', '')}",
+        f"final_content_byte_count={details.get('final_content_byte_count', '')}",
         f"estimated_cost={result.estimated_cost or ''}",
         f"cost_currency={result.cost_currency or ''}",
         f"message={result.message}",
         f"error_code={result.error_code or ''}",
         f"error_message={result.error_message or ''}",
     ]
+
+
+def _format_cli_detail(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(item) for item in value)
+    if isinstance(value, Mapping):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return "" if value is None else str(value)
+
+
+def _bounded_cli_preview(value: str) -> str:
+    value = value.replace("\r\n", "\\n").replace("\r", "\\n").replace("\n", "\\n")
+    if len(value) <= 500:
+        return value
+    return value[:500]
 
 
 __all__ = [

@@ -68,7 +68,7 @@ from app.model_analysis.repository import (
     ModelAnalysisRepository,
     create_default_model_analysis_repository,
 )
-from app.model_analysis.schema_validator import validate_model_review_output
+from app.model_analysis.schema_validator import FORBIDDEN_TRADING_FIELDS, validate_model_review_output
 from app.model_analysis.service_helpers import (
     build_artifact_payload,
     build_limit_error,
@@ -88,6 +88,7 @@ from app.model_analysis.types import (
     ModelProviderResult,
     PromptBuildResult,
     ReviewDecision,
+    SchemaValidationResult,
 )
 
 try:
@@ -416,6 +417,11 @@ class ModelAnalysisService:
             blocked_error_code = schema_result.error_code or "schema_invalid"
             blocked_error_message = schema_result.error_message
             blocked_message = "Model review output schema is invalid."
+            schema_details = _build_schema_invalid_details(
+                schema_result=schema_result,
+                provider_result=provider_output,
+                provider_metadata=provider_resolution,
+            )
             send_oversized_alert = False
             if raw_response_oversized is not None and provider_resolution.is_real_model:
                 blocked_error_code = "model_output_too_large"
@@ -441,6 +447,7 @@ class ModelAnalysisService:
                 artifact_payloads=artifact_payloads,
                 send_oversized_alert=send_oversized_alert,
                 running_run_row=running_run_row,
+                extra_details=schema_details,
             )
 
         normalized = schema_result.normalized_output
@@ -1020,6 +1027,7 @@ class ModelAnalysisService:
         artifact_payloads: list[ModelProviderCallArtifactPersistencePayload] | None = None,
         send_oversized_alert: bool = False,
         running_run_row: Any | None = None,
+        extra_details: Mapping[str, Any] | None = None,
     ) -> ModelAnalysisServiceResult:
         result = build_blocked_result(
             request,
@@ -1043,6 +1051,8 @@ class ModelAnalysisService:
             result,
             raw_response_char_count=int(getattr(provider_result, "raw_response_char_count", 0) or 0),
             raw_response_byte_count=int(getattr(provider_result, "raw_response_byte_count", 0) or 0),
+            estimated_cost=provider_metadata.estimated_cost,
+            cost_currency=provider_metadata.cost_currency,
             details={
                 "provider": provider_metadata.provider_name,
                 "model_key": provider_metadata.model_key,
@@ -1050,6 +1060,13 @@ class ModelAnalysisService:
                 "profile_hash": provider_metadata.profile_hash,
                 "raw_response_storage_ref": provider_metadata.raw_response_storage_ref,
                 "raw_response_hash": getattr(provider_result, "raw_response_hash", None),
+                "input_token_count": provider_metadata.input_token_count,
+                "output_token_count": provider_metadata.output_token_count,
+                "total_token_count": provider_metadata.total_token_count,
+                "estimated_cost": provider_metadata.estimated_cost,
+                "cost_currency": provider_metadata.cost_currency,
+                "provider_usage_json": provider_metadata.provider_usage_json,
+                **dict(extra_details or {}),
             },
         )
         if request.dry_run or not request.confirm_write or not self._settings.model_review_enabled:
@@ -1680,6 +1697,74 @@ def _redact_sensitive_mapping(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact_sensitive_mapping(item) for item in value]
     return value
+
+
+def _build_schema_invalid_details(
+    *,
+    schema_result: SchemaValidationResult,
+    provider_result: ModelProviderResult,
+    provider_metadata: ProviderResolution,
+) -> dict[str, Any]:
+    """Build bounded CLI diagnostics for schema-invalid provider content."""
+
+    response_metadata = dict(getattr(provider_result, "response_metadata", {}) or {})
+    output = dict(provider_result.output) if isinstance(provider_result.output, Mapping) else {}
+    preview = _safe_schema_preview_from_output(output)
+    if not preview:
+        preview = _bounded_text(str(response_metadata.get("sanitized_content_preview") or ""), max_chars=500)
+    return {
+        "schema_error_code": schema_result.error_code or "schema_invalid",
+        "schema_missing_fields": list(schema_result.missing_fields),
+        "sanitized_content_preview": preview,
+        "parsed_json_type": response_metadata.get("parsed_json_type") or ("object" if output else "unknown"),
+        "final_content_char_count": int(
+            response_metadata.get("final_content_char_count")
+            or getattr(provider_result, "output_char_count", 0)
+            or 0
+        ),
+        "final_content_byte_count": int(
+            response_metadata.get("final_content_byte_count")
+            or getattr(provider_result, "output_byte_count", 0)
+            or 0
+        ),
+        "provider_parse_error_code": response_metadata.get("provider_parse_error_code") or "",
+        "provider_usage_json": provider_metadata.provider_usage_json,
+        "input_token_count": provider_metadata.input_token_count,
+        "output_token_count": provider_metadata.output_token_count,
+        "total_token_count": provider_metadata.total_token_count,
+    }
+
+
+def _safe_schema_preview_from_output(output: Mapping[str, Any]) -> str:
+    if not output:
+        return ""
+    redacted = _redact_schema_preview_value(output)
+    return _bounded_text(json.dumps(redacted, ensure_ascii=False, sort_keys=True, default=str), max_chars=500)
+
+
+def _redact_schema_preview_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            lowered = key_text.lower()
+            if lowered in {"authorization", "api_key", "api-key", "secret", "token", "cookie"}:
+                result[key_text] = "***REDACTED***"
+                continue
+            if key_text in FORBIDDEN_TRADING_FIELDS:
+                result[key_text] = "***REDACTED_FORBIDDEN_TRADING_FIELD***"
+                continue
+            result[key_text] = _redact_schema_preview_value(item)
+        return result
+    if isinstance(value, list):
+        return [_redact_schema_preview_value(item) for item in value]
+    return value
+
+
+def _bounded_text(value: str, *, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    return value[:max_chars]
 
 
 def _default_alert_sender(*args: Any, **kwargs: Any) -> Any:

@@ -703,6 +703,68 @@ Hermes 告警、provider_call_failed 不写 result、DeepSeek 请求 payload 使
 profile.model_name 而不是 model_key。默认 pytest
 不访问外网，不请求真实 DeepSeek，不发送真实 Hermes，不访问交易接口，不修改正式 K 线表。
 
+## 5. 19B DeepSeek JSON 输出约束与 dry-run 诊断修复
+
+### 5.1 发起方式
+
+仍由用户手动执行：
+
+```bash
+python -m scripts.run_model_analysis --material-pack-id AMP-xxx --trigger-source cli --dry-run --use-real-model --model-key deepseek_v4_pro_review --confirm-real-model-cost
+```
+
+confirm-write 仍必须显式传入 `--confirm-write`，dry-run 不写 MySQL、不发送 Hermes、不产生外部副作用。
+
+### 5.2 核心调用链路
+
+```text
+scripts/run_model_analysis.py::main
+    -> app/model_analysis/service.py::run_model_analysis
+    -> app/model_analysis/prompt_builder.py::build_model_review_prompt
+    -> app/model_analysis/providers/deepseek.py::DeepSeekReviewProvider.build_request_payload
+    -> app/model_analysis/providers/deepseek.py::DeepSeekReviewProvider.call_review_model
+    -> app/model_analysis/provider_response_parser.py::parse_openai_style_response
+    -> app/model_analysis/schema_validator.py::validate_model_review_output
+```
+
+### 5.3 Prompt 与 JSON skeleton
+
+`app/model_analysis/prompt_builder.py` 新增 `REVIEW_OUTPUT_JSON_SKELETON`。真实 DeepSeek prompt 包含完整 JSON skeleton，至少覆盖 `review_decision`、`evidence_quality`、`logic_consistency`、`risk_acceptability`、`strategy_conflict_level`、`missing_evidence`、`risk_warnings`、`human_review_questions`、`validation_focus`、`not_trading_advice`、`human_review_required`、`is_final_trading_advice`、`is_trading_signal`、`is_executable`、`auto_trading_allowed`、`summary_text`。
+
+prompt 明确要求只输出一个 JSON object，不输出 markdown、解释文字、入场价、止损价、止盈价、仓位、杠杆或其他可执行交易字段。`DeepSeekReviewProvider.build_request_payload()` 使用同一份 `REVIEW_PROVIDER_SYSTEM_MESSAGE` 作为 system message，并继续从 profile 透传 `response_format: {type: json_object}`、`reasoning_effort` 和 thinking mode 参数。
+
+### 5.4 响应解析与 schema_invalid 诊断
+
+`app/model_analysis/provider_response_parser.py::parse_openai_style_response` 按 profile 的 `response_mapping.final_content_path=choices.0.message.content` 提取最终 content。若最终 JSON 被完整包在 markdown code fence 中，会先安全剥离 code fence 再解析；若 content 前后存在额外说明文字，不猜测、不抽取局部 JSON，而是返回空 schema candidate，由 service 转成 `schema_missing_required_field` 等 schema_invalid blocked 结果。
+
+schema_invalid 的 CLI 输出新增 `schema_error_code`、`schema_missing_fields`、`sanitized_content_preview`、`parsed_json_type`、`final_content_char_count`、`final_content_byte_count`。`sanitized_content_preview` 最多 500 字符；遇到敏感字段或禁止交易字段会脱敏；不输出完整 raw response，也不把完整 raw response 写入主业务表。
+
+### 5.5 token / usage 保留
+
+provider 返回 `usage` 时，service 在 schema_invalid / blocked 路径也会尽量保留 `input_token_count`、`output_token_count`、`total_token_count`、`provider_usage_json`、`estimated_cost`、`cost_currency`。如果 provider 未返回 usage，`provider_usage_json` 仍明确标记 `usage_missing=true`，不伪装精确成本。`prompt_cache_hit_tokens`、`prompt_cache_miss_tokens` 等 provider 原始 usage 字段会保留在 `provider_usage_json`。
+
+### 5.6 本修复不负责
+
+- 不新增真实策略。
+- 不接 scheduler。
+- 不修改正式 K 线表。
+- 不生成最终交易建议。
+- 不生成入场价、止损价、止盈价、仓位、杠杆。
+- 不调用交易接口。
+- 不自动交易。
+- 不把完整 prompt、完整 request、完整 raw response 或大段 reasoning_content 写入主业务表。
+
+### 5.7 测试
+
+对应测试：
+
+```text
+tests/model_analysis/test_model_analysis_19b.py
+tests/model_analysis/test_model_analysis_service.py
+```
+
+覆盖 fake DeepSeek HTTP client 严格 JSON 通过、markdown code fence JSON 可解析、多余说明文字被 schema_invalid、缺少 `review_decision` 时 CLI 诊断包含 `sanitized_content_preview`、预览长度不超过 500、禁止交易字段被 blocked、`not_trading_advice` 和安全布尔字段校验、profile request params 传入 provider、`choices.0.message.content` 响应映射、schema_invalid 保留 usage、dry-run 不写库且不发送 Hermes。默认 pytest 不访问真实外网、不请求真实 DeepSeek、不发送真实 Hermes、不访问交易接口、不修改正式 K 线表。
+
 ## 3. 19A partial_success 准入修正
 
 ### 3.1 发起方式

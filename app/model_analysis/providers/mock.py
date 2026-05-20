@@ -176,6 +176,10 @@ def _base_output(
         "summary_text": "这是 19A mock provider 的材料审查结果，不是最终交易建议。",
         "not_trading_advice": True,
         "not_trading_advice_text": "这是大模型审查结果，不是最终交易建议，也不是可执行交易信号。",
+        "is_final_trading_advice": False,
+        "is_trading_signal": False,
+        "is_executable": False,
+        "auto_trading_allowed": False,
     }
 
 

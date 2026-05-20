@@ -16,7 +16,11 @@ from app.model_analysis.model_registry import ModelRegistryError, resolve_model_
 from app.model_analysis.providers.deepseek import DeepSeekReviewProvider
 from app.model_analysis.providers.base import ProviderCallError, ProviderRequest, ProviderResponse
 from app.model_analysis.service import ModelAnalysisService
-from app.model_analysis.types import ModelAnalysisRequest, ModelAnalysisStatus
+from app.model_analysis.types import (
+    ModelAnalysisRequest,
+    ModelAnalysisStatus,
+    format_model_analysis_result_lines,
+)
 from tests.model_analysis.test_model_analysis_service import (
     FakeAlertSender,
     FakeModelAnalysisRepository,
@@ -114,6 +118,30 @@ class FakeDeepSeekProvider:
             "messages": [{"role": "user", "content": request.prompt.prompt_text}],
             **dict(request.profile.request_params),
         }
+
+
+class FakeDeepSeekHttpClient:
+    def __init__(self, raw_response: Mapping[str, Any]) -> None:
+        self.raw_response = raw_response
+        self.calls: list[dict[str, Any]] = []
+
+    def post_json(
+        self,
+        *,
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, Any],
+        timeout_seconds: float,
+    ) -> Mapping[str, Any]:
+        self.calls.append(
+            {
+                "url": url,
+                "headers": dict(headers),
+                "payload": dict(payload),
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return self.raw_response
 
 
 def test_real_model_gates_block_before_provider_call(tmp_path: Path) -> None:
@@ -327,6 +355,186 @@ def test_deepseek_request_payload_uses_profile_model_name_not_model_key(tmp_path
 
     assert payload["model"] == selection.profile.model_name
     assert payload["model"] != selection.profile.model_key
+
+
+def test_real_deepseek_strict_json_output_passes_schema(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    output = _valid_provider_output()
+    client = FakeDeepSeekHttpClient(_deepseek_raw_response(json.dumps(output, ensure_ascii=False)))
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir),
+        repository=ArtifactRepository(material_pack=material_pack()),
+        provider=DeepSeekReviewProvider(http_client=client),
+    ).run_model_analysis(FakeSession(), request=_real_request())
+
+    assert result.status == ModelAnalysisStatus.SUCCESS
+    assert result.review_decision == "wait"
+    assert client.calls
+
+
+def test_real_deepseek_markdown_code_fence_json_is_stripped(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    output = _valid_provider_output()
+    fenced_content = "```json\n" + json.dumps(output, ensure_ascii=False) + "\n```"
+    client = FakeDeepSeekHttpClient(_deepseek_raw_response(fenced_content))
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir),
+        repository=ArtifactRepository(material_pack=material_pack()),
+        provider=DeepSeekReviewProvider(http_client=client),
+    ).run_model_analysis(FakeSession(), request=_real_request())
+
+    assert result.status == ModelAnalysisStatus.SUCCESS
+    assert result.review_decision == "wait"
+
+
+def test_real_deepseek_extra_text_is_schema_invalid_not_guessed(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    output = _valid_provider_output()
+    content = "Here is the JSON:\n```json\n" + json.dumps(output, ensure_ascii=False) + "\n```"
+    client = FakeDeepSeekHttpClient(_deepseek_raw_response(content))
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir),
+        repository=ArtifactRepository(material_pack=material_pack()),
+        provider=DeepSeekReviewProvider(http_client=client),
+    ).run_model_analysis(FakeSession(), request=_real_request())
+
+    assert result.status == ModelAnalysisStatus.BLOCKED
+    assert result.error_code == "schema_missing_required_field"
+    assert result.details["parsed_json_type"] == "invalid_json"
+    assert result.details["provider_parse_error_code"] == "schema_final_content_not_json"
+
+
+def test_real_deepseek_missing_required_field_returns_safe_cli_diagnostics(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    output = _valid_provider_output()
+    del output["review_decision"]
+    client = FakeDeepSeekHttpClient(_deepseek_raw_response(json.dumps(output, ensure_ascii=False)))
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir),
+        repository=ArtifactRepository(material_pack=material_pack()),
+        provider=DeepSeekReviewProvider(http_client=client),
+    ).run_model_analysis(FakeSession(), request=_real_request())
+
+    cli_output = dict(line.split("=", 1) for line in format_model_analysis_result_lines(result))
+
+    assert result.status == ModelAnalysisStatus.BLOCKED
+    assert result.error_code == "schema_missing_required_field"
+    assert result.details["schema_error_code"] == "schema_missing_required_field"
+    assert "review_decision" in result.details["schema_missing_fields"]
+    assert len(result.details["sanitized_content_preview"]) <= 500
+    assert cli_output["schema_error_code"] == "schema_missing_required_field"
+    assert "review_decision" in cli_output["schema_missing_fields"]
+    assert len(cli_output["sanitized_content_preview"]) <= 500
+    assert cli_output["parsed_json_type"] == "object"
+    assert int(cli_output["final_content_char_count"]) > 0
+    assert int(cli_output["final_content_byte_count"]) > 0
+
+
+def test_real_deepseek_schema_invalid_preserves_usage_without_writing_or_hermes(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    output = _valid_provider_output()
+    del output["review_decision"]
+    usage = {
+        "prompt_tokens": 101,
+        "completion_tokens": 7,
+        "total_tokens": 108,
+        "prompt_cache_hit_tokens": 13,
+        "prompt_cache_miss_tokens": 88,
+    }
+    client = FakeDeepSeekHttpClient(_deepseek_raw_response(json.dumps(output, ensure_ascii=False), usage=usage))
+    repo = ArtifactRepository(material_pack=material_pack())
+    alert = FakeAlertSender()
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir, enabled=True, hermes_enabled=True),
+        repository=repo,
+        provider=DeepSeekReviewProvider(http_client=client),
+        alert_sender=alert,
+    ).run_model_analysis(FakeSession(), request=_real_request(confirm=False))
+
+    assert result.status == ModelAnalysisStatus.BLOCKED
+    assert result.error_code == "schema_missing_required_field"
+    assert result.details["input_token_count"] == 101
+    assert result.details["output_token_count"] == 7
+    assert result.details["total_token_count"] == 108
+    assert result.details["provider_usage_json"]["prompt_cache_hit_tokens"] == 13
+    assert result.estimated_cost is not None
+    assert repo.run_rows == []
+    assert repo.result_rows == []
+    assert alert.calls == []
+
+
+def test_real_deepseek_forbidden_and_safety_flags_block(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+
+    forbidden = _valid_provider_output()
+    forbidden["entry_price"] = "60000"
+    forbidden_result = ModelAnalysisService(
+        settings=_real_settings(config_dir),
+        repository=ArtifactRepository(material_pack=material_pack()),
+        provider=DeepSeekReviewProvider(
+            http_client=FakeDeepSeekHttpClient(_deepseek_raw_response(json.dumps(forbidden, ensure_ascii=False)))
+        ),
+    ).run_model_analysis(FakeSession(), request=_real_request())
+
+    not_advice = _valid_provider_output()
+    not_advice["not_trading_advice"] = False
+    not_advice_result = ModelAnalysisService(
+        settings=_real_settings(config_dir),
+        repository=ArtifactRepository(material_pack=material_pack()),
+        provider=DeepSeekReviewProvider(
+            http_client=FakeDeepSeekHttpClient(_deepseek_raw_response(json.dumps(not_advice, ensure_ascii=False)))
+        ),
+    ).run_model_analysis(FakeSession(), request=_real_request())
+
+    not_boolean = _valid_provider_output()
+    not_boolean["human_review_required"] = "false"
+    not_boolean_result = ModelAnalysisService(
+        settings=_real_settings(config_dir),
+        repository=ArtifactRepository(material_pack=material_pack()),
+        provider=DeepSeekReviewProvider(
+            http_client=FakeDeepSeekHttpClient(_deepseek_raw_response(json.dumps(not_boolean, ensure_ascii=False)))
+        ),
+    ).run_model_analysis(FakeSession(), request=_real_request())
+
+    safety = _valid_provider_output()
+    safety["is_executable"] = True
+    safety_result = ModelAnalysisService(
+        settings=_real_settings(config_dir),
+        repository=ArtifactRepository(material_pack=material_pack()),
+        provider=DeepSeekReviewProvider(
+            http_client=FakeDeepSeekHttpClient(_deepseek_raw_response(json.dumps(safety, ensure_ascii=False)))
+        ),
+    ).run_model_analysis(FakeSession(), request=_real_request())
+
+    assert forbidden_result.error_code == "schema_forbidden_trading_field"
+    assert "***REDACTED_FORBIDDEN_TRADING_FIELD***" in forbidden_result.details["sanitized_content_preview"]
+    assert not_advice_result.error_code == "schema_not_trading_advice_false"
+    assert not_boolean_result.error_code == "schema_human_review_required_not_boolean"
+    assert safety_result.error_code == "schema_safety_flag_not_false"
+
+
+def test_deepseek_profile_request_params_and_response_mapping_drive_provider_payload(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    client = FakeDeepSeekHttpClient(_deepseek_raw_response(json.dumps(_valid_provider_output(), ensure_ascii=False)))
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir),
+        repository=ArtifactRepository(material_pack=material_pack()),
+        provider=DeepSeekReviewProvider(http_client=client),
+    ).run_model_analysis(FakeSession(), request=_real_request())
+
+    payload = client.calls[0]["payload"]
+    assert result.status == ModelAnalysisStatus.SUCCESS
+    assert payload["model"] == "deepseek-v4-pro"
+    assert payload["model"] != "deepseek_v4_pro_review"
+    assert payload["response_format"] == {"type": "json_object"}
+    assert payload["reasoning_effort"] == "high"
+    assert payload["thinking"]["type"] == "enabled"
 
 
 def test_enabled_deepseek_fake_flow_persists_profile_usage_cost_and_hashes(tmp_path: Path) -> None:
@@ -684,6 +892,29 @@ def _real_settings(
         model_review_artifact_dir=str(artifact_dir or (config_dir / "artifacts")),
         model_review_raw_artifact_max_bytes=raw_artifact_max_bytes,
     )
+
+
+def _deepseek_raw_response(content: str, *, usage: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    return {
+        "id": "ds-http-test-request",
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {
+                    "content": content,
+                    "reasoning_content": "compact reasoning metadata only",
+                },
+            }
+        ],
+        "usage": dict(
+            usage
+            or {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150,
+            }
+        ),
+    }
 
 
 def _write_deepseek_config(

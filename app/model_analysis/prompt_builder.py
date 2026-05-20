@@ -35,11 +35,48 @@ STRATEGY_SUMMARY_KEYS = (
     "missing_evidence",
 )
 
-REVIEW_INSTRUCTIONS = (
-    "你是材料审查员，不是交易员。\n"
-    "你不能给最终交易建议，不能给入场价、止损价、止盈价、仓位或杠杆。\n"
-    "你只能审查材料完整性、证据充分性、逻辑自洽性、风险可接受性、冲突程度，以及是否需要人工审核。\n"
-    "输出必须符合 review_schema_v1。证据不足时必须返回 require_more_evidence 或 human_review_required，不能编造结论。\n"
+REVIEW_OUTPUT_JSON_SKELETON: dict[str, Any] = {
+    "review_decision": "wait",
+    "evidence_quality": "unknown",
+    "logic_consistency": "unknown",
+    "risk_acceptability": "unknown",
+    "strategy_conflict_level": "unknown",
+    "missing_evidence": [],
+    "rejection_reasons": [],
+    "risk_warnings": [],
+    "conditions_to_reconsider": [],
+    "human_review_questions": [],
+    "validation_focus": [],
+    "not_trading_advice": True,
+    "human_review_required": False,
+    "is_final_trading_advice": False,
+    "is_trading_signal": False,
+    "is_executable": False,
+    "auto_trading_allowed": False,
+    "summary_text": "",
+}
+
+REVIEW_OUTPUT_RULES = (
+    "JSON object only; no markdown/code fence/prose; include all skeleton keys.",
+    "No trading/action fields: entry_price, stop_loss, take_profit, position_size, leverage, order_type, final_advice, buy_now, sell_now.",
+    "not_trading_advice=true; human_review_required=boolean; final/signal/executable/auto flags=false.",
+    "If evidence is insufficient, choose require_more_evidence or human_review_required.",
+)
+
+REVIEW_INSTRUCTIONS = "\n".join(
+    (
+        "Review material only, not trades.",
+        *REVIEW_OUTPUT_RULES,
+        "The output must conform to review_schema_v1.",
+    )
+)
+
+REVIEW_PROVIDER_SYSTEM_MESSAGE = "\n".join(
+    (
+        "You are a strict JSON-only material review gate.",
+        "Return exactly one JSON object that conforms to the user's required_output_json_skeleton.",
+        *REVIEW_OUTPUT_RULES,
+    )
 )
 
 
@@ -87,10 +124,19 @@ def build_model_review_prompt(material_pack: Any, *, settings: AppSettings) -> P
     }
     prompt_input = {
         "instructions": REVIEW_INSTRUCTIONS,
+        "required_output_json_skeleton": REVIEW_OUTPUT_JSON_SKELETON,
         "input_summary": input_summary,
     }
-    prompt_text = json.dumps(prompt_input, ensure_ascii=False, sort_keys=True, default=str)
-    input_hash = hashlib.sha256(json.dumps(input_summary, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    prompt_text = json.dumps(
+        prompt_input,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    input_hash = hashlib.sha256(
+        json.dumps(input_summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     return PromptBuildResult(
         prompt_text=prompt_text,
         input_summary=input_summary,
@@ -221,4 +267,9 @@ def _compact_scalar(value: Any, *, max_chars: int = 300) -> Any:
     return f"{text[:max_chars]}...[truncated]"
 
 
-__all__ = ["build_model_review_prompt"]
+__all__ = [
+    "REVIEW_OUTPUT_JSON_SKELETON",
+    "REVIEW_OUTPUT_RULES",
+    "REVIEW_PROVIDER_SYSTEM_MESSAGE",
+    "build_model_review_prompt",
+]

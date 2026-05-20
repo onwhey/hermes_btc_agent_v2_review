@@ -19,6 +19,7 @@ import urllib.request
 from typing import Any, Mapping
 
 from app.model_analysis.model_profile import ModelProfile, ModelProviderConfig
+from app.model_analysis.prompt_builder import REVIEW_PROVIDER_SYSTEM_MESSAGE
 from app.model_analysis.provider_response_parser import (
     build_provider_response_metadata_from_raw,
     parse_openai_style_response,
@@ -187,12 +188,7 @@ class DeepSeekReviewProvider:
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "你是策略材料审查员，不是交易员。你不能给最终交易建议，不能给入场价、"
-                        "止损价、止盈价、仓位或杠杆。你只能审查材料完整性、证据质量、逻辑一致性、"
-                        "风险接受度、策略冲突和是否需要人工审核。必须输出 JSON，且 "
-                        "not_trading_advice 必须为 true。"
-                    ),
+                    "content": REVIEW_PROVIDER_SYSTEM_MESSAGE,
                 },
                 {"role": "user", "content": request.prompt.prompt_text},
             ],

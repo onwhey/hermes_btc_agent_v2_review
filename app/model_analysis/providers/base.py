@@ -35,6 +35,7 @@ class ProviderRequest:
 class ProviderResponse(ModelProviderResult):
     """Provider output plus compact metadata safe for business persistence."""
 
+    final_content_text: str = ""
     raw_response_text: str = ""
     raw_response_hash: str | None = None
     raw_response_char_count: int = 0

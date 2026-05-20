@@ -28,6 +28,11 @@ REQUIRED_FIELDS = frozenset(
         "validation_focus",
         "human_review_required",
         "not_trading_advice",
+        "is_final_trading_advice",
+        "is_trading_signal",
+        "is_executable",
+        "auto_trading_allowed",
+        "summary_text",
     }
 )
 
@@ -75,6 +80,7 @@ def validate_model_review_output(output: Mapping[str, Any]) -> SchemaValidationR
             is_valid=False,
             error_code="schema_missing_required_field",
             error_message=f"missing fields: {', '.join(missing)}",
+            missing_fields=tuple(missing),
         )
     if output.get("not_trading_advice") is not True:
         return SchemaValidationResult(
@@ -88,6 +94,18 @@ def validate_model_review_output(output: Mapping[str, Any]) -> SchemaValidationR
             error_code="schema_human_review_required_not_boolean",
             error_message="human_review_required must be boolean",
         )
+    for field_name in (
+        "is_final_trading_advice",
+        "is_trading_signal",
+        "is_executable",
+        "auto_trading_allowed",
+    ):
+        if output.get(field_name) is not False:
+            return SchemaValidationResult(
+                is_valid=False,
+                error_code="schema_safety_flag_not_false",
+                error_message=f"{field_name} must be false",
+            )
 
     checks = (
         ("review_decision", set(item.value for item in ReviewDecision)),

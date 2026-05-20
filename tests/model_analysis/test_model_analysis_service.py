@@ -905,6 +905,10 @@ def _valid_provider_output(
         "summary_text": summary_text,
         "not_trading_advice": True,
         "not_trading_advice_text": "这是大模型审查结果，不是最终交易建议。",
+        "is_final_trading_advice": False,
+        "is_trading_signal": False,
+        "is_executable": False,
+        "auto_trading_allowed": False,
     }
 
 
