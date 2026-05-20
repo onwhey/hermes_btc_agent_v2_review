@@ -25,9 +25,10 @@ not perform trading.
 from __future__ import annotations
 
 import uuid
-from dataclasses import replace
+import json
+from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any
+from typing import Any, Mapping
 
 from app.alerting.templates import WECHAT_VISIBLE_BODY_DETAIL_KEY
 from app.alerting.types import AlertEvent, AlertSendStatus, AlertSeverity, AlertType
@@ -84,6 +85,24 @@ ALLOWED_MODEL_ANALYSIS_TRIGGER_SOURCES = frozenset({TRIGGER_SOURCE_CLI})
 FINAL_REVIEW_RESULT_STATUSES = (
     ModelAnalysisStatus.SUCCESS,
     ModelAnalysisStatus.PARTIAL_SUCCESS,
+)
+REVIEWABLE_MATERIAL_PACK_STATUSES = frozenset(
+    {
+        ModelAnalysisStatus.SUCCESS.value,
+        ModelAnalysisStatus.PARTIAL_SUCCESS.value,
+    }
+)
+PARTIAL_SUCCESS_REQUIRED_JSON_FIELDS = (
+    "material_json",
+    "summary_json",
+    "validation_plan_json",
+    "data_window_json",
+    "future_leakage_guard_json",
+)
+PARTIAL_SUCCESS_QUESTION_FIELDS = (
+    "question_json",
+    "question_list_json",
+    "stage19_question_json",
 )
 
 
@@ -198,7 +217,8 @@ class ModelAnalysisService:
                 message="analysis_material_pack does not exist.",
                 error_code="material_pack_not_found",
             )
-        if str(getattr(material_pack, "status", "")) != ModelAnalysisStatus.SUCCESS.value:
+        reviewability = _validate_material_pack_reviewability(material_pack)
+        if not reviewability.is_reviewable:
             return self._return_or_persist_blocked(
                 db_session,
                 request=request,
@@ -209,8 +229,9 @@ class ModelAnalysisService:
                 model_analysis_run_id=run_id,
                 review_version_key=review_version_key,
                 trace_id=trace_id,
-                message="analysis_material_pack status is not success.",
-                error_code="material_pack_status_not_success",
+                message=reviewability.message,
+                error_code=reviewability.error_code,
+                error_message=reviewability.error_message,
             )
 
         try:
@@ -711,6 +732,162 @@ def _validate_request(
         trace_id=trace_id,
         error_message="; ".join(problems),
     )
+
+
+@dataclass(frozen=True)
+class _MaterialPackReviewability:
+    """Internal reviewability check result for stage-18 material packs."""
+
+    is_reviewable: bool
+    error_code: str = ""
+    message: str = ""
+    error_message: str | None = None
+
+
+def _validate_material_pack_reviewability(material_pack: Any) -> _MaterialPackReviewability:
+    """Validate whether stage 19A may consume a stage-18 material pack.
+
+    Parameters: an `analysis_material_pack` ORM row or test object.
+    Return value: reviewability decision plus blocked reason.
+    Failure scenarios: malformed JSON is treated as incomplete material.
+    External effects: none; this function does not read Klines or call models.
+    """
+
+    status = str(getattr(material_pack, "status", "")).strip().lower()
+    if status == ModelAnalysisStatus.SUCCESS.value:
+        return _MaterialPackReviewability(is_reviewable=True)
+    if status != ModelAnalysisStatus.PARTIAL_SUCCESS.value:
+        return _MaterialPackReviewability(
+            is_reviewable=False,
+            error_code="material_pack_status_not_reviewable",
+            message="analysis_material_pack status is not reviewable.",
+            error_message=f"status={status or 'unknown'}",
+        )
+    return _validate_partial_success_material_pack(material_pack)
+
+
+def _validate_partial_success_material_pack(material_pack: Any) -> _MaterialPackReviewability:
+    parsed_fields = {
+        field_name: _parse_material_pack_json_field(material_pack, field_name)
+        for field_name in PARTIAL_SUCCESS_REQUIRED_JSON_FIELDS
+    }
+    missing_core_fields = [
+        field_name for field_name, value in parsed_fields.items() if not _has_non_empty_material(value)
+    ]
+    if not _has_question_material(material_pack, material_json=parsed_fields["material_json"]):
+        missing_core_fields.append("question_json")
+    if not str(getattr(material_pack, "snapshot_id", "") or "").strip():
+        missing_core_fields.append("snapshot_id")
+    if not str(getattr(material_pack, "strategy_signal_run_id", "") or "").strip():
+        missing_core_fields.append("strategy_signal_run_id")
+
+    summary_json = _as_mapping(parsed_fields["summary_json"])
+    material_json = _as_mapping(parsed_fields["material_json"])
+    strategy_conflict_points = _as_mapping(material_json.get("strategy_conflict_points"))
+    failed_strategy_count = _first_int_value(
+        "failed_strategy_count",
+        strategy_conflict_points,
+        material_json,
+        summary_json,
+        material_pack,
+    )
+    invalid_strategy_count = _first_int_value(
+        "invalid_strategy_count",
+        strategy_conflict_points,
+        material_json,
+        summary_json,
+        material_pack,
+    )
+    if failed_strategy_count > 0 or invalid_strategy_count > 0:
+        return _MaterialPackReviewability(
+            is_reviewable=False,
+            error_code="material_pack_partial_failed_or_invalid_strategy",
+            message=(
+                "analysis_material_pack partial_success is not reviewable because strategy material "
+                "contains failed or invalid results."
+            ),
+            error_message=(
+                f"failed_strategy_count={failed_strategy_count}; "
+                f"invalid_strategy_count={invalid_strategy_count}"
+            ),
+        )
+
+    effective_strategy_count = _first_int_value(
+        "effective_strategy_count",
+        summary_json,
+        strategy_conflict_points,
+        material_json,
+        material_pack,
+    )
+    if effective_strategy_count < 1:
+        missing_core_fields.append("effective_strategy_count")
+
+    if missing_core_fields:
+        return _MaterialPackReviewability(
+            is_reviewable=False,
+            error_code="material_pack_partial_core_incomplete",
+            message=(
+                "analysis_material_pack partial_success is not reviewable because core material "
+                "is incomplete."
+            ),
+            error_message=f"missing_or_empty={', '.join(sorted(set(missing_core_fields)))}",
+        )
+
+    return _MaterialPackReviewability(is_reviewable=True)
+
+
+def _parse_material_pack_json_field(material_pack: Any, field_name: str) -> Any:
+    value = getattr(material_pack, field_name, None)
+    if isinstance(value, (Mapping, list)):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return None
+
+
+def _has_non_empty_material(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return bool(value)
+    if isinstance(value, list):
+        return bool(value)
+    if isinstance(value, str):
+        return bool(value.strip())
+    return value is not None
+
+
+def _has_question_material(material_pack: Any, *, material_json: Any) -> bool:
+    for field_name in PARTIAL_SUCCESS_QUESTION_FIELDS:
+        if _has_non_empty_material(_parse_material_pack_json_field(material_pack, field_name)):
+            return True
+    material_mapping = _as_mapping(material_json)
+    return _has_non_empty_material(material_mapping.get("question_list_for_stage19"))
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _first_int_value(field_name: str, *sources: Any) -> int:
+    for source in sources:
+        value = getattr(source, field_name, None)
+        if isinstance(source, Mapping):
+            value = source.get(field_name)
+        parsed = _maybe_int(value)
+        if parsed is not None:
+            return parsed
+    return 0
+
+
+def _maybe_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _limit_error(

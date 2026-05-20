@@ -419,3 +419,89 @@ Skill 解析成结构化草稿
 ```
 
 Skill 解析结果只是草稿，不是事实。未经用户确认，不得写入核心业务事实表。
+
+---
+
+## 3. 19A partial_success 准入修正
+
+### 3.1 发起方式
+
+仍由用户手动执行：
+
+```bash
+python -m scripts.run_model_analysis --material-pack-id AMP-xxx --trigger-source cli --dry-run
+```
+
+本修正不新增 scheduler 入口，不新增真实模型调用，不修改正式 K 线表。
+
+### 3.2 核心调用链路
+
+```text
+scripts/run_model_analysis.py::main
+    ↓
+app/model_analysis/service.py::run_model_analysis
+    ↓
+app/model_analysis/service.py::ModelAnalysisService.run_model_analysis
+    ↓
+app/model_analysis/service.py::_validate_material_pack_reviewability
+    ↓
+app/model_analysis/service.py::_validate_partial_success_material_pack
+```
+
+### 3.3 material pack 准入规则
+
+`analysis_material_pack.status=success` 直接允许进入 19A mock review。
+
+`analysis_material_pack.status=partial_success` 只有在核心材料完整时允许进入：
+
+- `material_json` 不为空；
+- `summary_json` 不为空；
+- `validation_plan_json` 不为空；
+- `data_window_json` 不为空；
+- `future_leakage_guard_json` 不为空；
+- `question_json` / `question_list_json` / `stage19_question_json` 或 `material_json.question_list_for_stage19` 不为空；
+- `snapshot_id` 不为空；
+- `strategy_signal_run_id` 不为空；
+- `failed_strategy_count = 0`；
+- `invalid_strategy_count = 0`；
+- `effective_strategy_count >= 1`。
+
+因 placeholder / not_implemented 策略导致的 `partial_success` 不会自动阻止 19A；
+只要核心材料完整且 failed / invalid 数量为 0，就可以进入审查。
+
+### 3.4 blocked 路径
+
+状态为 `failed`、`blocked`、`skipped`、`running`、`pending` 或未知状态时返回：
+
+```text
+error_code = material_pack_status_not_reviewable
+message = analysis_material_pack status is not reviewable.
+```
+
+`partial_success` 核心字段不完整时返回：
+
+```text
+error_code = material_pack_partial_core_incomplete
+message = analysis_material_pack partial_success is not reviewable because core material is incomplete.
+```
+
+`partial_success` 中存在 failed / invalid 策略材料时返回：
+
+```text
+error_code = material_pack_partial_failed_or_invalid_strategy
+message = analysis_material_pack partial_success is not reviewable because strategy material contains failed or invalid results.
+```
+
+### 3.5 数据库默认值修正
+
+新增迁移：
+
+```text
+migrations/versions/20260522_19a_model_analysis_run_human_review_default.py
+```
+
+该迁移只把 `model_analysis_run.human_review_required` 的数据库默认值修正为 false。
+`model_analysis_run` 是 attempt 表，blocked / failed / skipped / success 都可能记录在这里，
+所以默认不应表示需要人工审核。
+
+`model_analysis_result.human_review_required` 保持默认 false，成功审查结果仍可写入 true。

@@ -52,7 +52,7 @@ def upgrade() -> None:
         sa.Column("is_trading_signal", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("is_executable", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("auto_trading_allowed", sa.Boolean(), nullable=False, server_default=sa.false()),
-        sa.Column("human_review_required", sa.Boolean(), nullable=False, server_default=sa.true()),
+        sa.Column("human_review_required", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("trigger_source", sa.String(length=32), nullable=False),
         sa.Column("created_by", sa.String(length=64), nullable=False),
         sa.Column("trace_id", sa.String(length=128), nullable=False),

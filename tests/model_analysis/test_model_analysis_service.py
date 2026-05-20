@@ -113,6 +113,18 @@ def material_pack(
     status: str = "success",
     strategies: list[Mapping[str, Any]] | None = None,
     material_pack_id: str = "AMP-stage19",
+    snapshot_id: str = "MCS-stage19",
+    strategy_signal_run_id: str = "SSR-stage19",
+    material_payload: Mapping[str, Any] | str | None = None,
+    summary_payload: Mapping[str, Any] | str | None = None,
+    question_payload: Mapping[str, Any] | str | None = None,
+    validation_plan_payload: Mapping[str, Any] | str | None = None,
+    data_window_payload: Mapping[str, Any] | str | None = None,
+    future_leakage_guard_payload: Mapping[str, Any] | str | None = None,
+    failed_strategy_count: int = 0,
+    invalid_strategy_count: int = 0,
+    not_implemented_strategy_count: int = 0,
+    effective_strategy_count: int = 1,
 ) -> Any:
     strategy_items = strategies if strategies is not None else [
         {
@@ -129,21 +141,50 @@ def material_pack(
             "missing_evidence": [],
         }
     ]
+    default_question_payload = {"questions": ["材料证据是否足够？"]}
+    default_material_payload = {
+        "strategy_summaries": strategy_items,
+        "strategy_conflict_points": {
+            "failed_strategy_count": failed_strategy_count,
+            "invalid_strategy_count": invalid_strategy_count,
+            "not_implemented_strategy_count": not_implemented_strategy_count,
+        },
+        "question_list_for_stage19": default_question_payload,
+    }
+    default_summary_payload = {
+        "summary": "stage 18 compact material",
+        "strategy_summaries": strategy_items,
+        "effective_strategy_count": effective_strategy_count,
+    }
     return SimpleNamespace(
         material_pack_id=material_pack_id,
         aggregation_run_id="SAR-stage19",
-        strategy_signal_run_id="SSR-stage19",
-        snapshot_id="MCS-stage19",
+        strategy_signal_run_id=strategy_signal_run_id,
+        snapshot_id=snapshot_id,
         symbol="BTCUSDT",
         base_interval="4h",
         higher_interval="1d",
         aggregation_version="aggregation_v1",
         material_schema_version="material_schema_v1",
         status=status,
-        material_json=json.dumps({"strategy_summaries": strategy_items}, ensure_ascii=False),
-        summary_json=json.dumps({"summary": "stage 18 compact material", "strategy_summaries": strategy_items}, ensure_ascii=False),
-        question_json=json.dumps({"questions": ["材料证据是否足够？"]}, ensure_ascii=False),
-        validation_plan_json=json.dumps({"focus": ["证据完整性", "冲突解释"]}, ensure_ascii=False),
+        material_json=_json_payload(default_material_payload if material_payload is None else material_payload),
+        summary_json=_json_payload(default_summary_payload if summary_payload is None else summary_payload),
+        question_json=_json_payload(default_question_payload if question_payload is None else question_payload),
+        validation_plan_json=_json_payload(
+            {"focus": ["证据完整性", "冲突解释"]}
+            if validation_plan_payload is None
+            else validation_plan_payload
+        ),
+        data_window_json=_json_payload(
+            {"base_interval": "4h", "higher_interval": "1d", "source_snapshot_id": snapshot_id}
+            if data_window_payload is None
+            else data_window_payload
+        ),
+        future_leakage_guard_json=_json_payload(
+            {"future_leakage_guard": True, "uses_closed_material_only": True}
+            if future_leakage_guard_payload is None
+            else future_leakage_guard_payload
+        ),
     )
 
 
@@ -287,16 +328,136 @@ def test_confirm_write_persists_run_and_result_only_with_enabled_config() -> Non
     assert repo.result_rows[0].review_version_key == result.review_version_key
 
 
-def test_missing_or_non_success_material_pack_is_blocked() -> None:
+def test_missing_or_non_reviewable_material_pack_is_blocked() -> None:
     missing = service_with_repo(FakeModelAnalysisRepository()).run_model_analysis(FakeSession(), request=run_request())
     blocked_pack = service_with_repo(
-        FakeModelAnalysisRepository(material_pack=material_pack(status="partial_success"))
+        FakeModelAnalysisRepository(material_pack=material_pack(status="failed"))
     ).run_model_analysis(FakeSession(), request=run_request())
 
     assert missing.status == ModelAnalysisStatus.BLOCKED
     assert missing.error_code == "material_pack_not_found"
     assert blocked_pack.status == ModelAnalysisStatus.BLOCKED
-    assert blocked_pack.error_code == "material_pack_status_not_success"
+    assert blocked_pack.error_code == "material_pack_status_not_reviewable"
+    assert blocked_pack.message == "analysis_material_pack status is not reviewable."
+    assert "status is not success" not in blocked_pack.message
+
+
+def test_success_and_complete_partial_success_material_pack_can_enter_review() -> None:
+    success_result = service_with_repo(
+        FakeModelAnalysisRepository(material_pack=material_pack(status="success"))
+    ).run_model_analysis(FakeSession(), request=run_request())
+    partial_result = service_with_repo(
+        FakeModelAnalysisRepository(material_pack=material_pack(status="partial_success"))
+    ).run_model_analysis(FakeSession(), request=run_request())
+
+    assert success_result.status == ModelAnalysisStatus.SUCCESS
+    assert partial_result.status == ModelAnalysisStatus.SUCCESS
+
+
+def test_partial_success_core_material_missing_is_blocked() -> None:
+    cases = (
+        ("material_json", {"material_payload": {}}),
+        ("summary_json", {"summary_payload": {}}),
+        ("validation_plan_json", {"validation_plan_payload": {}}),
+        ("data_window_json", {"data_window_payload": {}}),
+        ("future_leakage_guard_json", {"future_leakage_guard_payload": {}}),
+        (
+            "question_json",
+            {
+                "question_payload": {},
+                "material_payload": {
+                    "strategy_summaries": [{"strategy_name": "fixture_without_question"}],
+                    "strategy_conflict_points": {
+                        "failed_strategy_count": 0,
+                        "invalid_strategy_count": 0,
+                        "not_implemented_strategy_count": 0,
+                    },
+                },
+            },
+        ),
+    )
+
+    for expected_field, kwargs in cases:
+        result = service_with_repo(
+            FakeModelAnalysisRepository(
+                material_pack=material_pack(status="partial_success", **kwargs)
+            )
+        ).run_model_analysis(FakeSession(), request=run_request())
+
+        assert result.status == ModelAnalysisStatus.BLOCKED
+        assert result.error_code == "material_pack_partial_core_incomplete"
+        assert result.message == (
+            "analysis_material_pack partial_success is not reviewable because core material is incomplete."
+        )
+        assert expected_field in (result.error_message or "")
+
+
+def test_partial_success_missing_ids_or_effective_strategy_count_is_blocked() -> None:
+    cases = (
+        ("snapshot_id", {"snapshot_id": ""}),
+        ("strategy_signal_run_id", {"strategy_signal_run_id": ""}),
+        ("effective_strategy_count", {"effective_strategy_count": 0}),
+    )
+
+    for expected_field, kwargs in cases:
+        result = service_with_repo(
+            FakeModelAnalysisRepository(
+                material_pack=material_pack(status="partial_success", **kwargs)
+            )
+        ).run_model_analysis(FakeSession(), request=run_request())
+
+        assert result.status == ModelAnalysisStatus.BLOCKED
+        assert result.error_code == "material_pack_partial_core_incomplete"
+        assert expected_field in (result.error_message or "")
+
+
+def test_partial_success_failed_or_invalid_strategy_counts_are_blocked() -> None:
+    failed_result = service_with_repo(
+        FakeModelAnalysisRepository(
+            material_pack=material_pack(status="partial_success", failed_strategy_count=1)
+        )
+    ).run_model_analysis(FakeSession(), request=run_request())
+    invalid_result = service_with_repo(
+        FakeModelAnalysisRepository(
+            material_pack=material_pack(status="partial_success", invalid_strategy_count=1)
+        )
+    ).run_model_analysis(FakeSession(), request=run_request())
+
+    for result in (failed_result, invalid_result):
+        assert result.status == ModelAnalysisStatus.BLOCKED
+        assert result.error_code == "material_pack_partial_failed_or_invalid_strategy"
+        assert result.message == (
+            "analysis_material_pack partial_success is not reviewable because strategy material "
+            "contains failed or invalid results."
+        )
+
+
+def test_partial_success_not_implemented_only_can_enter_review() -> None:
+    result = service_with_repo(
+        FakeModelAnalysisRepository(
+            material_pack=material_pack(
+                status="partial_success",
+                not_implemented_strategy_count=2,
+                failed_strategy_count=0,
+                invalid_strategy_count=0,
+                effective_strategy_count=1,
+            )
+        )
+    ).run_model_analysis(FakeSession(), request=run_request())
+
+    assert result.status == ModelAnalysisStatus.SUCCESS
+
+
+def test_non_reviewable_statuses_are_blocked() -> None:
+    for status in ("failed", "blocked", "skipped", "running", "pending", "unknown"):
+        result = service_with_repo(
+            FakeModelAnalysisRepository(material_pack=material_pack(status=status))
+        ).run_model_analysis(FakeSession(), request=run_request())
+
+        assert result.status == ModelAnalysisStatus.BLOCKED
+        assert result.error_code == "material_pack_status_not_reviewable"
+        assert result.message == "analysis_material_pack status is not reviewable."
+        assert "status is not success" not in result.message
 
 
 def test_input_char_and_byte_limits_block_review() -> None:
@@ -540,6 +701,8 @@ def test_model_analysis_schema_uses_attempt_key_and_single_result_unique_key() -
     }
     assert "uq_model_analysis_run_id" in run_unique_names
     assert "uk_model_analysis_run_review_version_key" not in run_unique_names
+    assert run_table.c.human_review_required.default is not None
+    assert run_table.c.human_review_required.default.arg is False
 
     result_table = ModelAnalysisResult.__table__
     result_columns = {column.name for column in result_table.columns}
@@ -551,6 +714,8 @@ def test_model_analysis_schema_uses_attempt_key_and_single_result_unique_key() -
     assert "uq_model_analysis_result_id" in result_unique_names
     assert "uk_model_analysis_result_review_version_key" in result_unique_names
     assert "human_review_required" in result_columns
+    assert result_table.c.human_review_required.default is not None
+    assert result_table.c.human_review_required.default.arg is False
 
     run_columns = {column.name for column in run_table.columns}
     assert "model_key" in run_columns
@@ -576,6 +741,7 @@ def test_stage19_migration_does_not_create_large_composite_varchar_indexes() -> 
         for path in (
             "migrations/versions/20260520_19_create_model_analysis_tables.py",
             "migrations/versions/20260521_19a_model_review_registry_fields.py",
+            "migrations/versions/20260522_19a_model_analysis_run_human_review_default.py",
         )
     )
 
@@ -585,6 +751,7 @@ def test_stage19_migration_does_not_create_large_composite_varchar_indexes() -> 
     assert "review_version_key\", \"material_pack_id" not in source
     assert "strategy_signal_run_id\", \"review_version_key" not in source
     assert "human_review_required" in source
+    assert 'sa.Column("human_review_required", sa.Boolean(), nullable=False, server_default=sa.false())' in source
 
 
 def test_model_analysis_source_does_not_call_real_model_strategy_or_trading_interfaces() -> None:
@@ -694,6 +861,12 @@ def _valid_provider_output(
         "not_trading_advice": True,
         "not_trading_advice_text": "这是大模型审查结果，不是最终交易建议。",
     }
+
+
+def _json_payload(value: Mapping[str, Any] | list[Any] | str) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _write_model_registry(

@@ -629,3 +629,15 @@ single + mock
 ```
 
 但这些都不是 19A 的完整实现范围，只是 19A 必须预留的设计方向。
+
+---
+
+## 12. 19A material pack 准入补充
+
+19A 允许消费 `analysis_material_pack.status=success` 的材料包。
+
+19A 也可以有条件消费 `analysis_material_pack.status=partial_success` 的材料包，但必须先通过核心材料完整性校验：`material_json`、`summary_json`、`validation_plan_json`、`data_window_json`、`future_leakage_guard_json`、stage19 question 字段、`snapshot_id`、`strategy_signal_run_id` 均不可为空，且 `failed_strategy_count=0`、`invalid_strategy_count=0`、`effective_strategy_count>=1`。
+
+如果 `partial_success` 只是因为 placeholder / not_implemented 策略导致，且核心材料完整、`failed_strategy_count=0`、`invalid_strategy_count=0`，则可以进入 19A 审查。
+
+19A 不允许消费核心字段不完整的 `partial_success`，也不允许消费 `blocked`、`failed`、`skipped`、`running`、`pending` 或未知状态的材料包。
