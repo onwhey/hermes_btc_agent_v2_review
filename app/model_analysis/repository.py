@@ -21,12 +21,12 @@ from app.model_analysis.types import (
     ModelAnalysisResultPersistencePayload,
     ModelAnalysisRunPersistencePayload,
 )
-from app.storage.mysql.models.model_analysis import (
+from app.model_analysis.models import (
+    AnalysisMaterialPack,
     ModelAnalysisResult as ModelAnalysisResultRow,
     ModelAnalysisRun,
     ModelProviderCallArtifact,
 )
-from app.storage.mysql.models.strategy_aggregation import AnalysisMaterialPack
 
 try:
     from sqlalchemy import select

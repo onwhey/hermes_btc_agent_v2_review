@@ -876,3 +876,100 @@ migrations/versions/20260522_19a_model_analysis_run_human_review_default.py
 所以默认不应表示需要人工审核。
 
 `model_analysis_result.human_review_required` 保持默认 false，成功审查结果仍可写入 true。
+
+## 6. 19B confirm-write 持久化外键注册修复
+
+### 6.1 发起方式
+
+仍由用户手动执行：
+
+```bash
+python -m scripts.run_model_analysis --material-pack-id AMP-xxx --trigger-source cli --confirm-write --use-real-model --model-key deepseek_v4_pro_review --confirm-real-model-cost
+```
+
+本修复不新增 scheduler 入口，不修改正式 K 线表，不生成交易建议，不调用交易接口。
+
+### 6.2 核心调用链路
+
+```text
+scripts/run_model_analysis.py::main
+    -> app/model_analysis/service.py::ModelAnalysisService.run_model_analysis
+    -> app/model_analysis/service.py::_persist_running_real_model_run
+    -> app/model_analysis/providers/deepseek.py::DeepSeekReviewProvider.call_review_model
+    -> app/model_analysis/repository.py::ModelAnalysisRepository.create_model_analysis_result
+    -> app/model_analysis/models.py
+    -> app/storage/mysql/models/strategy_signal.py::StrategySignalRun
+    -> app/storage/mysql/models/model_analysis.py::ModelAnalysisResult
+```
+
+### 6.3 ORM metadata 注册
+
+`model_analysis_result.strategy_signal_run_id` 的 ORM 外键引用 `strategy_signal_run.run_id`。
+本次新增 `app/model_analysis/models.py` 作为第 19 阶段 model_analysis 仓储的 ORM
+注册入口，先导入 `StrategySignalRun`，再导入 `StrategyAggregationRun`、
+`AnalysisMaterialPack`、`ModelAnalysisRun`、`ModelAnalysisResult` 和
+`ModelProviderCallArtifact`。这些模型继续使用同一个 `app.storage.mysql.base.Base`
+metadata；本修复不删除外键，不新建重复表，也不把 `strategy_signal_run_id`
+改成无约束字段。
+
+`app/model_analysis/repository.py` 改为从 `app.model_analysis.models`
+导入所需 ORM model，避免只导入 model_analysis 模块时 SQLAlchemy metadata 中缺少
+`strategy_signal_run`，从而触发 `NoReferencedTableError`。
+
+### 6.4 result 写入失败处理
+
+真实 confirm-write 成功路径仍保持：
+
+```text
+先创建 model_analysis_run(status=running)
+    -> 调用真实 provider
+    -> 写 model_analysis_result
+    -> result 写入成功后更新 run 为 success
+```
+
+如果真实模型已经返回成功但 `model_analysis_result` 写入失败，service 会回滚失败事务，
+再尽量通过已有 running run 的独立更新路径把 `model_analysis_run` 更新为
+`status=failed`，并记录：
+
+```text
+error_code = model_analysis_persistence_failed
+provider
+model_key
+model_name
+model_version
+profile_hash
+review_version_key
+material_pack_id
+aggregation_run_id
+strategy_signal_run_id
+trace_id
+```
+
+confirm-write 且 `MODEL_REVIEW_HERMES_ENABLED=true` 时，会发送固定中文 Hermes 告警：
+`BTC 大模型审查持久化失败`。告警明确说明未生成正式审查结果、不是最终交易建议、
+本阶段未自动交易。Hermes 失败只记录 `hermes_status=failed`，不把失败结果改写成成功。
+
+### 6.5 本修复不负责
+
+- 不新增真实策略。
+- 不接 scheduler。
+- 不修改正式 K 线表。
+- 不生成入场价、止损价、止盈价、仓位、杠杆。
+- 不调用交易接口。
+- 不自动交易。
+- 不把完整 raw request 或 raw response 写入主业务表。
+
+### 6.6 测试
+
+对应测试：
+
+```text
+tests/model_analysis/test_model_analysis_19b.py
+```
+
+覆盖 confirm-write fake DeepSeek success 写入 run/result、`strategy_signal_run`
+已注册到 SQLAlchemy metadata、`model_analysis_result.strategy_signal_run_id`
+不会触发 `NoReferencedTableError`、result 写入失败时 run 更新为 failed、CLI 输出在
+`model_analysis_persistence_failed` 时仍保留 `model_key`、`model_role`、
+`analysis_mode` 等上下文。默认 pytest 不访问真实外网、不发送真实 Hermes、
+不调用交易接口、不修改正式 K 线表。

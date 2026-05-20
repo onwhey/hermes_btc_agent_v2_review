@@ -10,6 +10,7 @@ from app.core.config import AppSettings
 from app.model_analysis.hermes_formatter import (
     build_model_analysis_artifact_write_failed_visible_body,
     build_model_analysis_oversized_response_visible_body,
+    build_model_analysis_persistence_failed_visible_body,
     build_model_analysis_provider_call_failed_visible_body,
 )
 from app.model_analysis.model_registry import ModelRegistryError, resolve_model_review_profile
@@ -640,7 +641,21 @@ def test_enabled_deepseek_fake_flow_persists_profile_usage_cost_and_hashes(tmp_p
     assert run.cost_currency == "USD"
     assert run.raw_response_hash
     assert not hasattr(run, "raw_response_text")
+    assert repo.result_rows[0].strategy_signal_run_id == "SSR-stage19"
     assert run.profile_hash in result.details["profile_hash"]
+
+
+def test_model_analysis_models_register_strategy_signal_fk_metadata() -> None:
+    from app.model_analysis import models as model_analysis_models
+    from app.storage.mysql.base import Base
+
+    assert "strategy_signal_run" in Base.metadata.tables
+    assert "model_analysis_result" in Base.metadata.tables
+    fk = next(iter(model_analysis_models.ModelAnalysisResult.__table__.c.strategy_signal_run_id.foreign_keys))
+    assert fk.target_fullname == "strategy_signal_run.run_id"
+    assert fk.column.table is model_analysis_models.StrategySignalRun.__table__
+    sorted_table_names = [table.name for table in Base.metadata.sorted_tables]
+    assert sorted_table_names.index("strategy_signal_run") < sorted_table_names.index("model_analysis_result")
 
 
 def test_confirm_write_real_model_creates_running_run_before_provider_call(tmp_path: Path) -> None:
@@ -659,6 +674,55 @@ def test_confirm_write_real_model_creates_running_run_before_provider_call(tmp_p
     assert len(repo.run_rows) == 1
     assert repo.run_rows[0].status == "success"
     assert len(repo.result_rows) == 1
+
+
+def test_result_persistence_failed_updates_run_and_preserves_output_context(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    repo = ArtifactRepository(
+        material_pack=material_pack(),
+        create_result_error=RuntimeError("simulated result write failure"),
+    )
+    alert = FakeAlertSender()
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir, enabled=True, hermes_enabled=True),
+        repository=repo,
+        provider=FakeDeepSeekProvider(),
+        alert_sender=alert,
+    ).run_model_analysis(FakeSession(), request=_real_request(confirm=True))
+
+    assert result.status == ModelAnalysisStatus.FAILED
+    assert result.error_code == "model_analysis_persistence_failed"
+    assert repo.run_rows[0].status == "failed"
+    assert repo.run_rows[0].error_code == "model_analysis_persistence_failed"
+    assert repo.run_rows[0].model_provider == "deepseek"
+    assert repo.run_rows[0].model_key == "deepseek_v4_pro_review"
+    assert repo.run_rows[0].model_name == "deepseek-v4-pro"
+    assert repo.run_rows[0].profile_hash
+    assert repo.run_rows[0].review_version_key
+    assert repo.result_rows == []
+    assert result.model_key == "deepseek_v4_pro_review"
+    assert result.model_role == "mathematical_structure_review"
+    assert result.analysis_mode == "single"
+    output_lines = dict(line.split("=", 1) for line in format_model_analysis_result_lines(result))
+    assert output_lines["provider"] == "deepseek"
+    assert output_lines["model_key"] == "deepseek_v4_pro_review"
+    assert output_lines["model_name"] == "deepseek-v4-pro"
+    assert output_lines["model_version"] == "v4_pro"
+    assert output_lines["model_role"] == "mathematical_structure_review"
+    assert output_lines["analysis_mode"] == "single"
+    assert output_lines["material_pack_id"] == "AMP-stage19"
+    assert output_lines["aggregation_run_id"] == "SAR-stage19"
+    assert output_lines["strategy_signal_run_id"] == "SSR-stage19"
+    assert output_lines["review_version_key"]
+    assert result.hermes_status.value == "sent"
+    assert len(alert.calls) == 1
+    assert alert.calls[0].title == "BTC 大模型审查持久化失败"
+    body = build_model_analysis_persistence_failed_visible_body(result)
+    assert "BTC 大模型审查持久化失败" in body
+    assert "未生成正式审查结果" in body
+    assert "不是最终交易建议" in body
+    assert "本阶段未自动交易" in body
 
 
 def test_real_provider_exception_updates_running_run_failed_without_result(tmp_path: Path) -> None:

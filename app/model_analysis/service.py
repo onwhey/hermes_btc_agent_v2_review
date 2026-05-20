@@ -44,6 +44,7 @@ from app.model_analysis.cost_estimator import estimate_provider_call_cost
 from app.model_analysis.hermes_formatter import (
     build_model_analysis_artifact_write_failed_visible_body,
     build_model_analysis_oversized_response_visible_body,
+    build_model_analysis_persistence_failed_visible_body,
     build_model_analysis_provider_call_failed_visible_body,
     build_model_analysis_visible_body,
 )
@@ -487,6 +488,7 @@ class ModelAnalysisService:
                 "provider": provider_resolution.provider_name,
                 "model_key": provider_resolution.model_key,
                 "model_name": provider_resolution.model_name,
+                "model_version": provider_resolution.model_version,
                 "model_role": provider_resolution.model_role,
                 "analysis_mode": provider_resolution.analysis_mode,
                 "prompt_template_version": provider_resolution.prompt_template_version,
@@ -1162,15 +1164,30 @@ class ModelAnalysisService:
         )
         result = replace(
             result,
+            model_key=provider_metadata.model_key,
+            model_role=provider_metadata.model_role,
+            analysis_mode=provider_metadata.analysis_mode,
             raw_response_char_count=int(getattr(provider_result, "raw_response_char_count", 0) or 0),
             raw_response_byte_count=int(getattr(provider_result, "raw_response_byte_count", 0) or 0),
+            estimated_cost=provider_metadata.estimated_cost,
+            cost_currency=provider_metadata.cost_currency,
             details={
                 "provider": provider_metadata.provider_name,
                 "model_key": provider_metadata.model_key,
                 "model_name": provider_metadata.model_name,
+                "model_version": provider_metadata.model_version,
+                "model_role": provider_metadata.model_role,
+                "analysis_mode": provider_metadata.analysis_mode,
                 "profile_hash": provider_metadata.profile_hash,
+                "review_version_key": review_version_key,
                 "raw_response_hash": getattr(provider_result, "raw_response_hash", None),
                 "raw_response_storage_ref": provider_metadata.raw_response_storage_ref,
+                "input_token_count": provider_metadata.input_token_count,
+                "output_token_count": provider_metadata.output_token_count,
+                "total_token_count": provider_metadata.total_token_count,
+                "estimated_cost": provider_metadata.estimated_cost,
+                "cost_currency": provider_metadata.cost_currency,
+                "provider_usage_json": provider_metadata.provider_usage_json,
             },
         )
         if request.dry_run:
@@ -1203,6 +1220,8 @@ class ModelAnalysisService:
             return result
         if provider_metadata.is_real_model and error_code == "provider_call_failed":
             return self._record_provider_failed_hermes_and_return(db_session, run_row=run_row, result=result)
+        if provider_metadata.is_real_model and error_code == "model_analysis_persistence_failed":
+            return self._record_persistence_failed_hermes_and_return(db_session, run_row=run_row, result=result)
         return result
 
     def _return_artifact_write_failed(
@@ -1440,6 +1459,35 @@ class ModelAnalysisService:
             )
         return replace(result, hermes_status=hermes_status)
 
+    def _record_persistence_failed_hermes_and_return(
+        self,
+        db_session: Any,
+        *,
+        run_row: Any,
+        result: ModelAnalysisServiceResult,
+    ) -> ModelAnalysisServiceResult:
+        hermes_status, hermes_message, hermes_error, hermes_sent_at_utc = self._send_or_skip_persistence_failed_hermes(
+            result=result
+        )
+        try:
+            self._repository.record_hermes_result(
+                db_session,
+                run_row,
+                hermes_status=hermes_status.value,
+                hermes_message=hermes_message,
+                hermes_error=hermes_error,
+                hermes_sent_at_utc=hermes_sent_at_utc,
+            )
+            _commit_if_possible(db_session)
+        except Exception as exc:  # noqa: BLE001
+            _rollback_if_possible(db_session)
+            return replace(
+                result,
+                hermes_status=ModelAnalysisHermesStatus.FAILED,
+                error_message=result.error_message or f"Persistence failure Hermes status persistence failed: {exc}",
+            )
+        return replace(result, hermes_status=hermes_status)
+
     def _send_or_skip_provider_failed_hermes(
         self,
         *,
@@ -1461,6 +1509,52 @@ class ModelAnalysisService:
                 "model_key": result.model_key or "",
                 "model_name": result.details.get("model_name", "") if result.details else "",
                 "error_code": result.error_code or "provider_call_failed",
+                "not_final_trading_advice": True,
+                "no_auto_trading": True,
+            },
+            source=MODEL_ANALYSIS_EVENT_SOURCE,
+            trace_id=result.trace_id,
+        )
+        try:
+            send_result = self._alert_sender(alert_event, settings=self._settings, send_real_alert=True)
+        except Exception as exc:  # noqa: BLE001
+            return ModelAnalysisHermesStatus.FAILED, visible_body, str(exc), None
+        if getattr(send_result, "status", None) == AlertSendStatus.SUBMITTED_TO_HERMES:
+            return (
+                ModelAnalysisHermesStatus.SENT,
+                visible_body,
+                None,
+                getattr(send_result, "submitted_at_utc", None) or now_utc(),
+            )
+        return (
+            ModelAnalysisHermesStatus.FAILED,
+            visible_body,
+            getattr(send_result, "error_message", "") or getattr(send_result, "message", "") or "Hermes not sent",
+            None,
+        )
+
+    def _send_or_skip_persistence_failed_hermes(
+        self,
+        *,
+        result: ModelAnalysisServiceResult,
+    ) -> tuple[ModelAnalysisHermesStatus, str | None, str | None, datetime | None]:
+        if not self._settings.model_review_hermes_enabled:
+            return ModelAnalysisHermesStatus.DISABLED, None, None, None
+        visible_body = build_model_analysis_persistence_failed_visible_body(result)
+        alert_event = AlertEvent(
+            alert_type=AlertType.MODEL_ANALYSIS,
+            severity=AlertSeverity.WARNING,
+            title="BTC 大模型审查持久化失败",
+            summary="BTC 大模型审查持久化失败，未生成正式审查结果；这不是最终交易建议，未自动交易。",
+            details={
+                WECHAT_VISIBLE_BODY_DETAIL_KEY: visible_body,
+                "model_analysis_run_id": result.model_analysis_run_id,
+                "material_pack_id": result.material_pack_id,
+                "provider": result.details.get("provider", "") if result.details else "",
+                "model_key": result.model_key or "",
+                "model_name": result.details.get("model_name", "") if result.details else "",
+                "review_version_key": result.review_version_key or "",
+                "error_code": result.error_code or "model_analysis_persistence_failed",
                 "not_final_trading_advice": True,
                 "no_auto_trading": True,
             },

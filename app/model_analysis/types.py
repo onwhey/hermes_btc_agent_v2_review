@@ -307,6 +307,7 @@ def format_model_analysis_result_lines(result: ModelAnalysisServiceResult) -> li
         f"provider={result.details.get('provider', '') if result.details else ''}",
         f"model_key={result.model_key or ''}",
         f"model_name={result.details.get('model_name', '') if result.details else ''}",
+        f"model_version={result.details.get('model_version', '') if result.details else ''}",
         f"profile_hash={result.details.get('profile_hash', '') if result.details else ''}",
         f"model_role={result.model_role or ''}",
         f"analysis_mode={result.analysis_mode or ''}",
