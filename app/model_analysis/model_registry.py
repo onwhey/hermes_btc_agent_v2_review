@@ -42,9 +42,12 @@ MODEL_PROFILE_REQUIRED_FIELDS = MODEL_REVIEW_REQUIRED_FIELDS | frozenset(
     {
         "api_style",
         "profile_version",
+        "docs_checked_at",
+        "docs_source",
         "capabilities",
         "request_params",
         "response_mapping",
+        "ignored_params_in_thinking_mode",
         "unsupported_params",
         "cost_policy",
     }
@@ -58,7 +61,13 @@ PROVIDER_REQUIRED_FIELDS = frozenset(
         "timeout_seconds",
         "max_retries",
         "retry_backoff_seconds",
+        "provider_version",
+        "docs_checked_at",
+        "docs_source",
     }
+)
+THINKING_MODE_IGNORED_PARAMS = frozenset(
+    {"temperature", "top_p", "presence_penalty", "frequency_penalty"}
 )
 
 # Compatibility alias for the 19A tests and service code.
@@ -216,6 +225,9 @@ def _load_provider_config(*, base_dir: Path, provider: str) -> ModelProviderConf
         timeout_seconds=float(raw_config["timeout_seconds"]),
         max_retries=int(raw_config["max_retries"]),
         retry_backoff_seconds=float(raw_config["retry_backoff_seconds"]),
+        provider_version=str(raw_config["provider_version"]).strip(),
+        docs_checked_at=str(raw_config["docs_checked_at"]).strip(),
+        docs_source=tuple(_text_list_field(raw_config["docs_source"])),
         source_path=str(config_path),
     )
 
@@ -243,7 +255,12 @@ def _build_legacy_or_mock_profile(raw_config: dict[str, Any], *, source_path: Pa
         request_params=dict(raw_config.get("request_params") or {}),
         response_mapping=dict(raw_config.get("response_mapping") or {}),
         unsupported_params=tuple(str(item) for item in raw_config.get("unsupported_params", [])),
+        ignored_params_in_thinking_mode=tuple(
+            str(item) for item in raw_config.get("ignored_params_in_thinking_mode", [])
+        ),
         cost_policy=dict(raw_config.get("cost_policy") or {"track_token_usage": False}),
+        docs_checked_at=str(raw_config.get("docs_checked_at") or ""),
+        docs_source=tuple(_text_list_field(raw_config.get("docs_source", []))),
         source_path=str(source_path),
     )
     return profile.with_hash()
@@ -276,9 +293,15 @@ def _build_model_profile(raw_config: dict[str, Any], *, source_path: Path) -> Mo
             source_path=source_path,
         ),
         unsupported_params=tuple(str(item) for item in _list_field(raw_config["unsupported_params"])),
+        ignored_params_in_thinking_mode=tuple(
+            str(item) for item in _list_field(raw_config["ignored_params_in_thinking_mode"])
+        ),
         cost_policy=_mapping_field(raw_config["cost_policy"], field_name="cost_policy", source_path=source_path),
+        docs_checked_at=str(raw_config["docs_checked_at"]).strip(),
+        docs_source=tuple(_text_list_field(raw_config["docs_source"])),
         source_path=str(source_path),
     )
+    _validate_real_model_profile(profile, source_path=source_path)
     return profile.with_hash()
 
 
@@ -342,7 +365,12 @@ def _parse_mapping(
             result[key] = _parse_scalar(raw_value)
             continue
         if index >= len(entries) or entries[index][0] <= current_indent:
-            result[key] = [] if key in {"enabled_models", "manual_only_models", "unsupported_params"} else {}
+            result[key] = (
+                []
+                if key
+                in {"enabled_models", "manual_only_models", "unsupported_params", "ignored_params_in_thinking_mode", "docs_source"}
+                else {}
+            )
             continue
         child_indent, child_text, _child_line = entries[index]
         if child_text.startswith("- "):
@@ -420,6 +448,57 @@ def _mapping_field(value: Any, *, field_name: str, source_path: Path) -> dict[st
 
 def _list_field(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _text_list_field(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip() if value is not None else ""
+    return [text] if text else []
+
+
+def _validate_real_model_profile(profile: ModelProfile, *, source_path: Path) -> None:
+    """Validate that real-provider profiles do not rely on vendor defaults."""
+
+    if profile.provider == MODEL_REVIEW_PROVIDER_MOCK:
+        return
+    if not profile.docs_checked_at:
+        raise ModelRegistryError("model_profile_missing_docs_checked_at", f"{source_path.name} docs_checked_at is required.")
+    if not profile.docs_source:
+        raise ModelRegistryError("model_profile_missing_docs_source", f"{source_path.name} docs_source is required.")
+    if not profile.profile_version:
+        raise ModelRegistryError("model_profile_missing_profile_version", f"{source_path.name} profile_version is required.")
+    for field_name in ("max_tokens", "response_format"):
+        if field_name not in profile.request_params:
+            raise ModelRegistryError(
+                "model_profile_missing_request_param",
+                f"{source_path.name} request_params.{field_name} is required for real models.",
+            )
+    if bool(profile.capabilities.get("thinking")):
+        thinking = profile.request_params.get("extra_body", {})
+        if not isinstance(thinking, dict):
+            raise ModelRegistryError(
+                "model_profile_missing_thinking_mode",
+                f"{source_path.name} request_params.extra_body.thinking.type=enabled is required.",
+            )
+        thinking_body = thinking.get("thinking", {})
+        if not isinstance(thinking_body, dict) or thinking_body.get("type") != "enabled":
+            raise ModelRegistryError(
+                "model_profile_missing_thinking_mode",
+                f"{source_path.name} request_params.extra_body.thinking.type=enabled is required.",
+            )
+        if "reasoning_effort" not in profile.request_params:
+            raise ModelRegistryError(
+                "model_profile_missing_reasoning_effort",
+                f"{source_path.name} request_params.reasoning_effort is required for thinking mode.",
+            )
+        ignored = set(profile.ignored_params_in_thinking_mode)
+        missing_ignored = sorted(THINKING_MODE_IGNORED_PARAMS - ignored)
+        if missing_ignored:
+            raise ModelRegistryError(
+                "model_profile_missing_ignored_thinking_params",
+                f"{source_path.name} ignored_params_in_thinking_mode missing: {', '.join(missing_ignored)}",
+            )
 
 
 __all__ = [

@@ -140,6 +140,31 @@ class ModelAnalysisRepository:
         _flush_if_possible(db_session)
         return row
 
+    def update_model_analysis_run(
+        self,
+        db_session: Any,
+        run_row: Any,
+        *,
+        payload: ModelAnalysisRunPersistencePayload,
+    ) -> Any:
+        """Update one existing attempt row to its latest audit state.
+
+        This is used by real-provider calls that insert `running` before the
+        external model request and then move the same row to success, blocked,
+        or failed. It does not commit; the service owns transaction boundaries.
+        """
+
+        for field_name in _MODEL_ANALYSIS_RUN_UPDATE_FIELDS:
+            value = getattr(payload, field_name)
+            if field_name == "status":
+                value = payload.status.value
+            elif field_name in _MODEL_ANALYSIS_RUN_JSON_FIELDS:
+                value = _json_text(value)
+            setattr(run_row, field_name, value)
+        run_row.updated_at_utc = now_utc()
+        _flush_if_possible(db_session)
+        return run_row
+
     def create_model_provider_call_artifact(
         self,
         db_session: Any,
@@ -234,6 +259,82 @@ def create_default_model_analysis_repository() -> ModelAnalysisRepository:
 
 def _json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+_MODEL_ANALYSIS_RUN_UPDATE_FIELDS = (
+    "review_version_key",
+    "material_pack_id",
+    "aggregation_run_id",
+    "strategy_signal_run_id",
+    "snapshot_id",
+    "symbol",
+    "base_interval",
+    "higher_interval",
+    "review_schema_version",
+    "prompt_template_version",
+    "model_provider",
+    "model_name",
+    "model_version",
+    "review_mode",
+    "model_key",
+    "model_role",
+    "analysis_mode",
+    "chain_id",
+    "chain_step",
+    "parent_model_analysis_run_id",
+    "comparison_group_id",
+    "status",
+    "input_material_hash",
+    "input_summary_json",
+    "input_char_count",
+    "input_byte_count",
+    "output_char_count",
+    "output_byte_count",
+    "is_final_trading_advice",
+    "is_trading_signal",
+    "is_executable",
+    "auto_trading_allowed",
+    "human_review_required",
+    "trigger_source",
+    "created_by",
+    "trace_id",
+    "error_code",
+    "error_message",
+    "hermes_enabled",
+    "profile_version",
+    "profile_hash",
+    "api_style",
+    "provider_request_id",
+    "finish_reason",
+    "request_payload_hash",
+    "rendered_prompt_hash",
+    "prompt_template_hash",
+    "request_params_summary_json",
+    "capabilities_json",
+    "response_metadata_summary_json",
+    "provider_usage_json",
+    "raw_request_hash",
+    "raw_response_hash",
+    "raw_request_storage_ref",
+    "raw_response_storage_ref",
+    "raw_response_char_count",
+    "raw_response_byte_count",
+    "input_token_count",
+    "output_token_count",
+    "total_token_count",
+    "estimated_cost",
+    "cost_currency",
+)
+
+_MODEL_ANALYSIS_RUN_JSON_FIELDS = frozenset(
+    {
+        "input_summary_json",
+        "request_params_summary_json",
+        "capabilities_json",
+        "response_metadata_summary_json",
+        "provider_usage_json",
+    }
+)
 
 
 def _require_sqlalchemy() -> None:

@@ -299,7 +299,10 @@ def format_model_analysis_result_lines(result: ModelAnalysisServiceResult) -> li
         f"aggregation_run_id={result.aggregation_run_id or ''}",
         f"strategy_signal_run_id={result.strategy_signal_run_id or ''}",
         f"review_version_key={result.review_version_key or ''}",
+        f"provider={result.details.get('provider', '') if result.details else ''}",
         f"model_key={result.model_key or ''}",
+        f"model_name={result.details.get('model_name', '') if result.details else ''}",
+        f"profile_hash={result.details.get('profile_hash', '') if result.details else ''}",
         f"model_role={result.model_role or ''}",
         f"analysis_mode={result.analysis_mode or ''}",
         f"review_decision={result.review_decision or ''}",
@@ -317,9 +320,12 @@ def format_model_analysis_result_lines(result: ModelAnalysisServiceResult) -> li
         f"output_byte_count={result.output_byte_count}",
         f"raw_response_char_count={result.raw_response_char_count}",
         f"raw_response_byte_count={result.raw_response_byte_count}",
+        f"raw_request_storage_ref={result.details.get('raw_request_storage_ref', '') if result.details else ''}",
+        f"raw_response_storage_ref={result.details.get('raw_response_storage_ref', '') if result.details else ''}",
         f"estimated_cost={result.estimated_cost or ''}",
         f"cost_currency={result.cost_currency or ''}",
         f"message={result.message}",
+        f"error_code={result.error_code or ''}",
         f"error_message={result.error_message or ''}",
     ]
 

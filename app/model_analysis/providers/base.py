@@ -70,6 +70,10 @@ class RealModelReviewProvider(Protocol):
 class ProviderCallError(RuntimeError):
     """Raised when a provider request fails after adapter-level handling."""
 
+    def __init__(self, message: str, *, provider_response: ProviderResponse | None = None) -> None:
+        super().__init__(message)
+        self.provider_response = provider_response
+
 
 __all__ = [
     "ModelReviewProvider",

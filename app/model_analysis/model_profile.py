@@ -37,6 +37,9 @@ class ModelProviderConfig:
     timeout_seconds: float
     max_retries: int
     retry_backoff_seconds: float
+    provider_version: str = ""
+    docs_checked_at: str = ""
+    docs_source: tuple[str, ...] = field(default_factory=tuple)
     source_path: str = ""
 
 
@@ -64,7 +67,10 @@ class ModelProfile:
     request_params: Mapping[str, Any] = field(default_factory=dict)
     response_mapping: Mapping[str, Any] = field(default_factory=dict)
     unsupported_params: tuple[str, ...] = field(default_factory=tuple)
+    ignored_params_in_thinking_mode: tuple[str, ...] = field(default_factory=tuple)
     cost_policy: Mapping[str, Any] = field(default_factory=dict)
+    docs_checked_at: str = ""
+    docs_source: tuple[str, ...] = field(default_factory=tuple)
     source_path: str = ""
     profile_hash: str = ""
 
@@ -99,7 +105,10 @@ class ModelProfile:
             request_params=dict(self.request_params),
             response_mapping=dict(self.response_mapping),
             unsupported_params=tuple(self.unsupported_params),
+            ignored_params_in_thinking_mode=tuple(self.ignored_params_in_thinking_mode),
             cost_policy=dict(self.cost_policy),
+            docs_checked_at=self.docs_checked_at,
+            docs_source=tuple(self.docs_source),
             source_path=self.source_path,
             profile_hash=profile_hash,
         )
@@ -131,7 +140,10 @@ def _canonical_profile_payload(profile: ModelProfile) -> dict[str, Any]:
         "request_params": profile.request_params,
         "response_mapping": profile.response_mapping,
         "unsupported_params": list(profile.unsupported_params),
+        "ignored_params_in_thinking_mode": list(profile.ignored_params_in_thinking_mode),
         "cost_policy": profile.cost_policy,
+        "docs_checked_at": profile.docs_checked_at,
+        "docs_source": list(profile.docs_source),
     }
 
 

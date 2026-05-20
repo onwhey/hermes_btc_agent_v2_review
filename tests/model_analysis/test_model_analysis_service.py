@@ -76,6 +76,13 @@ class FakeModelAnalysisRepository:
         self.run_rows.append(row)
         return row
 
+    def update_model_analysis_run(self, _db_session: Any, run_row: Any, *, payload: Any) -> Any:
+        row_data = dict(payload.__dict__)
+        row_data["status"] = payload.status.value
+        for key, value in row_data.items():
+            setattr(run_row, key, value)
+        return run_row
+
     def create_model_analysis_result(self, _db_session: Any, *, payload: Any) -> Any:
         if self.create_result_error is not None:
             self.unique_conflict_raised = True

@@ -6,10 +6,13 @@ scripts/run_model_analysis.py::main
     -> app/model_analysis/repository.py::get_material_pack_by_id
     -> app/model_analysis/provider_resolution.py::resolve_provider_for_request
     -> app/model_analysis/prompt_builder.py::build_model_review_prompt
+    -> app/model_analysis/repository.py::create_model_analysis_run
+       (real confirm-write only, status=running, before external call)
     -> app/model_analysis/providers/mock.py::MockModelReviewProvider.review_material
        or app/model_analysis/providers/deepseek.py::DeepSeekReviewProvider.call_review_model
     -> app/model_analysis/schema_validator.py::validate_model_review_output
-    -> app/model_analysis/repository.py::create_model_analysis_run
+    -> app/model_analysis/repository.py::update_model_analysis_run
+       or app/model_analysis/repository.py::create_model_analysis_run
     -> app/model_analysis/repository.py::create_model_analysis_result
 
 This file belongs to `app/model_analysis`. It consumes only reviewable
@@ -29,7 +32,7 @@ import json
 import uuid
 from dataclasses import replace
 from datetime import datetime
-from typing import Any
+from typing import Any, Mapping
 
 from app.alerting.templates import WECHAT_VISIBLE_BODY_DETAIL_KEY
 from app.alerting.types import AlertEvent, AlertSendStatus, AlertSeverity, AlertType
@@ -39,6 +42,7 @@ from app.market_data.kline_constants import TRIGGER_SOURCE_CLI
 from app.model_analysis.artifact_store import ArtifactWriteResult, write_model_provider_artifact
 from app.model_analysis.cost_estimator import estimate_provider_call_cost
 from app.model_analysis.hermes_formatter import (
+    build_model_analysis_artifact_write_failed_visible_body,
     build_model_analysis_oversized_response_visible_body,
     build_model_analysis_visible_body,
 )
@@ -278,16 +282,62 @@ class ModelAnalysisService:
                 error_code=input_limit_error["error_code"],
             )
 
+        provider_resolution = self._enrich_provider_resolution_before_call(
+            provider_resolution=provider_resolution,
+            prompt=prompt,
+        )
+        provider_request = self._build_real_provider_request_if_needed(
+            provider_resolution=provider_resolution,
+            prompt=prompt,
+            material_pack_id=request.material_pack_id,
+            model_analysis_run_id=run_id,
+            trace_id=trace_id,
+        )
+        running_run_row = None
+        if provider_resolution.is_real_model and request.confirm_write and self._settings.model_review_enabled:
+            running_result = self._persist_running_real_model_run(
+                db_session,
+                request=request,
+                material_pack=material_pack,
+                prompt=prompt,
+                provider_metadata=provider_resolution,
+                model_analysis_run_id=run_id,
+                review_version_key=review_version_key,
+                trace_id=trace_id,
+            )
+            if isinstance(running_result, ModelAnalysisServiceResult):
+                return running_result
+            running_run_row = running_result
+
+        if provider_resolution.is_real_model and (
+            request.capture_raw_request or self._settings.model_review_capture_raw_request
+        ):
+            request_artifact = self._write_request_artifact_or_return_failure(
+                db_session=db_session,
+                request=request,
+                material_pack=material_pack,
+                prompt=prompt,
+                provider_request=provider_request,
+                provider_resolution=provider_resolution,
+                model_analysis_run_id=run_id,
+                review_version_key=review_version_key,
+                trace_id=trace_id,
+                running_run_row=running_run_row,
+            )
+            if isinstance(request_artifact, ModelAnalysisServiceResult):
+                return request_artifact
+
         provider_output = self._call_provider(
             db_session=db_session,
             request=request,
             prompt=prompt,
             provider_resolution=provider_resolution,
+            provider_request=provider_request,
             model_analysis_run_id=run_id,
             review_version_key=review_version_key,
-            material_pack_id=request.material_pack_id,
             material_pack=material_pack,
             trace_id=trace_id,
+            running_run_row=running_run_row,
         )
         if isinstance(provider_output, ModelAnalysisServiceResult):
             return provider_output
@@ -308,14 +358,21 @@ class ModelAnalysisService:
             raw_response_oversized is not None or request.capture_raw_response or self._settings.model_review_capture_raw_response
         ):
             artifact = self._write_response_artifact_if_allowed(
+                db_session=db_session,
+                request=request,
+                material_pack=material_pack,
+                prompt=prompt,
                 provider_output=provider_output,
                 provider_resolution=provider_resolution,
                 model_analysis_run_id=run_id,
+                review_version_key=review_version_key,
+                trace_id=trace_id,
                 capture_reason=(
                     "oversized_response"
                     if raw_response_oversized is not None
                     else "capture_raw_response"
                 ),
+                running_run_row=running_run_row,
             )
             if isinstance(artifact, ModelAnalysisServiceResult):
                 return artifact
@@ -350,10 +407,23 @@ class ModelAnalysisService:
                 error_code=output_limit_error["error_code"],
                 artifact_payloads=artifact_payloads,
                 send_oversized_alert=provider_resolution.is_real_model,
+                running_run_row=running_run_row,
             )
 
         schema_result = validate_model_review_output(provider_output.output)
         if not schema_result.is_valid:
+            blocked_error_code = schema_result.error_code or "schema_invalid"
+            blocked_error_message = schema_result.error_message
+            blocked_message = "Model review output schema is invalid."
+            send_oversized_alert = False
+            if raw_response_oversized is not None and provider_resolution.is_real_model:
+                blocked_error_code = "model_output_too_large"
+                blocked_error_message = (
+                    f"{raw_response_oversized['message']} Schema extraction failed: "
+                    f"{schema_result.error_message or blocked_error_code}"
+                )
+                blocked_message = "Model provider raw response is too large and no safe structured result was extracted."
+                send_oversized_alert = True
             return self._return_or_persist_blocked(
                 db_session,
                 request=request,
@@ -364,10 +434,12 @@ class ModelAnalysisService:
                 model_analysis_run_id=run_id,
                 review_version_key=review_version_key,
                 trace_id=trace_id,
-                message="Model review output schema is invalid.",
-                error_code=schema_result.error_code or "schema_invalid",
-                error_message=schema_result.error_message,
+                message=blocked_message,
+                error_code=blocked_error_code,
+                error_message=blocked_error_message,
                 artifact_payloads=artifact_payloads,
+                send_oversized_alert=send_oversized_alert,
+                running_run_row=running_run_row,
             )
 
         normalized = schema_result.normalized_output
@@ -385,6 +457,7 @@ class ModelAnalysisService:
                 message="Provider returned blocked review decision.",
                 error_code="provider_review_blocked",
                 artifact_payloads=artifact_payloads,
+                running_run_row=running_run_row,
             )
 
         human_review_required = bool(normalized["human_review_required"])
@@ -411,6 +484,8 @@ class ModelAnalysisService:
                 "not_final_trading_advice": True,
                 "profile_hash": provider_resolution.profile_hash,
                 "profile_version": provider_resolution.profile_version,
+                "raw_request_hash": provider_resolution.raw_request_hash,
+                "raw_request_storage_ref": provider_resolution.raw_request_storage_ref,
                 "raw_response_hash": getattr(provider_output, "raw_response_hash", None),
                 "raw_response_storage_ref": provider_resolution.raw_response_storage_ref,
                 "raw_response_oversized": raw_response_oversized is not None,
@@ -461,14 +536,38 @@ class ModelAnalysisService:
             material_pack=material_pack,
             normalized=normalized,
         )
+        persistence_phase = "run"
         try:
-            run_row = self._repository.create_model_analysis_run(db_session, payload=run_payload)
+            if running_run_row is not None:
+                run_row = self._repository.update_model_analysis_run(
+                    db_session,
+                    running_run_row,
+                    payload=run_payload,
+                )
+            else:
+                run_row = self._repository.create_model_analysis_run(db_session, payload=run_payload)
+            persistence_phase = "result"
             result_row = self._repository.create_model_analysis_result(db_session, payload=result_payload)
+            persistence_phase = "artifact"
             for artifact_payload in artifact_payloads:
                 self._repository.create_model_provider_call_artifact(db_session, payload=artifact_payload)
             _commit_if_possible(db_session)
         except Exception as exc:  # noqa: BLE001 - persistence errors become structured results.
             _rollback_if_possible(db_session)
+            if persistence_phase == "artifact" and provider_resolution.is_real_model:
+                return self._return_artifact_write_failed(
+                    db_session=db_session,
+                    request=request,
+                    material_pack=material_pack,
+                    prompt=prompt,
+                    provider_result=provider_output,
+                    provider_metadata=provider_resolution,
+                    model_analysis_run_id=run_id,
+                    review_version_key=review_version_key,
+                    trace_id=trace_id,
+                    error_message=f"provider artifact metadata persistence failed: {exc}",
+                    running_run_row=running_run_row,
+                )
             skipped_result = self._build_skipped_result_after_unique_conflict(
                 db_session,
                 request=request,
@@ -479,6 +578,22 @@ class ModelAnalysisService:
             )
             if skipped_result is not None:
                 return skipped_result
+            if running_run_row is not None:
+                return self._return_or_persist_failed(
+                    db_session=db_session,
+                    request=request,
+                    material_pack=material_pack,
+                    prompt=prompt,
+                    provider_result=provider_output,
+                    provider_metadata=provider_resolution,
+                    model_analysis_run_id=run_id,
+                    review_version_key=review_version_key,
+                    trace_id=trace_id,
+                    message="Model analysis persistence failed.",
+                    error_code="model_analysis_persistence_failed",
+                    error_message=str(exc),
+                    running_run_row=running_run_row,
+                )
             return build_failed_result(
                 request,
                 model_analysis_run_id=run_id,
@@ -500,14 +615,15 @@ class ModelAnalysisService:
         request: ModelAnalysisRequest,
         prompt: PromptBuildResult,
         provider_resolution: ProviderResolution,
+        provider_request: ProviderRequest | None,
         model_analysis_run_id: str,
         review_version_key: str,
-        material_pack_id: str,
         material_pack: Any | None,
         trace_id: str,
+        running_run_row: Any | None = None,
     ) -> ModelProviderResult | ModelAnalysisServiceResult:
         if provider_resolution.is_real_model:
-            if provider_resolution.profile is None or provider_resolution.provider_config is None:
+            if provider_request is None:
                 return build_blocked_result(
                     request,
                     model_analysis_run_id=model_analysis_run_id,
@@ -520,24 +636,74 @@ class ModelAnalysisService:
                     analysis_mode=provider_resolution.analysis_mode,
                 )
             try:
-                return provider_resolution.provider.call_review_model(
-                    ProviderRequest(
-                        prompt=prompt,
-                        profile=provider_resolution.profile,
-                        provider_config=provider_resolution.provider_config,
-                        api_key=provider_resolution.api_key,
-                        trace_id=trace_id,
-                        material_pack_id=material_pack_id,
-                        model_analysis_run_id=model_analysis_run_id,
-                    )
-                )
+                return provider_resolution.provider.call_review_model(provider_request)
             except ProviderCallError as exc:
+                provider_result = getattr(exc, "provider_response", None)
+                if provider_result is not None:
+                    provider_resolution = self._enrich_provider_resolution_after_call(
+                        provider_resolution=provider_resolution,
+                        provider_output=provider_result,
+                        prompt=prompt,
+                    )
+                    raw_response_oversized = build_limit_error(
+                        char_count=int(getattr(provider_result, "raw_response_char_count", 0) or 0),
+                        byte_count=int(getattr(provider_result, "raw_response_byte_count", 0) or 0),
+                        max_chars=self._settings.model_review_max_output_chars,
+                        max_bytes=self._settings.model_review_max_output_bytes,
+                        prefix="raw_response",
+                    )
+                    artifact_payloads: list[ModelProviderCallArtifactPersistencePayload] = []
+                    if raw_response_oversized is not None:
+                        artifact = self._write_response_artifact_if_allowed(
+                            db_session=db_session,
+                            request=request,
+                            material_pack=material_pack,
+                            prompt=prompt,
+                            provider_output=provider_result,
+                            provider_resolution=provider_resolution,
+                            model_analysis_run_id=model_analysis_run_id,
+                            review_version_key=review_version_key,
+                            trace_id=trace_id,
+                            capture_reason="oversized_response",
+                            running_run_row=running_run_row,
+                        )
+                        if isinstance(artifact, ModelAnalysisServiceResult):
+                            return artifact
+                        if artifact is not None:
+                            provider_resolution.raw_response_storage_ref = artifact.storage_ref
+                            artifact_payloads.append(
+                                build_artifact_payload(
+                                    artifact,
+                                    model_analysis_run_id=model_analysis_run_id,
+                                    provider_resolution=provider_resolution,
+                                )
+                            )
+                        return self._return_or_persist_blocked(
+                            db_session,
+                            request=request,
+                            material_pack=material_pack,
+                            prompt=prompt,
+                            provider_result=provider_result,
+                            provider_metadata=provider_resolution,
+                            model_analysis_run_id=model_analysis_run_id,
+                            review_version_key=review_version_key,
+                            trace_id=trace_id,
+                            message=(
+                                "Model provider raw response is too large and no safe structured result "
+                                "was extracted."
+                            ),
+                            error_code="model_output_too_large",
+                            error_message=f"{raw_response_oversized['message']} Provider parse failed: {exc}",
+                            artifact_payloads=artifact_payloads,
+                            send_oversized_alert=True,
+                            running_run_row=running_run_row,
+                        )
                 return self._return_or_persist_failed(
                     db_session=db_session,
                     request=request,
                     material_pack=material_pack,
                     prompt=prompt,
-                    provider_result=None,
+                    provider_result=provider_result,
                     provider_metadata=provider_resolution,
                     model_analysis_run_id=model_analysis_run_id,
                     review_version_key=review_version_key,
@@ -545,16 +711,219 @@ class ModelAnalysisService:
                     message="Real model provider call failed.",
                     error_code="provider_call_failed",
                     error_message=str(exc),
+                    running_run_row=running_run_row,
                 )
         return provider_resolution.provider.review_material(prompt)
 
-    def _enrich_provider_resolution_after_call(
+    def _build_real_provider_request_if_needed(
         self,
         *,
         provider_resolution: ProviderResolution,
-        provider_output: ModelProviderResult,
+        prompt: PromptBuildResult,
+        material_pack_id: str,
+        model_analysis_run_id: str,
+        trace_id: str,
+    ) -> ProviderRequest | None:
+        """Build a real-provider request object without making the external call."""
+
+        if not provider_resolution.is_real_model:
+            return None
+        if provider_resolution.profile is None or provider_resolution.provider_config is None:
+            return None
+        return ProviderRequest(
+            prompt=prompt,
+            profile=provider_resolution.profile,
+            provider_config=provider_resolution.provider_config,
+            api_key=provider_resolution.api_key,
+            trace_id=trace_id,
+            material_pack_id=material_pack_id,
+            model_analysis_run_id=model_analysis_run_id,
+        )
+
+    def _persist_running_real_model_run(
+        self,
+        db_session: Any,
+        *,
+        request: ModelAnalysisRequest,
+        material_pack: Any,
+        prompt: PromptBuildResult,
+        provider_metadata: ProviderResolution,
+        model_analysis_run_id: str,
+        review_version_key: str,
+        trace_id: str,
+    ) -> Any | ModelAnalysisServiceResult:
+        """Insert the `running` audit row before the high-cost real model call."""
+
+        payload = build_run_payload(
+            request=request,
+            material_pack=material_pack,
+            prompt=prompt,
+            provider_metadata=provider_metadata,
+            provider_result=None,
+            model_analysis_run_id=model_analysis_run_id,
+            review_version_key=review_version_key,
+            trace_id=trace_id,
+            status=ModelAnalysisStatus.RUNNING,
+            human_review_required=False,
+            error_code=None,
+            error_message=None,
+            settings=self._settings,
+        )
+        try:
+            run_row = self._repository.create_model_analysis_run(db_session, payload=payload)
+            _commit_if_possible(db_session)
+            return run_row
+        except Exception as exc:  # noqa: BLE001 - do not call a real model without an attempt row.
+            _rollback_if_possible(db_session)
+            return build_failed_result(
+                request,
+                model_analysis_run_id=model_analysis_run_id,
+                review_version_key=review_version_key,
+                trace_id=trace_id,
+                aggregation_run_id=optional_text(getattr(material_pack, "aggregation_run_id", None)),
+                strategy_signal_run_id=optional_text(getattr(material_pack, "strategy_signal_run_id", None)),
+                message="Real model running audit row persistence failed.",
+                error_code="model_analysis_running_run_persistence_failed",
+                error_message=str(exc),
+            )
+
+    def _write_request_artifact_or_return_failure(
+        self,
+        *,
+        db_session: Any,
+        request: ModelAnalysisRequest,
+        material_pack: Any,
+        prompt: PromptBuildResult,
+        provider_request: ProviderRequest | None,
+        provider_resolution: ProviderResolution,
+        model_analysis_run_id: str,
+        review_version_key: str,
+        trace_id: str,
+        running_run_row: Any | None,
+    ) -> ArtifactWriteResult | None | ModelAnalysisServiceResult:
+        """Capture the raw provider request as an isolated artifact when asked."""
+
+        raw_request_text = self._build_raw_request_artifact_text(
+            provider_request=provider_request,
+            provider_resolution=provider_resolution,
+            prompt=prompt,
+            material_pack_id=request.material_pack_id,
+            model_analysis_run_id=model_analysis_run_id,
+            trace_id=trace_id,
+        )
+        try:
+            artifact = write_model_provider_artifact(
+                settings=self._settings,
+                artifact_type="raw_request",
+                content=raw_request_text,
+                capture_reason=f"capture_raw_request:{model_analysis_run_id}:{provider_resolution.model_key}",
+            )
+        except Exception as exc:  # noqa: BLE001 - artifact failure must be visible and audited.
+            provider_resolution.raw_request_hash = sha256_text(raw_request_text)
+            return self._return_artifact_write_failed(
+                db_session=db_session,
+                request=request,
+                material_pack=material_pack,
+                prompt=prompt,
+                provider_result=None,
+                provider_metadata=provider_resolution,
+                model_analysis_run_id=model_analysis_run_id,
+                review_version_key=review_version_key,
+                trace_id=trace_id,
+                error_message=f"raw request artifact write failed: {exc}",
+                running_run_row=running_run_row,
+            )
+        provider_resolution.raw_request_hash = artifact.sha256_hash
+        provider_resolution.raw_request_storage_ref = artifact.storage_ref
+        if running_run_row is None or request.dry_run or not request.confirm_write or not self._settings.model_review_enabled:
+            return artifact
+        artifact_payload = build_artifact_payload(
+            artifact,
+            model_analysis_run_id=model_analysis_run_id,
+            provider_resolution=provider_resolution,
+        )
+        payload = build_run_payload(
+            request=request,
+            material_pack=material_pack,
+            prompt=prompt,
+            provider_metadata=provider_resolution,
+            provider_result=None,
+            model_analysis_run_id=model_analysis_run_id,
+            review_version_key=review_version_key,
+            trace_id=trace_id,
+            status=ModelAnalysisStatus.RUNNING,
+            human_review_required=False,
+            error_code=None,
+            error_message=None,
+            settings=self._settings,
+        )
+        try:
+            self._repository.update_model_analysis_run(db_session, running_run_row, payload=payload)
+            self._repository.create_model_provider_call_artifact(db_session, payload=artifact_payload)
+            _commit_if_possible(db_session)
+        except Exception as exc:  # noqa: BLE001
+            _rollback_if_possible(db_session)
+            return self._return_artifact_write_failed(
+                db_session=db_session,
+                request=request,
+                material_pack=material_pack,
+                prompt=prompt,
+                provider_result=None,
+                provider_metadata=provider_resolution,
+                model_analysis_run_id=model_analysis_run_id,
+                review_version_key=review_version_key,
+                trace_id=trace_id,
+                error_message=f"raw request artifact metadata persistence failed: {exc}",
+                running_run_row=running_run_row,
+            )
+        return artifact
+
+    def _build_raw_request_artifact_text(
+        self,
+        *,
+        provider_request: ProviderRequest | None,
+        provider_resolution: ProviderResolution,
+        prompt: PromptBuildResult,
+        material_pack_id: str,
+        model_analysis_run_id: str,
+        trace_id: str,
+    ) -> str:
+        """Render a secret-free raw request artifact for real-provider audits."""
+
+        payload: Mapping[str, Any]
+        build_payload = getattr(provider_resolution.provider, "build_request_payload", None)
+        if provider_request is not None and callable(build_payload):
+            payload = build_payload(provider_request)
+        else:
+            payload = {
+                "model": provider_resolution.model_name,
+                "request_params": dict(provider_resolution.request_params_summary_json),
+                "prompt": prompt.prompt_text,
+            }
+        safe_payload = _redact_sensitive_mapping(payload)
+        artifact = {
+            "artifact_kind": "raw_request",
+            "provider": provider_resolution.provider_name,
+            "model_key": provider_resolution.model_key,
+            "model_name": provider_resolution.model_name,
+            "model_version": provider_resolution.model_version,
+            "profile_hash": provider_resolution.profile_hash,
+            "material_pack_id": material_pack_id,
+            "model_analysis_run_id": model_analysis_run_id,
+            "trace_id": trace_id,
+            "capture_reason": "capture_raw_request",
+            "payload": safe_payload,
+        }
+        return json.dumps(artifact, ensure_ascii=False, sort_keys=True, default=str)
+
+    def _enrich_provider_resolution_before_call(
+        self,
+        *,
+        provider_resolution: ProviderResolution,
         prompt: PromptBuildResult,
     ) -> ProviderResolution:
+        """Record deterministic request metadata before any real provider call."""
+
         if provider_resolution.profile is not None:
             provider_resolution.request_params_summary_json = dict(provider_resolution.profile.request_params)
             provider_resolution.capabilities_json = dict(provider_resolution.profile.capabilities)
@@ -570,6 +939,21 @@ class ModelAnalysisService:
             )
             provider_resolution.request_payload_hash = sha256_text(request_basis)
             provider_resolution.raw_request_hash = provider_resolution.request_payload_hash
+        return provider_resolution
+
+    def _enrich_provider_resolution_after_call(
+        self,
+        *,
+        provider_resolution: ProviderResolution,
+        provider_output: ModelProviderResult,
+        prompt: PromptBuildResult,
+    ) -> ProviderResolution:
+        if provider_resolution.profile is not None:
+            if not provider_resolution.request_payload_hash:
+                self._enrich_provider_resolution_before_call(
+                    provider_resolution=provider_resolution,
+                    prompt=prompt,
+                )
             cost = estimate_provider_call_cost(
                 profile=provider_resolution.profile,
                 usage=getattr(provider_output, "usage", {}) or {},
@@ -585,20 +969,42 @@ class ModelAnalysisService:
     def _write_response_artifact_if_allowed(
         self,
         *,
+        db_session: Any,
+        request: ModelAnalysisRequest,
+        material_pack: Any,
+        prompt: PromptBuildResult,
         provider_output: ModelProviderResult,
         provider_resolution: ProviderResolution,
         model_analysis_run_id: str,
+        review_version_key: str,
+        trace_id: str,
         capture_reason: str,
-    ) -> ArtifactWriteResult | None:
+        running_run_row: Any | None = None,
+    ) -> ArtifactWriteResult | ModelAnalysisServiceResult | None:
         raw_response_text = str(getattr(provider_output, "raw_response_text", "") or "")
         if not raw_response_text:
             return None
-        return write_model_provider_artifact(
-            settings=self._settings,
-            artifact_type="raw_response" if capture_reason != "oversized_response" else "oversized_response",
-            content=raw_response_text,
-            capture_reason=f"{capture_reason}:{model_analysis_run_id}:{provider_resolution.model_key}",
-        )
+        try:
+            return write_model_provider_artifact(
+                settings=self._settings,
+                artifact_type="raw_response" if capture_reason != "oversized_response" else "oversized_response",
+                content=raw_response_text,
+                capture_reason=f"{capture_reason}:{model_analysis_run_id}:{provider_resolution.model_key}",
+            )
+        except Exception as exc:  # noqa: BLE001 - raw response isolation failure must be audited.
+            return self._return_artifact_write_failed(
+                db_session=db_session,
+                request=request,
+                material_pack=material_pack,
+                prompt=prompt,
+                provider_result=provider_output,
+                provider_metadata=provider_resolution,
+                model_analysis_run_id=model_analysis_run_id,
+                review_version_key=review_version_key,
+                trace_id=trace_id,
+                error_message=f"raw response artifact write failed: {exc}",
+                running_run_row=running_run_row,
+            )
 
     def _return_or_persist_blocked(
         self,
@@ -617,6 +1023,7 @@ class ModelAnalysisService:
         error_message: str | None = None,
         artifact_payloads: list[ModelProviderCallArtifactPersistencePayload] | None = None,
         send_oversized_alert: bool = False,
+        running_run_row: Any | None = None,
     ) -> ModelAnalysisServiceResult:
         result = build_blocked_result(
             request,
@@ -646,6 +1053,7 @@ class ModelAnalysisService:
                 "model_name": provider_metadata.model_name,
                 "profile_hash": provider_metadata.profile_hash,
                 "raw_response_storage_ref": provider_metadata.raw_response_storage_ref,
+                "raw_response_hash": getattr(provider_result, "raw_response_hash", None),
             },
         )
         if request.dry_run or not request.confirm_write or not self._settings.model_review_enabled:
@@ -665,13 +1073,32 @@ class ModelAnalysisService:
             error_message=error_message or message,
             settings=self._settings,
         )
+        persistence_phase = "run"
         try:
-            run_row = self._repository.create_model_analysis_run(db_session, payload=payload)
+            if running_run_row is not None:
+                run_row = self._repository.update_model_analysis_run(db_session, running_run_row, payload=payload)
+            else:
+                run_row = self._repository.create_model_analysis_run(db_session, payload=payload)
+            persistence_phase = "artifact"
             for artifact_payload in artifact_payloads or []:
                 self._repository.create_model_provider_call_artifact(db_session, payload=artifact_payload)
             _commit_if_possible(db_session)
         except Exception as exc:  # noqa: BLE001
             _rollback_if_possible(db_session)
+            if persistence_phase == "artifact" and provider_metadata.is_real_model:
+                return self._return_artifact_write_failed(
+                    db_session=db_session,
+                    request=request,
+                    material_pack=material_pack,
+                    prompt=prompt,
+                    provider_result=provider_result,
+                    provider_metadata=provider_metadata,
+                    model_analysis_run_id=model_analysis_run_id,
+                    review_version_key=review_version_key,
+                    trace_id=trace_id,
+                    error_message=f"provider artifact metadata persistence failed: {exc}",
+                    running_run_row=running_run_row,
+                )
             return build_failed_result(
                 request,
                 model_analysis_run_id=model_analysis_run_id,
@@ -701,6 +1128,7 @@ class ModelAnalysisService:
         message: str,
         error_code: str,
         error_message: str,
+        running_run_row: Any | None = None,
     ) -> ModelAnalysisServiceResult:
         result = build_failed_result(
             request,
@@ -712,6 +1140,19 @@ class ModelAnalysisService:
             message=message,
             error_code=error_code,
             error_message=error_message,
+        )
+        result = replace(
+            result,
+            raw_response_char_count=int(getattr(provider_result, "raw_response_char_count", 0) or 0),
+            raw_response_byte_count=int(getattr(provider_result, "raw_response_byte_count", 0) or 0),
+            details={
+                "provider": provider_metadata.provider_name,
+                "model_key": provider_metadata.model_key,
+                "model_name": provider_metadata.model_name,
+                "profile_hash": provider_metadata.profile_hash,
+                "raw_response_hash": getattr(provider_result, "raw_response_hash", None),
+                "raw_response_storage_ref": provider_metadata.raw_response_storage_ref,
+            },
         )
         if request.dry_run or not request.confirm_write or not self._settings.model_review_enabled:
             return result
@@ -731,12 +1172,105 @@ class ModelAnalysisService:
             settings=self._settings,
         )
         try:
-            self._repository.create_model_analysis_run(db_session, payload=payload)
+            if running_run_row is not None:
+                self._repository.update_model_analysis_run(db_session, running_run_row, payload=payload)
+            else:
+                self._repository.create_model_analysis_run(db_session, payload=payload)
             _commit_if_possible(db_session)
         except Exception:
             _rollback_if_possible(db_session)
             return result
         return result
+
+    def _return_artifact_write_failed(
+        self,
+        *,
+        db_session: Any,
+        request: ModelAnalysisRequest,
+        material_pack: Any | None,
+        prompt: PromptBuildResult | None,
+        provider_result: ModelProviderResult | None,
+        provider_metadata: ProviderResolution,
+        model_analysis_run_id: str,
+        review_version_key: str,
+        trace_id: str,
+        error_message: str,
+        running_run_row: Any | None = None,
+    ) -> ModelAnalysisServiceResult:
+        """Fail the attempt when raw request/response artifact isolation fails."""
+
+        result = build_failed_result(
+            request,
+            model_analysis_run_id=model_analysis_run_id,
+            review_version_key=review_version_key,
+            trace_id=trace_id,
+            aggregation_run_id=optional_text(getattr(material_pack, "aggregation_run_id", None)),
+            strategy_signal_run_id=optional_text(getattr(material_pack, "strategy_signal_run_id", None)),
+            message="Model provider artifact write failed.",
+            error_code="artifact_write_failed",
+            error_message=error_message,
+        )
+        result = replace(
+            result,
+            model_key=provider_metadata.model_key,
+            model_role=provider_metadata.model_role,
+            analysis_mode=provider_metadata.analysis_mode,
+            raw_response_char_count=int(getattr(provider_result, "raw_response_char_count", 0) or 0),
+            raw_response_byte_count=int(getattr(provider_result, "raw_response_byte_count", 0) or 0),
+            details={
+                "provider": provider_metadata.provider_name,
+                "model_key": provider_metadata.model_key,
+                "model_name": provider_metadata.model_name,
+                "profile_hash": provider_metadata.profile_hash,
+                "raw_response_hash": getattr(provider_result, "raw_response_hash", None),
+                "raw_response_storage_ref": provider_metadata.raw_response_storage_ref,
+                "raw_request_hash": provider_metadata.raw_request_hash,
+                "raw_request_storage_ref": provider_metadata.raw_request_storage_ref,
+                "formal_result_generated": False,
+            },
+        )
+        if request.dry_run or not request.confirm_write or not self._settings.model_review_enabled:
+            hermes_status, hermes_message, hermes_error, hermes_sent_at = self._send_or_skip_artifact_failed_hermes(
+                result=result
+            )
+            return replace(
+                result,
+                hermes_status=hermes_status,
+                details={
+                    **dict(result.details),
+                    "artifact_failed_hermes_message": hermes_message,
+                    "artifact_failed_hermes_error": hermes_error,
+                    "artifact_failed_hermes_sent_at_utc": hermes_sent_at.isoformat() if hermes_sent_at else None,
+                },
+            )
+        payload = build_run_payload(
+            request=request,
+            material_pack=material_pack,
+            prompt=prompt,
+            provider_metadata=provider_metadata,
+            provider_result=provider_result,
+            model_analysis_run_id=model_analysis_run_id,
+            review_version_key=review_version_key,
+            trace_id=trace_id,
+            status=ModelAnalysisStatus.FAILED,
+            human_review_required=False,
+            error_code="artifact_write_failed",
+            error_message=error_message,
+            settings=self._settings,
+        )
+        try:
+            if running_run_row is not None:
+                run_row = self._repository.update_model_analysis_run(db_session, running_run_row, payload=payload)
+            else:
+                run_row = self._repository.create_model_analysis_run(db_session, payload=payload)
+            _commit_if_possible(db_session)
+        except Exception as exc:  # noqa: BLE001
+            _rollback_if_possible(db_session)
+            return replace(
+                result,
+                error_message=f"{error_message}; artifact failure audit persistence failed: {exc}",
+            )
+        return self._record_artifact_failed_hermes_and_return(db_session, run_row=run_row, result=result)
 
     def _build_skipped_result_after_unique_conflict(
         self,
@@ -824,6 +1358,77 @@ class ModelAnalysisService:
                 error_message=result.error_message or f"Oversized response Hermes status persistence failed: {exc}",
             )
         return replace(result, hermes_status=hermes_status)
+
+    def _record_artifact_failed_hermes_and_return(
+        self,
+        db_session: Any,
+        *,
+        run_row: Any,
+        result: ModelAnalysisServiceResult,
+    ) -> ModelAnalysisServiceResult:
+        hermes_status, hermes_message, hermes_error, hermes_sent_at_utc = self._send_or_skip_artifact_failed_hermes(
+            result=result
+        )
+        try:
+            self._repository.record_hermes_result(
+                db_session,
+                run_row,
+                hermes_status=hermes_status.value,
+                hermes_message=hermes_message,
+                hermes_error=hermes_error,
+                hermes_sent_at_utc=hermes_sent_at_utc,
+            )
+            _commit_if_possible(db_session)
+        except Exception as exc:  # noqa: BLE001
+            _rollback_if_possible(db_session)
+            return replace(
+                result,
+                hermes_status=ModelAnalysisHermesStatus.FAILED,
+                error_message=result.error_message or f"Artifact failure Hermes status persistence failed: {exc}",
+            )
+        return replace(result, hermes_status=hermes_status)
+
+    def _send_or_skip_artifact_failed_hermes(
+        self,
+        *,
+        result: ModelAnalysisServiceResult,
+    ) -> tuple[ModelAnalysisHermesStatus, str | None, str | None, datetime | None]:
+        if not self._settings.model_review_hermes_on_oversized_output:
+            return ModelAnalysisHermesStatus.DISABLED, None, None, None
+        visible_body = build_model_analysis_artifact_write_failed_visible_body(result)
+        alert_event = AlertEvent(
+            alert_type=AlertType.MODEL_ANALYSIS,
+            severity=AlertSeverity.WARNING,
+            title="BTC 大模型审查 artifact 写入失败",
+            summary="BTC 大模型审查 artifact 写入失败，未生成正式审查结果；这不是最终交易建议，未自动交易。",
+            details={
+                WECHAT_VISIBLE_BODY_DETAIL_KEY: visible_body,
+                "model_analysis_run_id": result.model_analysis_run_id,
+                "material_pack_id": result.material_pack_id,
+                "error_code": result.error_code or "artifact_write_failed",
+                "not_final_trading_advice": True,
+                "no_auto_trading": True,
+            },
+            source=MODEL_ANALYSIS_EVENT_SOURCE,
+            trace_id=result.trace_id,
+        )
+        try:
+            send_result = self._alert_sender(alert_event, settings=self._settings, send_real_alert=True)
+        except Exception as exc:  # noqa: BLE001
+            return ModelAnalysisHermesStatus.FAILED, visible_body, str(exc), None
+        if getattr(send_result, "status", None) == AlertSendStatus.SUBMITTED_TO_HERMES:
+            return (
+                ModelAnalysisHermesStatus.SENT,
+                visible_body,
+                None,
+                getattr(send_result, "submitted_at_utc", None) or now_utc(),
+            )
+        return (
+            ModelAnalysisHermesStatus.FAILED,
+            visible_body,
+            getattr(send_result, "error_message", "") or getattr(send_result, "message", "") or "Hermes not sent",
+            None,
+        )
 
     def _send_or_skip_oversized_hermes(
         self,
@@ -983,6 +1588,24 @@ def _rollback_if_possible(db_session: Any) -> None:
     rollback = getattr(db_session, "rollback", None)
     if callable(rollback):
         rollback()
+
+
+def _redact_sensitive_mapping(value: Any) -> Any:
+    """Return a JSON-safe copy with secrets and auth headers removed."""
+
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            lowered = key_text.lower()
+            if lowered in {"authorization", "api_key", "api-key", "secret", "token", "cookie"}:
+                result[key_text] = "***REDACTED***"
+                continue
+            result[key_text] = _redact_sensitive_mapping(item)
+        return result
+    if isinstance(value, list):
+        return [_redact_sensitive_mapping(item) for item in value]
+    return value
 
 
 def _default_alert_sender(*args: Any, **kwargs: Any) -> Any:

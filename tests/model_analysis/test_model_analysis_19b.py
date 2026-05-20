@@ -7,9 +7,12 @@ from types import SimpleNamespace
 from typing import Any, Mapping
 
 from app.core.config import AppSettings
-from app.model_analysis.hermes_formatter import build_model_analysis_oversized_response_visible_body
+from app.model_analysis.hermes_formatter import (
+    build_model_analysis_artifact_write_failed_visible_body,
+    build_model_analysis_oversized_response_visible_body,
+)
 from app.model_analysis.model_registry import resolve_model_review_profile
-from app.model_analysis.providers.base import ProviderRequest, ProviderResponse
+from app.model_analysis.providers.base import ProviderCallError, ProviderRequest, ProviderResponse
 from app.model_analysis.service import ModelAnalysisService
 from app.model_analysis.types import ModelAnalysisRequest, ModelAnalysisStatus
 from tests.model_analysis.test_model_analysis_service import (
@@ -22,11 +25,14 @@ from tests.model_analysis.test_model_analysis_service import (
 
 
 class ArtifactRepository(FakeModelAnalysisRepository):
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, *, artifact_error: Exception | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.artifact_rows: list[Any] = []
+        self.artifact_error = artifact_error
 
     def create_model_provider_call_artifact(self, _db_session: Any, *, payload: Any) -> Any:
+        if self.artifact_error is not None:
+            raise self.artifact_error
         row = SimpleNamespace(**payload.__dict__)
         row.id = len(self.artifact_rows) + 1
         self.artifact_rows.append(row)
@@ -36,15 +42,30 @@ class ArtifactRepository(FakeModelAnalysisRepository):
 class FakeDeepSeekProvider:
     provider_name = "deepseek"
 
-    def __init__(self, *, output: Mapping[str, Any] | None = None, raw_padding: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        output: Mapping[str, Any] | None = None,
+        raw_padding: int = 0,
+        raise_error: Exception | None = None,
+        repo_to_assert_running: ArtifactRepository | None = None,
+    ) -> None:
         self.output = dict(output or _valid_provider_output())
         self.raw_padding = raw_padding
+        self.raise_error = raise_error
+        self.repo_to_assert_running = repo_to_assert_running
         self.calls = 0
         self.last_request: ProviderRequest | None = None
 
     def call_review_model(self, request: ProviderRequest) -> ProviderResponse:
         self.calls += 1
         self.last_request = request
+        if self.repo_to_assert_running is not None:
+            assert len(self.repo_to_assert_running.run_rows) == 1
+            assert self.repo_to_assert_running.run_rows[0].status == "running"
+            assert self.repo_to_assert_running.result_rows == []
+        if self.raise_error is not None:
+            raise self.raise_error
         content_text = json.dumps(self.output, ensure_ascii=False, sort_keys=True)
         raw_response = {
             "id": "ds-test-request",
@@ -84,6 +105,13 @@ class FakeDeepSeekProvider:
             reasoning_char_count=32,
             reasoning_byte_count=32,
         )
+
+    def build_request_payload(self, request: ProviderRequest) -> dict[str, Any]:
+        return {
+            "model": request.profile.model_name,
+            "messages": [{"role": "user", "content": request.prompt.prompt_text}],
+            **dict(request.profile.request_params),
+        }
 
 
 def test_real_model_gates_block_before_provider_call(tmp_path: Path) -> None:
@@ -168,6 +196,12 @@ def test_deepseek_profile_hash_and_disabled_flash_profile(tmp_path: Path) -> Non
     assert pro.profile.enabled is True
     assert pro.profile.provider == "deepseek"
     assert pro.profile.profile_hash
+    assert pro.profile.docs_checked_at == "2026-05-20T00:00:00Z"
+    assert pro.profile.docs_source
+    assert pro.profile.request_params["reasoning_effort"] == "high"
+    assert pro.profile.request_params["extra_body"]["thinking"]["type"] == "enabled"
+    assert "temperature" in pro.profile.ignored_params_in_thinking_mode
+    assert "top_p" in pro.profile.ignored_params_in_thinking_mode
     assert flash.profile.enabled is False
     assert flash.profile.model_name == "deepseek-v4-flash"
 
@@ -201,6 +235,122 @@ def test_enabled_deepseek_fake_flow_persists_profile_usage_cost_and_hashes(tmp_p
     assert run.raw_response_hash
     assert not hasattr(run, "raw_response_text")
     assert run.profile_hash in result.details["profile_hash"]
+
+
+def test_confirm_write_real_model_creates_running_run_before_provider_call(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    repo = ArtifactRepository(material_pack=material_pack())
+    provider = FakeDeepSeekProvider(repo_to_assert_running=repo)
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir, enabled=True),
+        repository=repo,
+        provider=provider,
+    ).run_model_analysis(FakeSession(), request=_real_request(confirm=True))
+
+    assert result.status == ModelAnalysisStatus.SUCCESS
+    assert provider.calls == 1
+    assert len(repo.run_rows) == 1
+    assert repo.run_rows[0].status == "success"
+    assert len(repo.result_rows) == 1
+
+
+def test_real_provider_exception_updates_running_run_failed_without_result(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    repo = ArtifactRepository(material_pack=material_pack())
+    provider = FakeDeepSeekProvider(raise_error=ProviderCallError("fake deepseek failure"))
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir, enabled=True),
+        repository=repo,
+        provider=provider,
+    ).run_model_analysis(FakeSession(), request=_real_request(confirm=True))
+
+    assert result.status == ModelAnalysisStatus.FAILED
+    assert result.error_code == "provider_call_failed"
+    assert repo.run_rows[0].status == "failed"
+    assert repo.result_rows == []
+
+
+def test_raw_response_artifact_write_failure_updates_run_and_alerts(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    repo = ArtifactRepository(material_pack=material_pack())
+    provider = FakeDeepSeekProvider(raw_padding=12_000)
+    alert = FakeAlertSender()
+
+    result = ModelAnalysisService(
+        settings=_real_settings(
+            config_dir,
+            enabled=True,
+            artifact_dir=tmp_path / "artifacts",
+            raw_artifact_max_bytes=200,
+        ),
+        repository=repo,
+        provider=provider,
+        alert_sender=alert,
+    ).run_model_analysis(FakeSession(), request=_real_request(confirm=True))
+
+    assert result.status == ModelAnalysisStatus.FAILED
+    assert result.error_code == "artifact_write_failed"
+    assert repo.run_rows[0].status == "failed"
+    assert repo.run_rows[0].error_code == "artifact_write_failed"
+    assert repo.run_rows[0].raw_response_hash
+    assert repo.run_rows[0].raw_response_char_count > 10_000
+    assert repo.result_rows == []
+    assert len(alert.calls) == 1
+    body = build_model_analysis_artifact_write_failed_visible_body(result)
+    assert "BTC 大模型审查 artifact 写入失败" in body
+    assert "模型返回未能完整隔离保存" in body
+    assert "不是最终交易建议" in body
+    assert "本阶段未自动交易" in body
+
+
+def test_oversized_raw_response_without_safe_schema_blocks_without_result(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    repo = ArtifactRepository(material_pack=material_pack())
+    provider = FakeDeepSeekProvider(output={"review_decision": "wait"}, raw_padding=12_000)
+    alert = FakeAlertSender()
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir, enabled=True, artifact_dir=tmp_path / "artifacts"),
+        repository=repo,
+        provider=provider,
+        alert_sender=alert,
+    ).run_model_analysis(FakeSession(), request=_real_request(confirm=True))
+
+    assert result.status == ModelAnalysisStatus.BLOCKED
+    assert result.error_code == "model_output_too_large"
+    assert repo.run_rows[0].status == "blocked"
+    assert repo.run_rows[0].error_code == "model_output_too_large"
+    assert repo.run_rows[0].raw_response_hash
+    assert repo.run_rows[0].raw_response_char_count > 10_000
+    assert repo.result_rows == []
+    assert not hasattr(repo.run_rows[0], "raw_response_text")
+    assert len(alert.calls) == 1
+
+
+def test_capture_raw_request_writes_secret_free_artifact(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    artifact_dir = tmp_path / "artifacts"
+    repo = ArtifactRepository(material_pack=material_pack())
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir, enabled=True, artifact_dir=artifact_dir),
+        repository=repo,
+        provider=FakeDeepSeekProvider(),
+    ).run_model_analysis(
+        FakeSession(),
+        request=_real_request(confirm=True, capture_raw_request=True),
+    )
+
+    assert result.status == ModelAnalysisStatus.SUCCESS
+    request_artifacts = [row for row in repo.artifact_rows if row.artifact_type == "raw_request"]
+    assert len(request_artifacts) == 1
+    assert repo.run_rows[0].raw_request_hash == request_artifacts[0].sha256_hash
+    assert repo.run_rows[0].raw_request_storage_ref == request_artifacts[0].storage_ref
+    artifact_text = (Path.cwd() / request_artifacts[0].storage_ref).read_text(encoding="utf-8")
+    assert "test-deepseek-key" not in artifact_text
+    assert "Authorization" not in artifact_text
 
 
 def test_review_version_key_includes_profile_hash_and_model_key(tmp_path: Path) -> None:
@@ -300,7 +450,7 @@ def test_real_provider_schema_forbidden_trading_fields_are_blocked(tmp_path: Pat
     assert provider.calls == 1
 
 
-def _real_request(*, confirm: bool = False) -> ModelAnalysisRequest:
+def _real_request(*, confirm: bool = False, capture_raw_request: bool = False) -> ModelAnalysisRequest:
     return ModelAnalysisRequest(
         material_pack_id="AMP-stage19",
         trigger_source="cli",
@@ -310,6 +460,7 @@ def _real_request(*, confirm: bool = False) -> ModelAnalysisRequest:
         use_real_model=True,
         model_key="deepseek_v4_pro_review",
         confirm_real_model_cost=True,
+        capture_raw_request=capture_raw_request,
     )
 
 
@@ -318,6 +469,7 @@ def _real_settings(
     *,
     enabled: bool = False,
     artifact_dir: Path | None = None,
+    raw_artifact_max_bytes: int = 1048576,
 ) -> AppSettings:
     return AppSettings(
         model_review_config_dir=str(config_dir),
@@ -325,6 +477,7 @@ def _real_settings(
         model_review_enabled=enabled,
         deepseek_api_key="test-deepseek-key",
         model_review_artifact_dir=str(artifact_dir or (config_dir / "artifacts")),
+        model_review_raw_artifact_max_bytes=raw_artifact_max_bytes,
     )
 
 
@@ -354,6 +507,10 @@ def _write_deepseek_config(
             [
                 "provider: deepseek",
                 f"enabled: {str(provider_enabled).lower()}",
+                "provider_version: deepseek_openai_compatible_v1",
+                'docs_checked_at: "2026-05-20T00:00:00Z"',
+                "docs_source:",
+                "  - DeepSeek official API documentation for stage 19B tests.",
                 "api_base_url: https://api.deepseek.com",
                 "api_key_env: DEEPSEEK_API_KEY",
                 "timeout_seconds: 60",
@@ -385,6 +542,9 @@ def _write_profile(base_dir: Path, model_key: str, *, enabled: bool, model_versi
                 f"model_name: {model_name}",
                 f"model_version: {model_version}",
                 "profile_version: profile_v1",
+                'docs_checked_at: "2026-05-20T00:00:00Z"',
+                "docs_source:",
+                "  - DeepSeek official API documentation for stage 19B tests.",
                 "model_role: mathematical_structure_review",
                 "analysis_mode: single",
                 "prompt_template_version: review_gate_v1",
@@ -398,12 +558,19 @@ def _write_profile(base_dir: Path, model_key: str, *, enabled: bool, model_versi
                 "  streaming: false",
                 "",
                 "request_params:",
-                "  temperature: 0.2",
-                "  top_p: 1",
                 "  max_tokens: 4096",
                 "  response_format:",
                 "    type: json_object",
                 "  reasoning_effort: high",
+                "  extra_body:",
+                "    thinking:",
+                "      type: enabled",
+                "",
+                "ignored_params_in_thinking_mode:",
+                "  - temperature",
+                "  - top_p",
+                "  - presence_penalty",
+                "  - frequency_penalty",
                 "",
                 "response_mapping:",
                 "  final_content_path: choices.0.message.content",

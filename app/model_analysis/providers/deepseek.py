@@ -18,7 +18,10 @@ import urllib.error
 import urllib.request
 from typing import Any, Mapping
 
-from app.model_analysis.provider_response_parser import parse_openai_style_response
+from app.model_analysis.provider_response_parser import (
+    build_provider_response_metadata_from_raw,
+    parse_openai_style_response,
+)
 from app.model_analysis.providers.base import ProviderCallError, ProviderRequest, ProviderResponse
 
 SUPPORTED_DEEPSEEK_API_STYLES = frozenset({"openai_chat_completion"})
@@ -89,8 +92,9 @@ class DeepSeekReviewProvider:
             "X-Trace-Id": request.trace_id,
         }
         attempts = max(request.provider_config.max_retries, 0) + 1
-        last_error: Exception | None = None
+        last_error: ProviderCallError | None = None
         for attempt in range(attempts):
+            raw_response: Mapping[str, Any] | None = None
             try:
                 raw_response = self._http_client.post_json(
                     url=url,
@@ -99,11 +103,18 @@ class DeepSeekReviewProvider:
                     timeout_seconds=request.provider_config.timeout_seconds,
                 )
                 return parse_openai_style_response(raw_response, profile=profile)
-            except Exception as exc:  # noqa: BLE001 - adapter converts to provider failure.
+            except ProviderCallError as exc:
                 last_error = exc
-                if attempt < attempts - 1:
-                    time.sleep(max(request.provider_config.retry_backoff_seconds, 0))
-        raise ProviderCallError(str(last_error or "DeepSeek request failed"))
+            except Exception as exc:  # noqa: BLE001 - adapter converts to provider failure.
+                provider_response = (
+                    build_provider_response_metadata_from_raw(raw_response, profile=profile)
+                    if raw_response is not None
+                    else None
+                )
+                last_error = ProviderCallError(str(exc), provider_response=provider_response)
+            if attempt < attempts - 1:
+                time.sleep(max(request.provider_config.retry_backoff_seconds, 0))
+        raise last_error or ProviderCallError("DeepSeek request failed")
 
     def build_request_payload(self, request: ProviderRequest) -> dict[str, Any]:
         """Build the OpenAI-compatible payload from profile request params."""
@@ -124,8 +135,19 @@ class DeepSeekReviewProvider:
                 {"role": "user", "content": request.prompt.prompt_text},
             ],
         }
+        thinking_enabled = (
+            isinstance(profile.request_params.get("extra_body"), Mapping)
+            and isinstance(profile.request_params["extra_body"].get("thinking"), Mapping)
+            and profile.request_params["extra_body"]["thinking"].get("type") == "enabled"
+        )
+        ignored_params = set(profile.ignored_params_in_thinking_mode) if thinking_enabled else set()
         for key, value in profile.request_params.items():
             if key in profile.unsupported_params:
+                continue
+            if key in ignored_params:
+                continue
+            if key == "extra_body" and isinstance(value, Mapping):
+                payload.update(dict(value))
                 continue
             payload[key] = value
         return payload

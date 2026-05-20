@@ -79,4 +79,37 @@ def build_model_analysis_oversized_response_visible_body(result: ModelAnalysisSe
     )
 
 
-__all__ = ["build_model_analysis_visible_body", "build_model_analysis_oversized_response_visible_body"]
+def build_model_analysis_artifact_write_failed_visible_body(result: ModelAnalysisServiceResult) -> str:
+    """Build Chinese Hermes body for provider artifact isolation failures."""
+
+    provider = result.details.get("provider", "deepseek") if result.details else "deepseek"
+    model_name = result.details.get("model_name", "unknown") if result.details else "unknown"
+    formal_result_text = "是" if result.model_analysis_result_id else "否"
+    return "\n".join(
+        [
+            "【标题】BTC 大模型审查 artifact 写入失败",
+            "",
+            "【处理说明】模型返回未能完整隔离保存，系统已停止写入正式审查结果。",
+            f"- 是否生成正式审查结果：{formal_result_text}",
+            f"- model_key：{result.model_key or 'unknown'}",
+            f"- provider：{provider}",
+            f"- model_name：{model_name}",
+            f"- material_pack_id：{result.material_pack_id}",
+            f"- model_analysis_run_id：{result.model_analysis_run_id}",
+            f"- trace_id：{result.trace_id}",
+            f"- error_code：{result.error_code or 'artifact_write_failed'}",
+            f"- error_message：{result.error_message or ''}",
+            "",
+            "这不是最终交易建议。",
+            "本阶段未自动交易。",
+            "本阶段未生成订单。",
+            "本阶段未给出仓位或杠杆。",
+        ]
+    )
+
+
+__all__ = [
+    "build_model_analysis_artifact_write_failed_visible_body",
+    "build_model_analysis_oversized_response_visible_body",
+    "build_model_analysis_visible_body",
+]

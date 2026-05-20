@@ -5,6 +5,10 @@ api_style: openai_chat_completion
 model_name: deepseek-v4-flash
 model_version: v4_flash
 profile_version: profile_v1
+docs_checked_at: "2026-05-20T00:00:00Z"
+docs_source:
+  - "DeepSeek official API docs: https://api-docs.deepseek.com/guides/thinking_mode"
+  - "DeepSeek official API docs: https://api-docs.deepseek.com/api/create-chat-completion"
 model_role: fast_low_cost_review
 analysis_mode: single
 prompt_template_version: review_gate_v1
@@ -18,12 +22,19 @@ capabilities:
   streaming: false
 
 request_params:
-  temperature: 0.2
-  top_p: 1
   max_tokens: 4096
   response_format:
     type: json_object
   reasoning_effort: high
+  extra_body:
+    thinking:
+      type: enabled
+
+ignored_params_in_thinking_mode:
+  - temperature
+  - top_p
+  - presence_penalty
+  - frequency_penalty
 
 response_mapping:
   final_content_path: choices.0.message.content
