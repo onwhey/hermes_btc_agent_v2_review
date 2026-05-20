@@ -40,6 +40,7 @@ class ModelProviderConfig:
     provider_version: str = ""
     docs_checked_at: str = ""
     docs_source: tuple[str, ...] = field(default_factory=tuple)
+    supported_model_names: tuple[str, ...] = field(default_factory=tuple)
     source_path: str = ""
 
 

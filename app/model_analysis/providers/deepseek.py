@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Mapping
 
-from app.model_analysis.model_profile import ModelProfile
+from app.model_analysis.model_profile import ModelProfile, ModelProviderConfig
 from app.model_analysis.provider_response_parser import (
     build_provider_response_metadata_from_raw,
     parse_openai_style_response,
@@ -26,22 +26,31 @@ from app.model_analysis.provider_response_parser import (
 from app.model_analysis.providers.base import ProviderCallError, ProviderRequest, ProviderResponse
 
 SUPPORTED_DEEPSEEK_API_STYLES = frozenset({"openai_chat_completion"})
-SUPPORTED_DEEPSEEK_MODEL_NAMES = frozenset({"deepseek-v4-pro", "deepseek-v4-flash"})
 DEEPSEEK_THINKING_IGNORED_PARAMS = frozenset(
     {"temperature", "top_p", "presence_penalty", "frequency_penalty"}
 )
 
 
-def validate_deepseek_model_profile(profile: ModelProfile) -> tuple[str, str] | None:
+def validate_deepseek_model_profile(
+    profile: ModelProfile,
+    *,
+    provider_config: ModelProviderConfig,
+) -> tuple[str, str] | None:
     """Validate DeepSeek-only profile rules without constraining other providers.
 
-    Parameters: one loaded model profile.
+    Parameters: one loaded model profile and its provider YAML config.
     Return value: `(error_code, message)` when invalid, otherwise `None`.
     Failure scenarios: the caller turns the returned error into registry
     blocked status. External services/MySQL/Redis/Hermes/trading: none.
     """
 
-    if profile.model_name not in SUPPORTED_DEEPSEEK_MODEL_NAMES:
+    supported_model_names = set(provider_config.supported_model_names)
+    if not supported_model_names:
+        return (
+            "deepseek_provider_supported_models_missing",
+            "provider config supported_model_names is required for DeepSeek profiles.",
+        )
+    if profile.model_name not in supported_model_names:
         return (
             "deepseek_profile_model_name_unsupported",
             f"model_name is not a supported DeepSeek API model string: {profile.model_name}",
@@ -209,7 +218,6 @@ class DeepSeekReviewProvider:
 __all__ = [
     "DeepSeekReviewProvider",
     "SUPPORTED_DEEPSEEK_API_STYLES",
-    "SUPPORTED_DEEPSEEK_MODEL_NAMES",
     "UrllibJsonHttpClient",
     "validate_deepseek_model_profile",
 ]

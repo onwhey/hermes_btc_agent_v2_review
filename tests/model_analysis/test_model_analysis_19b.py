@@ -197,6 +197,8 @@ def test_deepseek_profile_hash_and_disabled_flash_profile(tmp_path: Path) -> Non
 
     assert pro.profile.enabled is True
     assert pro.profile.provider == "deepseek"
+    assert pro.provider_config is not None
+    assert "deepseek-v4-pro" in pro.provider_config.supported_model_names
     assert pro.profile.profile_hash
     assert pro.profile.docs_checked_at == "2026-05-20T00:00:00Z"
     assert pro.profile.docs_source
@@ -206,6 +208,74 @@ def test_deepseek_profile_hash_and_disabled_flash_profile(tmp_path: Path) -> Non
     assert "top_p" in pro.profile.ignored_params_in_thinking_mode
     assert flash.profile.enabled is False
     assert flash.profile.model_name == "deepseek-v4-flash"
+
+
+def test_deepseek_supported_model_names_missing_blocks_profile(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config", include_supported_model_names=False)
+
+    try:
+        resolve_model_review_profile(str(config_dir), model_key="deepseek_v4_pro_review")
+    except ModelRegistryError as exc:
+        assert exc.error_code == "deepseek_provider_supported_models_missing"
+    else:  # pragma: no cover - explicit failure keeps the regression visible.
+        raise AssertionError("DeepSeek provider without supported_model_names must be rejected")
+
+
+def test_deepseek_supported_model_names_empty_blocks_profile(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config", provider_supported_model_names=[])
+
+    try:
+        resolve_model_review_profile(str(config_dir), model_key="deepseek_v4_pro_review")
+    except ModelRegistryError as exc:
+        assert exc.error_code == "deepseek_provider_supported_models_missing"
+    else:  # pragma: no cover - explicit failure keeps the regression visible.
+        raise AssertionError("DeepSeek provider with empty supported_model_names must be rejected")
+
+
+def test_deepseek_profile_model_name_outside_provider_yaml_blocks(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(
+        tmp_path / "config",
+        provider_supported_model_names=["deepseek-v4-flash"],
+    )
+
+    try:
+        resolve_model_review_profile(str(config_dir), model_key="deepseek_v4_pro_review")
+    except ModelRegistryError as exc:
+        assert exc.error_code == "deepseek_profile_model_name_unsupported"
+        assert "deepseek-v4-pro" in exc.message
+    else:  # pragma: no cover - explicit failure keeps the regression visible.
+        raise AssertionError("DeepSeek profile model_name outside provider YAML must be rejected")
+
+
+def test_deepseek_provider_yaml_can_allow_new_model_without_python_whitelist(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(
+        tmp_path / "config",
+        provider_supported_model_names=["deepseek-v4-pro", "deepseek-v4-new"],
+        extra_model_key="deepseek_new_review",
+        extra_model_version="v4_new",
+        extra_model_name="deepseek-v4-new",
+    )
+
+    selection = resolve_model_review_profile(str(config_dir), model_key="deepseek_new_review")
+    provider = DeepSeekReviewProvider(http_client=object())
+    prompt = SimpleNamespace(prompt_text="compact prompt")
+
+    payload = provider.build_request_payload(
+        ProviderRequest(
+            prompt=prompt,  # type: ignore[arg-type]
+            profile=selection.profile,
+            provider_config=selection.provider_config,
+            api_key="secret-test-key",
+            trace_id="trace-new-model-name",
+            material_pack_id="AMP-stage19",
+            model_analysis_run_id="MAR-stage19",
+        )
+    )
+
+    assert selection.profile.model_key == "deepseek_new_review"
+    assert selection.profile.model_name == "deepseek-v4-new"
+    assert payload["model"] == "deepseek-v4-new"
+    assert payload["model"] != selection.profile.model_key
 
 
 def test_generic_registry_does_not_apply_deepseek_thinking_rules_to_other_providers(tmp_path: Path) -> None:
@@ -625,6 +695,9 @@ def _write_deepseek_config(
     include_flash: bool = False,
     extra_model_key: str | None = None,
     extra_model_version: str = "v4_other",
+    extra_model_name: str | None = None,
+    include_supported_model_names: bool = True,
+    provider_supported_model_names: list[str] | None = None,
 ) -> Path:
     (base_dir / "providers").mkdir(parents=True, exist_ok=True)
     (base_dir / "profiles" / "deepseek").mkdir(parents=True, exist_ok=True)
@@ -637,29 +710,43 @@ def _write_deepseek_config(
         "\n".join(["enabled_models:", *(f"  - {model}" for model in models), "", "default_mode: single"]),
         encoding="utf-8",
     )
-    (base_dir / "providers" / "deepseek.yaml").write_text(
-        "\n".join(
-            [
-                "provider: deepseek",
-                f"enabled: {str(provider_enabled).lower()}",
-                "provider_version: deepseek_openai_compatible_v1",
-                'docs_checked_at: "2026-05-20T00:00:00Z"',
-                "docs_source:",
-                "  - DeepSeek official API documentation for stage 19B tests.",
-                "api_base_url: https://api.deepseek.com",
-                "api_key_env: DEEPSEEK_API_KEY",
-                "timeout_seconds: 60",
-                "max_retries: 0",
-                "retry_backoff_seconds: 0",
-            ]
-        ),
-        encoding="utf-8",
+    provider_lines = [
+        "provider: deepseek",
+        f"enabled: {str(provider_enabled).lower()}",
+        "provider_version: deepseek_openai_compatible_v1",
+        'docs_checked_at: "2026-05-20T00:00:00Z"',
+        "docs_source:",
+        "  - DeepSeek official API documentation for stage 19B tests.",
+    ]
+    if include_supported_model_names:
+        supported_model_names = (
+            ["deepseek-v4-pro", "deepseek-v4-flash"]
+            if provider_supported_model_names is None
+            else list(provider_supported_model_names)
+        )
+        provider_lines.append("supported_model_names:")
+        provider_lines.extend(f"  - {model_name}" for model_name in supported_model_names)
+    provider_lines.extend(
+        [
+            "api_base_url: https://api.deepseek.com",
+            "api_key_env: DEEPSEEK_API_KEY",
+            "timeout_seconds: 60",
+            "max_retries: 0",
+            "retry_backoff_seconds: 0",
+        ]
     )
+    (base_dir / "providers" / "deepseek.yaml").write_text("\n".join(provider_lines), encoding="utf-8")
     _write_profile(base_dir, "deepseek_v4_pro_review", enabled=profile_enabled, model_version="v4_pro")
     if include_flash:
         _write_profile(base_dir, "deepseek_v4_flash_review", enabled=False, model_version="v4_flash")
     if extra_model_key:
-        _write_profile(base_dir, extra_model_key, enabled=True, model_version=extra_model_version)
+        _write_profile(
+            base_dir,
+            extra_model_key,
+            enabled=True,
+            model_version=extra_model_version,
+            model_name=extra_model_name,
+        )
     return base_dir
 
 
@@ -732,10 +819,17 @@ def _write_future_provider_config(base_dir: Path) -> Path:
     return base_dir
 
 
-def _write_profile(base_dir: Path, model_key: str, *, enabled: bool, model_version: str) -> None:
-    model_name = "deepseek-v4-flash" if "flash" in model_key else "deepseek-v4-pro"
-    if model_key == "deepseek_other_review":
-        model_name = "deepseek-v4-pro"
+def _write_profile(
+    base_dir: Path,
+    model_key: str,
+    *,
+    enabled: bool,
+    model_version: str,
+    model_name: str | None = None,
+) -> None:
+    resolved_model_name = model_name or ("deepseek-v4-flash" if "flash" in model_key else "deepseek-v4-pro")
+    if model_key == "deepseek_other_review" and model_name is None:
+        resolved_model_name = "deepseek-v4-pro"
     (base_dir / "profiles" / "deepseek" / f"{model_key}.yaml").write_text(
         "\n".join(
             [
@@ -743,7 +837,7 @@ def _write_profile(base_dir: Path, model_key: str, *, enabled: bool, model_versi
                 "provider: deepseek",
                 f"enabled: {str(enabled).lower()}",
                 "api_style: openai_chat_completion",
-                f"model_name: {model_name}",
+                f"model_name: {resolved_model_name}",
                 f"model_version: {model_version}",
                 "profile_version: profile_v1",
                 'docs_checked_at: "2026-05-20T00:00:00Z"',

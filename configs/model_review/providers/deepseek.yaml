@@ -5,6 +5,9 @@ docs_checked_at: "2026-05-20T00:00:00Z"
 docs_source:
   - "DeepSeek official API docs: https://api-docs.deepseek.com/api/create-chat-completion"
   - "DeepSeek official API docs: https://api-docs.deepseek.com/guides/thinking_mode"
+supported_model_names:
+  - deepseek-v4-pro
+  - deepseek-v4-flash
 api_base_url: https://api.deepseek.com
 api_key_env: DEEPSEEK_API_KEY
 timeout_seconds: 60

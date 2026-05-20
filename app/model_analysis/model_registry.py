@@ -160,6 +160,7 @@ def _load_selection_for_model_key(*, base_dir: Path, model_key: str) -> ModelReg
     provider_config = None
     if profile.provider != MODEL_REVIEW_PROVIDER_MOCK:
         provider_config = _load_provider_config(base_dir=base_dir, provider=profile.provider)
+        _validate_provider_specific_model_profile(profile, provider_config=provider_config)
     return ModelRegistrySelection(profile=profile, provider_config=provider_config, registry_enabled=True)
 
 
@@ -224,6 +225,7 @@ def _load_provider_config(*, base_dir: Path, provider: str) -> ModelProviderConf
         provider_version=str(raw_config["provider_version"]).strip(),
         docs_checked_at=str(raw_config["docs_checked_at"]).strip(),
         docs_source=tuple(_text_list_field(raw_config["docs_source"])),
+        supported_model_names=tuple(_text_list_field(raw_config.get("supported_model_names", []))),
         source_path=str(config_path),
     )
 
@@ -364,7 +366,14 @@ def _parse_mapping(
             result[key] = (
                 []
                 if key
-                in {"enabled_models", "manual_only_models", "unsupported_params", "ignored_params_in_thinking_mode", "docs_source"}
+                in {
+                    "enabled_models",
+                    "manual_only_models",
+                    "unsupported_params",
+                    "ignored_params_in_thinking_mode",
+                    "docs_source",
+                    "supported_model_names",
+                }
                 else {}
             )
             continue
@@ -469,13 +478,22 @@ def _validate_real_model_profile(profile: ModelProfile, *, source_path: Path) ->
         raise ModelRegistryError("model_profile_missing_docs_source", f"{source_path.name} docs_source is required.")
     if not profile.profile_version:
         raise ModelRegistryError("model_profile_missing_profile_version", f"{source_path.name} profile_version is required.")
+
+
+def _validate_provider_specific_model_profile(
+    profile: ModelProfile,
+    *,
+    provider_config: ModelProviderConfig,
+) -> None:
+    """Run provider-specific profile checks after provider YAML is loaded."""
+
     if profile.provider == MODEL_REVIEW_PROVIDER_DEEPSEEK:
         from app.model_analysis.providers.deepseek import validate_deepseek_model_profile
 
-        validation_error = validate_deepseek_model_profile(profile)
+        validation_error = validate_deepseek_model_profile(profile, provider_config=provider_config)
         if validation_error is not None:
             error_code, error_message = validation_error
-            raise ModelRegistryError(error_code, f"{source_path.name} {error_message}")
+            raise ModelRegistryError(error_code, f"{Path(profile.source_path).name} {error_message}")
 
 
 __all__ = [
