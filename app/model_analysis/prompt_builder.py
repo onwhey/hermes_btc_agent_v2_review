@@ -19,6 +19,7 @@ import json
 from typing import Any, Mapping
 
 from app.core.config import AppSettings
+from app.model_analysis.schema_validator import ENUM_ALLOWED_VALUES
 from app.model_analysis.types import PromptBuildResult
 
 STRATEGY_SUMMARY_KEYS = (
@@ -34,6 +35,13 @@ STRATEGY_SUMMARY_KEYS = (
     "reason_codes",
     "missing_evidence",
 )
+
+PROMPT_STRATEGY_KEY_ALIASES = {
+    "strategy_name": "name",
+    "strategy_version": "version",
+    "strategy_role": "role",
+    "analysis_hypothesis_direction": "direction",
+}
 
 REVIEW_OUTPUT_JSON_SKELETON: dict[str, Any] = {
     "review_decision": "wait",
@@ -56,8 +64,21 @@ REVIEW_OUTPUT_JSON_SKELETON: dict[str, Any] = {
     "summary_text": "",
 }
 
+REVIEW_OUTPUT_ALLOWED_ENUM_VALUES: dict[str, list[str]] = {
+    "review_decision": [
+        "accept_for_further_review",
+        "reject_candidate",
+        "require_more_evidence",
+        "wait",
+        "human_review_required",
+        "blocked",
+    ],
+    **{field_name: sorted(values) for field_name, values in ENUM_ALLOWED_VALUES.items()},
+}
+
 REVIEW_OUTPUT_RULES = (
     "JSON object only; no markdown/code fence/prose; include all skeleton keys.",
+    "Enum fields must use allowed_enum_values exactly.",
     "No trading/action fields: entry_price, stop_loss, take_profit, position_size, leverage, order_type, final_advice, buy_now, sell_now.",
     "not_trading_advice=true; human_review_required=boolean; final/signal/executable/auto flags=false.",
     "If evidence is insufficient, choose require_more_evidence or human_review_required.",
@@ -124,8 +145,9 @@ def build_model_review_prompt(material_pack: Any, *, settings: AppSettings) -> P
     }
     prompt_input = {
         "instructions": REVIEW_INSTRUCTIONS,
+        "allowed_enum_values": REVIEW_OUTPUT_ALLOWED_ENUM_VALUES,
         "required_output_json_skeleton": REVIEW_OUTPUT_JSON_SKELETON,
-        "input_summary": input_summary,
+        "input_summary": _prompt_input_summary(input_summary),
     }
     prompt_text = json.dumps(
         prompt_input,
@@ -224,6 +246,26 @@ def _compact_strategy_item(value: Mapping[str, Any], *, max_reason_items: int) -
     return compact
 
 
+def _prompt_input_summary(input_summary: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a prompt-only summary that keeps persisted input_summary unchanged."""
+
+    compact = dict(input_summary)
+    strategy_summaries = input_summary.get("strategy_summaries", [])
+    if isinstance(strategy_summaries, list):
+        compact["strategy_summaries"] = [
+            _prompt_strategy_item(item) if isinstance(item, Mapping) else item
+            for item in strategy_summaries
+        ]
+    return compact
+
+
+def _prompt_strategy_item(item: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        PROMPT_STRATEGY_KEY_ALIASES.get(str(key), str(key)): value
+        for key, value in item.items()
+    }
+
+
 def _high_level_summary(value: Mapping[str, Any]) -> dict[str, Any]:
     skipped = {"strategy_summaries", "strategies", "strategy_results"}
     return {str(key): raw_value for key, raw_value in value.items() if str(key) not in skipped}
@@ -269,6 +311,7 @@ def _compact_scalar(value: Any, *, max_chars: int = 300) -> Any:
 
 __all__ = [
     "REVIEW_OUTPUT_JSON_SKELETON",
+    "REVIEW_OUTPUT_ALLOWED_ENUM_VALUES",
     "REVIEW_OUTPUT_RULES",
     "REVIEW_PROVIDER_SYSTEM_MESSAGE",
     "build_model_review_prompt",

@@ -125,6 +125,7 @@ class SchemaValidationResult:
     error_code: str | None = None
     error_message: str | None = None
     missing_fields: tuple[str, ...] = field(default_factory=tuple)
+    enum_normalizations: tuple[Mapping[str, str], ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -328,6 +329,7 @@ def format_model_analysis_result_lines(result: ModelAnalysisServiceResult) -> li
         f"raw_response_storage_ref={result.details.get('raw_response_storage_ref', '') if result.details else ''}",
         f"schema_error_code={details.get('schema_error_code', '')}",
         f"schema_missing_fields={_format_cli_detail(details.get('schema_missing_fields', ''))}",
+        f"schema_enum_normalizations={_format_cli_detail(details.get('schema_enum_normalizations', ''))}",
         f"sanitized_content_preview={_bounded_cli_preview(str(details.get('sanitized_content_preview', '') or ''))}",
         f"parsed_json_type={details.get('parsed_json_type', '')}",
         f"final_content_char_count={details.get('final_content_char_count', '')}",

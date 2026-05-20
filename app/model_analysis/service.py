@@ -63,7 +63,7 @@ from app.model_analysis.payloads import (
 )
 from app.model_analysis.prompt_builder import build_model_review_prompt
 from app.model_analysis.provider_resolution import ProviderResolution, resolve_provider_for_request
-from app.model_analysis.providers.base import ProviderCallError, ProviderRequest
+from app.model_analysis.providers.base import ProviderCallError, ProviderRequest, ProviderResponse
 from app.model_analysis.repository import (
     ModelAnalysisRepository,
     create_default_model_analysis_repository,
@@ -450,6 +450,10 @@ class ModelAnalysisService:
                 extra_details=schema_details,
             )
 
+        provider_output = _attach_schema_validation_metadata(
+            provider_result=provider_output,
+            schema_result=schema_result,
+        )
         normalized = schema_result.normalized_output
         if normalized.get("review_decision") == ReviewDecision.BLOCKED.value:
             return self._return_or_persist_blocked(
@@ -502,6 +506,8 @@ class ModelAnalysisService:
                 "total_token_count": provider_resolution.total_token_count,
                 "estimated_cost": provider_resolution.estimated_cost,
                 "cost_currency": provider_resolution.cost_currency,
+                "schema_enum_normalizations": list(schema_result.enum_normalizations),
+                "schema_normalization_warning": _schema_normalization_warning(schema_result),
             },
         )
         if request.dry_run:
@@ -1733,6 +1739,31 @@ def _build_schema_invalid_details(
         "output_token_count": provider_metadata.output_token_count,
         "total_token_count": provider_metadata.total_token_count,
     }
+
+
+def _attach_schema_validation_metadata(
+    *,
+    provider_result: ModelProviderResult,
+    schema_result: SchemaValidationResult,
+) -> ModelProviderResult:
+    """Attach schema normalization metadata to real provider responses for audit."""
+
+    if not schema_result.enum_normalizations or not isinstance(provider_result, ProviderResponse):
+        return provider_result
+    response_metadata = dict(provider_result.response_metadata or {})
+    response_metadata["schema_enum_normalizations"] = [dict(item) for item in schema_result.enum_normalizations]
+    response_metadata["schema_normalization_warning"] = _schema_normalization_warning(schema_result)
+    return replace(provider_result, response_metadata=response_metadata)
+
+
+def _schema_normalization_warning(schema_result: SchemaValidationResult) -> str:
+    if not schema_result.enum_normalizations:
+        return ""
+    parts = [
+        f"{item.get('field', '')}:{item.get('original_value', '')}->{item.get('normalized_value', '')}"
+        for item in schema_result.enum_normalizations
+    ]
+    return "controlled enum normalization applied: " + ", ".join(parts)
 
 
 def _safe_schema_preview_from_output(output: Mapping[str, Any]) -> str:

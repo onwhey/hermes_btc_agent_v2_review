@@ -13,6 +13,7 @@ from app.model_analysis.hermes_formatter import (
     build_model_analysis_provider_call_failed_visible_body,
 )
 from app.model_analysis.model_registry import ModelRegistryError, resolve_model_review_profile
+from app.model_analysis.prompt_builder import build_model_review_prompt
 from app.model_analysis.providers.deepseek import DeepSeekReviewProvider
 from app.model_analysis.providers.base import ProviderCallError, ProviderRequest, ProviderResponse
 from app.model_analysis.service import ModelAnalysisService
@@ -387,6 +388,80 @@ def test_real_deepseek_markdown_code_fence_json_is_stripped(tmp_path: Path) -> N
 
     assert result.status == ModelAnalysisStatus.SUCCESS
     assert result.review_decision == "wait"
+
+
+def test_real_deepseek_evidence_quality_low_is_controlled_normalized(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    output = _valid_provider_output()
+    output["evidence_quality"] = "low"
+    client = FakeDeepSeekHttpClient(_deepseek_raw_response(json.dumps(output, ensure_ascii=False)))
+    repo = ArtifactRepository(material_pack=material_pack())
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir, enabled=True),
+        repository=repo,
+        provider=DeepSeekReviewProvider(http_client=client),
+    ).run_model_analysis(FakeSession(), request=_real_request(confirm=True))
+
+    assert result.status == ModelAnalysisStatus.SUCCESS
+    assert result.evidence_quality == "weak"
+    assert repo.result_rows[0].evidence_quality == "weak"
+    normalization = result.details["schema_enum_normalizations"][0]
+    assert normalization["field"] == "evidence_quality"
+    assert normalization["original_value"] == "low"
+    assert normalization["normalized_value"] == "weak"
+    assert repo.run_rows[0].response_metadata_summary_json["schema_enum_normalizations"][0] == normalization
+    cli_output = dict(line.split("=", 1) for line in format_model_analysis_result_lines(result))
+    assert "evidence_quality" in cli_output["schema_enum_normalizations"]
+    assert "low" in cli_output["schema_enum_normalizations"]
+
+
+def test_real_deepseek_unknown_enum_value_remains_schema_invalid(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    output = _valid_provider_output()
+    output["evidence_quality"] = "random_value"
+    client = FakeDeepSeekHttpClient(_deepseek_raw_response(json.dumps(output, ensure_ascii=False)))
+    repo = ArtifactRepository(material_pack=material_pack())
+    alert = FakeAlertSender()
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir, enabled=True, hermes_enabled=True),
+        repository=repo,
+        provider=DeepSeekReviewProvider(http_client=client),
+        alert_sender=alert,
+    ).run_model_analysis(FakeSession(), request=_real_request(confirm=False))
+
+    assert result.status == ModelAnalysisStatus.BLOCKED
+    assert result.error_code == "schema_invalid_enum_value"
+    assert "random_value" in (result.error_message or "")
+    assert "random_value" in result.details["sanitized_content_preview"]
+    assert len(result.details["sanitized_content_preview"]) <= 500
+    assert repo.run_rows == []
+    assert repo.result_rows == []
+    assert alert.calls == []
+
+
+def test_prompt_includes_exact_allowed_enum_values() -> None:
+    prompt = build_model_review_prompt(material_pack(), settings=AppSettings())
+    prompt_payload = json.loads(prompt.prompt_text)
+
+    allowed_enum_values = prompt_payload["allowed_enum_values"]
+    assert set(allowed_enum_values["evidence_quality"]) == {
+        "strong",
+        "moderate",
+        "weak",
+        "insufficient",
+        "unknown",
+    }
+    assert set(allowed_enum_values["risk_acceptability"]) == {"acceptable", "caution", "unacceptable", "unknown"}
+    assert set(allowed_enum_values["strategy_conflict_level"]) == {"none", "low", "medium", "high", "unknown"}
+    assert set(allowed_enum_values["logic_consistency"]) == {
+        "consistent",
+        "minor_conflict",
+        "conflicting",
+        "unknown",
+    }
+    assert "Enum fields must use allowed_enum_values exactly." in prompt_payload["instructions"]
 
 
 def test_real_deepseek_extra_text_is_schema_invalid_not_guessed(tmp_path: Path) -> None:

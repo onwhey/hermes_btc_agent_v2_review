@@ -55,6 +55,21 @@ LOGIC_CONSISTENCY_VALUES = frozenset({"consistent", "minor_conflict", "conflicti
 RISK_ACCEPTABILITY_VALUES = frozenset({"acceptable", "caution", "unacceptable", "unknown"})
 CONFLICT_LEVEL_VALUES = frozenset({"none", "low", "medium", "high", "unknown"})
 
+ENUM_ALLOWED_VALUES: dict[str, frozenset[str]] = {
+    "evidence_quality": EVIDENCE_QUALITY_VALUES,
+    "logic_consistency": LOGIC_CONSISTENCY_VALUES,
+    "risk_acceptability": RISK_ACCEPTABILITY_VALUES,
+    "strategy_conflict_level": CONFLICT_LEVEL_VALUES,
+}
+
+CONTROLLED_ENUM_ALIASES: dict[str, dict[str, str]] = {
+    "evidence_quality": {
+        "low": "weak",
+        "medium": "moderate",
+        "high": "strong",
+    }
+}
+
 
 def validate_model_review_output(output: Mapping[str, Any]) -> SchemaValidationResult:
     """Validate and normalize provider output.
@@ -107,6 +122,7 @@ def validate_model_review_output(output: Mapping[str, Any]) -> SchemaValidationR
                 error_message=f"{field_name} must be false",
             )
 
+    normalized_enum_output, enum_normalizations = _normalize_controlled_enum_aliases(output)
     checks = (
         ("review_decision", set(item.value for item in ReviewDecision)),
         ("evidence_quality", EVIDENCE_QUALITY_VALUES),
@@ -115,7 +131,7 @@ def validate_model_review_output(output: Mapping[str, Any]) -> SchemaValidationR
         ("strategy_conflict_level", CONFLICT_LEVEL_VALUES),
     )
     for field_name, allowed_values in checks:
-        value = str(output.get(field_name, ""))
+        value = str(normalized_enum_output.get(field_name, ""))
         if value not in allowed_values:
             return SchemaValidationResult(
                 is_valid=False,
@@ -124,11 +140,11 @@ def validate_model_review_output(output: Mapping[str, Any]) -> SchemaValidationR
             )
 
     normalized: dict[str, Any] = {
-        "review_decision": str(output["review_decision"]),
-        "evidence_quality": str(output["evidence_quality"]),
-        "logic_consistency": str(output["logic_consistency"]),
-        "risk_acceptability": str(output["risk_acceptability"]),
-        "strategy_conflict_level": str(output["strategy_conflict_level"]),
+        "review_decision": str(normalized_enum_output["review_decision"]),
+        "evidence_quality": str(normalized_enum_output["evidence_quality"]),
+        "logic_consistency": str(normalized_enum_output["logic_consistency"]),
+        "risk_acceptability": str(normalized_enum_output["risk_acceptability"]),
+        "strategy_conflict_level": str(normalized_enum_output["strategy_conflict_level"]),
         "human_review_required": bool(output["human_review_required"]),
         "missing_evidence": _list_field(output.get("missing_evidence")),
         "rejection_reasons": _list_field(output.get("rejection_reasons")),
@@ -143,7 +159,35 @@ def validate_model_review_output(output: Mapping[str, Any]) -> SchemaValidationR
             or "这是大模型审查结果，不是最终交易建议，也不是可执行交易信号。"
         ),
     }
-    return SchemaValidationResult(is_valid=True, normalized_output=normalized)
+    return SchemaValidationResult(
+        is_valid=True,
+        normalized_output=normalized,
+        enum_normalizations=tuple(enum_normalizations),
+    )
+
+
+def _normalize_controlled_enum_aliases(output: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Apply narrow enum aliases before validation without guessing meaning."""
+
+    normalized = dict(output)
+    warnings: list[dict[str, str]] = []
+    for field_name, alias_map in CONTROLLED_ENUM_ALIASES.items():
+        raw_value = output.get(field_name)
+        if not isinstance(raw_value, str):
+            continue
+        normalized_value = alias_map.get(raw_value.strip().lower())
+        if normalized_value is None:
+            continue
+        normalized[field_name] = normalized_value
+        warnings.append(
+            {
+                "field": field_name,
+                "original_value": raw_value,
+                "normalized_value": normalized_value,
+                "reason": "controlled_schema_enum_alias",
+            }
+        )
+    return normalized, warnings
 
 
 def _find_forbidden_path(value: Any, *, path: str = "") -> str | None:
@@ -177,4 +221,10 @@ def _text_field(value: Any) -> str:
     return "" if value is None else str(value)
 
 
-__all__ = ["FORBIDDEN_TRADING_FIELDS", "REQUIRED_FIELDS", "validate_model_review_output"]
+__all__ = [
+    "CONTROLLED_ENUM_ALIASES",
+    "ENUM_ALLOWED_VALUES",
+    "FORBIDDEN_TRADING_FIELDS",
+    "REQUIRED_FIELDS",
+    "validate_model_review_output",
+]
