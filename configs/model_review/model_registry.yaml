@@ -1,4 +1,13 @@
 enabled_models:
   - mock_review
+  - deepseek_v4_pro_review
+  - deepseek_v4_flash_review
 
 default_mode: single
+manual_only_models:
+  - deepseek_v4_pro_review
+  - deepseek_v4_flash_review
+
+future_modes:
+  relay_chain: false
+  parallel_comparison: false

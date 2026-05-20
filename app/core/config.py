@@ -100,6 +100,12 @@ from app.core.constants import (
     DEFAULT_MODEL_REVIEW_MAX_STRATEGY_ITEMS,
     DEFAULT_MODEL_REVIEW_PROMPT_TEMPLATE_VERSION,
     DEFAULT_MODEL_REVIEW_PROVIDER,
+    DEFAULT_MODEL_REVIEW_ARTIFACT_DIR,
+    DEFAULT_MODEL_REVIEW_CAPTURE_RAW_REQUEST,
+    DEFAULT_MODEL_REVIEW_CAPTURE_RAW_RESPONSE,
+    DEFAULT_MODEL_REVIEW_HERMES_ON_OVERSIZED_OUTPUT,
+    DEFAULT_MODEL_REVIEW_RAW_ARTIFACT_MAX_BYTES,
+    DEFAULT_MODEL_REVIEW_REAL_MODEL_ENABLED,
     DEFAULT_MODEL_REVIEW_SCHEMA_VERSION,
     DEFAULT_STRATEGY_AGGREGATION_AUTO_RUN_ENABLED,
     DEFAULT_STRATEGY_AGGREGATION_HERMES_ENABLED,
@@ -258,6 +264,13 @@ class AppSettings:
     model_review_hermes_enabled: bool = DEFAULT_MODEL_REVIEW_HERMES_ENABLED
     model_review_prompt_template_version: str = DEFAULT_MODEL_REVIEW_PROMPT_TEMPLATE_VERSION
     model_review_schema_version: str = DEFAULT_MODEL_REVIEW_SCHEMA_VERSION
+    model_review_real_model_enabled: bool = DEFAULT_MODEL_REVIEW_REAL_MODEL_ENABLED
+    model_review_artifact_dir: str = DEFAULT_MODEL_REVIEW_ARTIFACT_DIR
+    model_review_capture_raw_request: bool = DEFAULT_MODEL_REVIEW_CAPTURE_RAW_REQUEST
+    model_review_capture_raw_response: bool = DEFAULT_MODEL_REVIEW_CAPTURE_RAW_RESPONSE
+    model_review_hermes_on_oversized_output: bool = DEFAULT_MODEL_REVIEW_HERMES_ON_OVERSIZED_OUTPUT
+    model_review_raw_artifact_max_bytes: int = DEFAULT_MODEL_REVIEW_RAW_ARTIFACT_MAX_BYTES
+    deepseek_api_key: str = ""
     hermes_webhook_url: str = ""
     hermes_secret: str = ""
     hermes_timeout_seconds: float = DEFAULT_HERMES_TIMEOUT_SECONDS
@@ -1174,6 +1187,57 @@ def load_settings(
             "MODEL_REVIEW_SCHEMA_VERSION",
             DEFAULT_MODEL_REVIEW_SCHEMA_VERSION,
         ),
+        model_review_real_model_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_REAL_MODEL_ENABLED",
+                str(DEFAULT_MODEL_REVIEW_REAL_MODEL_ENABLED).lower(),
+            ),
+            "MODEL_REVIEW_REAL_MODEL_ENABLED",
+            DEFAULT_MODEL_REVIEW_REAL_MODEL_ENABLED,
+        ),
+        model_review_artifact_dir=_get_config_value(
+            merged_values,
+            "MODEL_REVIEW_ARTIFACT_DIR",
+            DEFAULT_MODEL_REVIEW_ARTIFACT_DIR,
+        ),
+        model_review_capture_raw_request=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_CAPTURE_RAW_REQUEST",
+                str(DEFAULT_MODEL_REVIEW_CAPTURE_RAW_REQUEST).lower(),
+            ),
+            "MODEL_REVIEW_CAPTURE_RAW_REQUEST",
+            DEFAULT_MODEL_REVIEW_CAPTURE_RAW_REQUEST,
+        ),
+        model_review_capture_raw_response=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_CAPTURE_RAW_RESPONSE",
+                str(DEFAULT_MODEL_REVIEW_CAPTURE_RAW_RESPONSE).lower(),
+            ),
+            "MODEL_REVIEW_CAPTURE_RAW_RESPONSE",
+            DEFAULT_MODEL_REVIEW_CAPTURE_RAW_RESPONSE,
+        ),
+        model_review_hermes_on_oversized_output=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_HERMES_ON_OVERSIZED_OUTPUT",
+                str(DEFAULT_MODEL_REVIEW_HERMES_ON_OVERSIZED_OUTPUT).lower(),
+            ),
+            "MODEL_REVIEW_HERMES_ON_OVERSIZED_OUTPUT",
+            DEFAULT_MODEL_REVIEW_HERMES_ON_OVERSIZED_OUTPUT,
+        ),
+        model_review_raw_artifact_max_bytes=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_RAW_ARTIFACT_MAX_BYTES",
+                str(DEFAULT_MODEL_REVIEW_RAW_ARTIFACT_MAX_BYTES),
+            ),
+            "MODEL_REVIEW_RAW_ARTIFACT_MAX_BYTES",
+            DEFAULT_MODEL_REVIEW_RAW_ARTIFACT_MAX_BYTES,
+        ),
+        deepseek_api_key=_get_config_value(merged_values, "DEEPSEEK_API_KEY"),
         hermes_webhook_url=_get_config_value(merged_values, "HERMES_WEBHOOK_URL"),
         hermes_secret=_get_config_value(merged_values, "HERMES_SECRET"),
         hermes_timeout_seconds=_parse_float_config(

@@ -11,6 +11,7 @@ calls: none. Trading execution: none.
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from typing import Any, Mapping
 
@@ -52,8 +53,11 @@ def build_review_version_key(
     *,
     material_pack_id: str,
     model_provider: str,
+    model_key: str,
     model_name: str,
     model_version: str,
+    profile_hash: str,
+    prompt_template_hash: str,
     prompt_template_version: str,
     review_schema_version: str,
     review_mode: str,
@@ -63,9 +67,12 @@ def build_review_version_key(
     raw_key = "|".join(
         (
             material_pack_id,
+            model_key,
             model_provider,
             model_name,
             model_version,
+            profile_hash,
+            prompt_template_hash,
             prompt_template_version,
             review_schema_version,
             review_mode,
@@ -155,6 +162,7 @@ def build_failed_result(
     trace_id: str,
     message: str,
     error_message: str,
+    error_code: str | None = None,
     aggregation_run_id: str | None = None,
     strategy_signal_run_id: str | None = None,
 ) -> ModelAnalysisServiceResult:
@@ -171,6 +179,7 @@ def build_failed_result(
         strategy_signal_run_id=strategy_signal_run_id,
         trace_id=trace_id,
         message=message,
+        error_code=error_code,
         error_message=error_message,
     )
 
@@ -212,7 +221,11 @@ def build_success_result(
         input_byte_count=prompt.input_byte_count,
         output_char_count=provider_result.output_char_count,
         output_byte_count=provider_result.output_byte_count,
-        message="Stage-19 model review completed with mock provider.",
+        raw_response_char_count=int(getattr(provider_result, "raw_response_char_count", 0) or 0),
+        raw_response_byte_count=int(getattr(provider_result, "raw_response_byte_count", 0) or 0),
+        estimated_cost=optional_text(details.get("estimated_cost")),
+        cost_currency=optional_text(details.get("cost_currency")),
+        message="Stage-19 model review completed.",
         details=details,
     )
 
@@ -314,6 +327,29 @@ def build_run_payload(
         hermes_message=None,
         hermes_error=None,
         hermes_sent_at_utc=None,
+        profile_version=optional_text(getattr(provider_metadata, "profile_version", None)),
+        profile_hash=optional_text(getattr(provider_metadata, "profile_hash", None)),
+        api_style=optional_text(getattr(provider_metadata, "api_style", None)),
+        provider_request_id=optional_text(getattr(provider_result, "provider_request_id", None)),
+        finish_reason=optional_text(getattr(provider_result, "finish_reason", None)),
+        request_payload_hash=optional_text(getattr(provider_metadata, "request_payload_hash", None)),
+        rendered_prompt_hash=_sha256_text(prompt.prompt_text) if prompt else None,
+        prompt_template_hash=optional_text(getattr(provider_metadata, "prompt_template_hash", None)),
+        request_params_summary_json=dict(getattr(provider_metadata, "request_params_summary_json", {}) or {}),
+        capabilities_json=dict(getattr(provider_metadata, "capabilities_json", {}) or {}),
+        response_metadata_summary_json=dict(getattr(provider_result, "response_metadata", {}) or {}),
+        provider_usage_json=dict(getattr(provider_metadata, "provider_usage_json", {}) or {}),
+        raw_request_hash=optional_text(getattr(provider_metadata, "raw_request_hash", None)),
+        raw_response_hash=optional_text(getattr(provider_result, "raw_response_hash", None)),
+        raw_request_storage_ref=optional_text(getattr(provider_metadata, "raw_request_storage_ref", None)),
+        raw_response_storage_ref=optional_text(getattr(provider_metadata, "raw_response_storage_ref", None)),
+        raw_response_char_count=int(getattr(provider_result, "raw_response_char_count", 0) or 0),
+        raw_response_byte_count=int(getattr(provider_result, "raw_response_byte_count", 0) or 0),
+        input_token_count=getattr(provider_metadata, "input_token_count", None),
+        output_token_count=getattr(provider_metadata, "output_token_count", None),
+        total_token_count=getattr(provider_metadata, "total_token_count", None),
+        estimated_cost=optional_text(getattr(provider_metadata, "estimated_cost", None)),
+        cost_currency=optional_text(getattr(provider_metadata, "cost_currency", None)),
     )
 
 
@@ -363,6 +399,10 @@ def optional_text(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 __all__ = [

@@ -1,0 +1,44 @@
+model_key: deepseek_v4_flash_review
+provider: deepseek
+enabled: false
+api_style: openai_chat_completion
+model_name: deepseek-v4-flash
+model_version: v4_flash
+profile_version: profile_v1
+model_role: fast_low_cost_review
+analysis_mode: single
+prompt_template_version: review_gate_v1
+review_schema_version: review_schema_v1
+
+capabilities:
+  json_output: true
+  reasoning_content: true
+  thinking: true
+  function_calling: false
+  streaming: false
+
+request_params:
+  temperature: 0.2
+  top_p: 1
+  max_tokens: 4096
+  response_format:
+    type: json_object
+  reasoning_effort: high
+
+response_mapping:
+  final_content_path: choices.0.message.content
+  reasoning_content_path: choices.0.message.reasoning_content
+  usage_path: usage
+  finish_reason_path: choices.0.finish_reason
+  provider_request_id_path: id
+
+unsupported_params:
+  - tools
+  - function_call
+
+cost_policy:
+  track_token_usage: true
+  require_cost_confirmation: true
+  currency: USD
+  input_token_price: 0.5
+  output_token_price: 2.0

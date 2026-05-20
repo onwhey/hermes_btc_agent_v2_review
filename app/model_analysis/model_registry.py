@@ -1,28 +1,28 @@
-"""Model-review configuration registry for stage 19A.
+"""Model-review registry and profile loader for stage 19.
 
-This file belongs to `app/model_analysis`. It reads compact YAML-like model
-configuration files from `configs/model_review` and returns enabled model
-metadata for the review gate service.
+This file belongs to `app/model_analysis`. It loads `model_registry.yaml`,
+provider configs, and per-model profiles from `configs/model_review`.
 
-Called by: `app/model_analysis/service.py` and tests.
-External services: none. MySQL: none. Redis: none. Hermes: none. Real model
-calls: none. Trading execution: none.
+Called by: `app/model_analysis/service.py`, CLI smoke checks, and tests.
+External services: none. MySQL: none. Redis: none. Hermes: none. DeepSeek:
+none in this file. Trading execution: none.
 
-Stage 19A executes only `provider=mock` with `analysis_mode=single`. Other
-providers or modes may be described by config files for future wiring, but this
-module does not create clients or perform network calls.
+19B extends the 19A flat mock config by supporting:
+`providers/<provider>.yaml` and `profiles/<provider>/<model_key>.yaml`.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from app.core.config import ROOT_DIR
+from app.model_analysis.model_profile import ModelProfile, ModelProviderConfig, ModelRegistrySelection
 from app.model_analysis.types import MODEL_REVIEW_PROVIDER_MOCK
 
 MODEL_REVIEW_REGISTRY_FILE = "model_registry.yaml"
+MODEL_REVIEW_PROVIDERS_DIR = "providers"
+MODEL_REVIEW_PROFILES_DIR = "profiles"
 SUPPORTED_ANALYSIS_MODES = frozenset({"single", "relay_chain", "parallel_comparison"})
 STAGE19A_EXECUTABLE_ANALYSIS_MODE = "single"
 MODEL_REVIEW_REQUIRED_FIELDS = frozenset(
@@ -38,41 +38,35 @@ MODEL_REVIEW_REQUIRED_FIELDS = frozenset(
         "review_schema_version",
     }
 )
+MODEL_PROFILE_REQUIRED_FIELDS = MODEL_REVIEW_REQUIRED_FIELDS | frozenset(
+    {
+        "api_style",
+        "profile_version",
+        "capabilities",
+        "request_params",
+        "response_mapping",
+        "unsupported_params",
+        "cost_policy",
+    }
+)
+PROVIDER_REQUIRED_FIELDS = frozenset(
+    {
+        "provider",
+        "enabled",
+        "api_base_url",
+        "api_key_env",
+        "timeout_seconds",
+        "max_retries",
+        "retry_backoff_seconds",
+    }
+)
 
-
-@dataclass(frozen=True)
-class ModelReviewConfig:
-    """One enabled model-review config entry.
-
-    Parameters come from `configs/model_review/*.yaml`.
-    Return value: immutable metadata consumed by the service.
-    Failure scenarios: invalid or missing fields are raised by the loader.
-    External effects: none.
-    """
-
-    model_key: str
-    provider: str
-    enabled: bool
-    model_name: str
-    model_version: str
-    model_role: str
-    analysis_mode: str
-    prompt_template_version: str
-    review_schema_version: str
-
-    @property
-    def is_stage19a_executable_mock(self) -> bool:
-        """Return whether this config may be executed in stage 19A."""
-
-        return (
-            self.enabled
-            and self.provider == MODEL_REVIEW_PROVIDER_MOCK
-            and self.analysis_mode == STAGE19A_EXECUTABLE_ANALYSIS_MODE
-        )
+# Compatibility alias for the 19A tests and service code.
+ModelReviewConfig = ModelProfile
 
 
 class ModelRegistryError(RuntimeError):
-    """Raised when model-review registry files cannot produce a runnable config."""
+    """Raised when registry/profile files cannot produce a usable config."""
 
     def __init__(self, error_code: str, message: str) -> None:
         super().__init__(message)
@@ -81,24 +75,61 @@ class ModelRegistryError(RuntimeError):
 
 
 def load_enabled_model_review_configs(config_dir: str | Path) -> list[ModelReviewConfig]:
-    """Load enabled model-review configs from the registry directory.
+    """Load enabled model profiles from registry order.
 
-    Parameters: `config_dir` may be absolute or relative to project root.
-    Return value: enabled model metadata in registry order.
-    Failure scenarios: missing registry, empty `enabled_models`, missing config
-    file, invalid fields, or no enabled configs raise `ModelRegistryError`.
-    External services/database/Redis/Hermes/model calls: none.
+    This function preserves the 19A API. It returns enabled profile metadata,
+    including the old flat `mock_review.yaml` format.
     """
 
     base_dir = _resolve_config_dir(config_dir)
+    enabled_models = _load_enabled_model_keys(base_dir)
+    configs: list[ModelProfile] = []
+    for model_key in enabled_models:
+        profile = _load_model_profile(base_dir=base_dir, model_key=model_key)
+        if profile.enabled:
+            configs.append(profile)
+    if not configs:
+        raise ModelRegistryError(
+            "no_enabled_model_config",
+            "model registry contains no enabled model config.",
+        )
+    return configs
+
+
+def select_stage19a_mock_model_config(configs: list[ModelReviewConfig]) -> ModelReviewConfig | None:
+    """Return the first enabled mock/single profile that safe dry-runs can use."""
+
+    for config in configs:
+        if config.is_stage19a_executable_mock:
+            return config
+    return None
+
+
+def resolve_model_review_profile(config_dir: str | Path, *, model_key: str) -> ModelRegistrySelection:
+    """Resolve one registry-enabled model profile by `model_key`.
+
+    The returned selection may still be disabled by provider/profile flags; the
+    service turns those gates into blocked results before any provider call.
+    """
+
+    base_dir = _resolve_config_dir(config_dir)
+    enabled_models = _load_enabled_model_keys(base_dir)
+    if model_key not in enabled_models:
+        raise ModelRegistryError(
+            "model_key_not_enabled_in_registry",
+            f"model_key is not enabled in model_registry.yaml: {model_key}",
+        )
+    return _load_selection_for_model_key(base_dir=base_dir, model_key=model_key)
+
+
+def _load_enabled_model_keys(base_dir: Path) -> list[str]:
     registry_path = base_dir / MODEL_REVIEW_REGISTRY_FILE
     if not registry_path.exists():
         raise ModelRegistryError(
             "model_registry_not_found",
             f"{MODEL_REVIEW_REGISTRY_FILE} does not exist in {base_dir}",
         )
-
-    registry = _parse_simple_yaml_mapping(registry_path)
+    registry = _parse_yaml_mapping(registry_path)
     enabled_models = registry.get("enabled_models")
     if not isinstance(enabled_models, list):
         raise ModelRegistryError(
@@ -110,74 +141,145 @@ def load_enabled_model_review_configs(config_dir: str | Path) -> list[ModelRevie
             "model_registry_empty",
             "model_registry.yaml enabled_models is empty.",
         )
-
-    configs: list[ModelReviewConfig] = []
+    result: list[str] = []
     for raw_model_key in enabled_models:
         model_key = str(raw_model_key).strip()
         if not model_key:
             raise ModelRegistryError("model_registry_invalid", "enabled_models contains an empty model key.")
-        model_config = _load_model_config(base_dir=base_dir, model_key=model_key)
-        if model_config.enabled:
-            configs.append(model_config)
+        result.append(model_key)
+    return result
 
-    if not configs:
+
+def _load_selection_for_model_key(*, base_dir: Path, model_key: str) -> ModelRegistrySelection:
+    profile = _load_model_profile(base_dir=base_dir, model_key=model_key)
+    provider_config = None
+    if profile.provider != MODEL_REVIEW_PROVIDER_MOCK:
+        provider_config = _load_provider_config(base_dir=base_dir, provider=profile.provider)
+    return ModelRegistrySelection(profile=profile, provider_config=provider_config, registry_enabled=True)
+
+
+def _load_model_profile(*, base_dir: Path, model_key: str) -> ModelProfile:
+    legacy_path = base_dir / f"{model_key}.yaml"
+    if legacy_path.exists():
+        raw_config = _parse_yaml_mapping(legacy_path)
+        if "model_key" not in raw_config:
+            raw_config["model_key"] = model_key
+        return _build_legacy_or_mock_profile(raw_config, source_path=legacy_path)
+
+    profile_path = _find_profile_path(base_dir=base_dir, model_key=model_key)
+    if profile_path is None:
         raise ModelRegistryError(
-            "no_enabled_model_config",
-            "model registry contains no enabled model config.",
+            "model_profile_not_found",
+            f"model profile file does not exist for model_key: {model_key}",
         )
-    return configs
+    raw_profile = _parse_yaml_mapping(profile_path)
+    if "model_key" not in raw_profile:
+        raw_profile["model_key"] = model_key
+    return _build_model_profile(raw_profile, source_path=profile_path)
 
 
-def select_stage19a_mock_model_config(configs: list[ModelReviewConfig]) -> ModelReviewConfig | None:
-    """Return the first enabled mock/single config that stage 19A can execute."""
+def _find_profile_path(*, base_dir: Path, model_key: str) -> Path | None:
+    profiles_dir = base_dir / MODEL_REVIEW_PROFILES_DIR
+    if not profiles_dir.exists():
+        return None
+    matches = sorted(profiles_dir.glob(f"*/{model_key}.yaml"))
+    return matches[0] if matches else None
 
-    for config in configs:
-        if config.is_stage19a_executable_mock:
-            return config
-    return None
 
-
-def _load_model_config(*, base_dir: Path, model_key: str) -> ModelReviewConfig:
-    config_path = base_dir / f"{model_key}.yaml"
+def _load_provider_config(*, base_dir: Path, provider: str) -> ModelProviderConfig:
+    config_path = base_dir / MODEL_REVIEW_PROVIDERS_DIR / f"{provider}.yaml"
     if not config_path.exists():
         raise ModelRegistryError(
-            "model_config_not_found",
-            f"model config file does not exist: {config_path}",
+            "provider_config_not_found",
+            f"provider config file does not exist: {config_path}",
         )
-    raw_config = _parse_simple_yaml_mapping(config_path)
-    if "model_key" not in raw_config:
-        raw_config["model_key"] = model_key
-    return _build_model_config(raw_config, source_path=config_path)
+    raw_config = _parse_yaml_mapping(config_path)
+    missing = sorted(PROVIDER_REQUIRED_FIELDS - set(raw_config.keys()))
+    if missing:
+        raise ModelRegistryError(
+            "provider_config_missing_field",
+            f"{config_path.name} missing required fields: {', '.join(missing)}",
+        )
+    if not isinstance(raw_config["enabled"], bool):
+        raise ModelRegistryError("provider_config_invalid", f"{config_path.name} enabled must be boolean.")
+    provider_name = str(raw_config["provider"]).strip().lower()
+    if provider_name != provider:
+        raise ModelRegistryError(
+            "provider_config_invalid",
+            f"{config_path.name} provider mismatch: {provider_name} != {provider}",
+        )
+    return ModelProviderConfig(
+        provider=provider_name,
+        enabled=bool(raw_config["enabled"]),
+        api_base_url=str(raw_config["api_base_url"]).rstrip("/"),
+        api_key_env=str(raw_config["api_key_env"]).strip(),
+        timeout_seconds=float(raw_config["timeout_seconds"]),
+        max_retries=int(raw_config["max_retries"]),
+        retry_backoff_seconds=float(raw_config["retry_backoff_seconds"]),
+        source_path=str(config_path),
+    )
 
 
-def _build_model_config(raw_config: dict[str, Any], *, source_path: Path) -> ModelReviewConfig:
+def _build_legacy_or_mock_profile(raw_config: dict[str, Any], *, source_path: Path) -> ModelProfile:
     missing = sorted(MODEL_REVIEW_REQUIRED_FIELDS - set(raw_config.keys()))
     if missing:
         raise ModelRegistryError(
             "model_config_missing_field",
             f"{source_path.name} missing required fields: {', '.join(missing)}",
         )
-    enabled = raw_config["enabled"]
-    if not isinstance(enabled, bool):
-        raise ModelRegistryError("model_config_invalid", f"{source_path.name} enabled must be boolean.")
-    analysis_mode = str(raw_config["analysis_mode"]).strip()
-    if analysis_mode not in SUPPORTED_ANALYSIS_MODES:
-        raise ModelRegistryError(
-            "model_config_invalid",
-            f"{source_path.name} analysis_mode is invalid: {analysis_mode}",
-        )
-    provider = str(raw_config["provider"]).strip().lower()
-    return ModelReviewConfig(
+    profile = ModelProfile(
         model_key=str(raw_config["model_key"]).strip(),
-        provider=provider,
-        enabled=enabled,
+        provider=str(raw_config["provider"]).strip().lower(),
+        enabled=_bool_field(raw_config["enabled"], field_name="enabled", source_path=source_path),
+        api_style=str(raw_config.get("api_style") or "local_mock"),
         model_name=str(raw_config["model_name"]).strip(),
         model_version=str(raw_config["model_version"]).strip(),
+        profile_version=str(raw_config.get("profile_version") or "profile_v1"),
         model_role=str(raw_config["model_role"]).strip(),
-        analysis_mode=analysis_mode,
+        analysis_mode=_analysis_mode(raw_config["analysis_mode"], source_path=source_path),
         prompt_template_version=str(raw_config["prompt_template_version"]).strip(),
         review_schema_version=str(raw_config["review_schema_version"]).strip(),
+        capabilities=dict(raw_config.get("capabilities") or {"json_output": True}),
+        request_params=dict(raw_config.get("request_params") or {}),
+        response_mapping=dict(raw_config.get("response_mapping") or {}),
+        unsupported_params=tuple(str(item) for item in raw_config.get("unsupported_params", [])),
+        cost_policy=dict(raw_config.get("cost_policy") or {"track_token_usage": False}),
+        source_path=str(source_path),
     )
+    return profile.with_hash()
+
+
+def _build_model_profile(raw_config: dict[str, Any], *, source_path: Path) -> ModelProfile:
+    missing = sorted(MODEL_PROFILE_REQUIRED_FIELDS - set(raw_config.keys()))
+    if missing:
+        raise ModelRegistryError(
+            "model_profile_missing_field",
+            f"{source_path.name} missing required fields: {', '.join(missing)}",
+        )
+    profile = ModelProfile(
+        model_key=str(raw_config["model_key"]).strip(),
+        provider=str(raw_config["provider"]).strip().lower(),
+        enabled=_bool_field(raw_config["enabled"], field_name="enabled", source_path=source_path),
+        api_style=str(raw_config["api_style"]).strip(),
+        model_name=str(raw_config["model_name"]).strip(),
+        model_version=str(raw_config["model_version"]).strip(),
+        profile_version=str(raw_config["profile_version"]).strip(),
+        model_role=str(raw_config["model_role"]).strip(),
+        analysis_mode=_analysis_mode(raw_config["analysis_mode"], source_path=source_path),
+        prompt_template_version=str(raw_config["prompt_template_version"]).strip(),
+        review_schema_version=str(raw_config["review_schema_version"]).strip(),
+        capabilities=_mapping_field(raw_config["capabilities"], field_name="capabilities", source_path=source_path),
+        request_params=_mapping_field(raw_config["request_params"], field_name="request_params", source_path=source_path),
+        response_mapping=_mapping_field(
+            raw_config["response_mapping"],
+            field_name="response_mapping",
+            source_path=source_path,
+        ),
+        unsupported_params=tuple(str(item) for item in _list_field(raw_config["unsupported_params"])),
+        cost_policy=_mapping_field(raw_config["cost_policy"], field_name="cost_policy", source_path=source_path),
+        source_path=str(source_path),
+    )
+    return profile.with_hash()
 
 
 def _resolve_config_dir(config_dir: str | Path) -> Path:
@@ -187,53 +289,92 @@ def _resolve_config_dir(config_dir: str | Path) -> Path:
     return path
 
 
-def _parse_simple_yaml_mapping(path: Path) -> dict[str, Any]:
-    """Parse the small YAML subset used by model-review config files.
-
-    The parser intentionally supports only top-level scalar values and one
-    level of lists. This keeps stage 19A free of an additional dependency while
-    making unsupported config shapes fail clearly instead of being interpreted
-    loosely.
-    """
-
-    result: dict[str, Any] = {}
-    active_list_key: str | None = None
+def _parse_yaml_mapping(path: Path) -> dict[str, Any]:
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        entries = _preprocess_yaml_lines(path.read_text(encoding="utf-8").splitlines())
     except OSError as exc:
         raise ModelRegistryError("model_config_read_failed", f"cannot read model config: {path}") from exc
+    if not entries:
+        return {}
+    data, next_index = _parse_mapping(entries, 0, entries[0][0], path=path)
+    if next_index != len(entries):
+        line_no = entries[next_index][2]
+        raise ModelRegistryError("model_config_invalid", f"{path.name}:{line_no} unexpected YAML content.")
+    return data
 
+
+def _preprocess_yaml_lines(lines: list[str]) -> list[tuple[int, str, int]]:
+    entries: list[tuple[int, str, int]] = []
     for line_no, raw_line in enumerate(lines, start=1):
-        stripped = raw_line.split("#", 1)[0].rstrip()
-        if not stripped.strip():
+        without_comment = raw_line.split("#", 1)[0].rstrip()
+        if not without_comment.strip():
             continue
-        if stripped.lstrip().startswith("- "):
-            if active_list_key is None:
-                raise ModelRegistryError(
-                    "model_config_invalid",
-                    f"{path.name}:{line_no} list item without a parent key.",
-                )
-            result.setdefault(active_list_key, []).append(_parse_scalar(stripped.lstrip()[2:].strip()))
-            continue
-        if raw_line[: len(raw_line) - len(raw_line.lstrip())].strip():
-            raise ModelRegistryError(
-                "model_config_invalid",
-                f"{path.name}:{line_no} nested mappings are not supported in stage 19A config.",
-            )
-        if ":" not in stripped:
+        indent = len(without_comment) - len(without_comment.lstrip(" "))
+        entries.append((indent, without_comment.strip(), line_no))
+    return entries
+
+
+def _parse_mapping(
+    entries: list[tuple[int, str, int]],
+    index: int,
+    indent: int,
+    *,
+    path: Path,
+) -> tuple[dict[str, Any], int]:
+    result: dict[str, Any] = {}
+    while index < len(entries):
+        current_indent, text, line_no = entries[index]
+        if current_indent < indent:
+            break
+        if current_indent > indent:
+            raise ModelRegistryError("model_config_invalid", f"{path.name}:{line_no} unexpected indentation.")
+        if text.startswith("- "):
+            break
+        if ":" not in text:
             raise ModelRegistryError("model_config_invalid", f"{path.name}:{line_no} must use key: value.")
-        key, raw_value = stripped.split(":", 1)
+        key, raw_value = text.split(":", 1)
         key = key.strip()
         raw_value = raw_value.strip()
         if not key:
             raise ModelRegistryError("model_config_invalid", f"{path.name}:{line_no} has an empty key.")
-        if raw_value == "":
-            result[key] = []
-            active_list_key = key
-        else:
+        index += 1
+        if raw_value:
             result[key] = _parse_scalar(raw_value)
-            active_list_key = None
-    return result
+            continue
+        if index >= len(entries) or entries[index][0] <= current_indent:
+            result[key] = [] if key in {"enabled_models", "manual_only_models", "unsupported_params"} else {}
+            continue
+        child_indent, child_text, _child_line = entries[index]
+        if child_text.startswith("- "):
+            value, index = _parse_list(entries, index, child_indent, path=path)
+        else:
+            value, index = _parse_mapping(entries, index, child_indent, path=path)
+        result[key] = value
+    return result, index
+
+
+def _parse_list(
+    entries: list[tuple[int, str, int]],
+    index: int,
+    indent: int,
+    *,
+    path: Path,
+) -> tuple[list[Any], int]:
+    result: list[Any] = []
+    while index < len(entries):
+        current_indent, text, line_no = entries[index]
+        if current_indent < indent:
+            break
+        if current_indent > indent:
+            raise ModelRegistryError("model_config_invalid", f"{path.name}:{line_no} unexpected indentation.")
+        if not text.startswith("- "):
+            break
+        item_text = text[2:].strip()
+        if not item_text:
+            raise ModelRegistryError("model_config_invalid", f"{path.name}:{line_no} empty list item.")
+        result.append(_parse_scalar(item_text))
+        index += 1
+    return result, index
 
 
 def _parse_scalar(raw_value: str) -> Any:
@@ -241,11 +382,44 @@ def _parse_scalar(raw_value: str) -> Any:
         return True
     if raw_value in {"false", "False"}:
         return False
+    if raw_value in {"null", "None", "~"}:
+        return None
     if (raw_value.startswith('"') and raw_value.endswith('"')) or (
         raw_value.startswith("'") and raw_value.endswith("'")
     ):
         return raw_value[1:-1]
-    return raw_value
+    try:
+        if "." in raw_value:
+            return float(raw_value)
+        return int(raw_value)
+    except ValueError:
+        return raw_value
+
+
+def _bool_field(value: Any, *, field_name: str, source_path: Path) -> bool:
+    if not isinstance(value, bool):
+        raise ModelRegistryError("model_config_invalid", f"{source_path.name} {field_name} must be boolean.")
+    return value
+
+
+def _analysis_mode(value: Any, *, source_path: Path) -> str:
+    analysis_mode = str(value).strip()
+    if analysis_mode not in SUPPORTED_ANALYSIS_MODES:
+        raise ModelRegistryError(
+            "model_config_invalid",
+            f"{source_path.name} analysis_mode is invalid: {analysis_mode}",
+        )
+    return analysis_mode
+
+
+def _mapping_field(value: Any, *, field_name: str, source_path: Path) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ModelRegistryError("model_profile_invalid", f"{source_path.name} {field_name} must be mapping.")
+    return dict(value)
+
+
+def _list_field(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
 
 
 __all__ = [
@@ -254,5 +428,6 @@ __all__ = [
     "ModelReviewConfig",
     "STAGE19A_EXECUTABLE_ANALYSIS_MODE",
     "load_enabled_model_review_configs",
+    "resolve_model_review_profile",
     "select_stage19a_mock_model_config",
 ]

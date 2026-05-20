@@ -20,6 +20,7 @@ from uuid import uuid4
 from app.market_data.kline_constants import TRIGGER_SOURCE_CLI
 
 MODEL_REVIEW_PROVIDER_MOCK = "mock"
+MODEL_REVIEW_PROVIDER_DEEPSEEK = "deepseek"
 MODEL_REVIEW_MOCK_MODEL_NAME = "mock-reviewer"
 MODEL_REVIEW_MOCK_MODEL_VERSION = "mock_v1"
 MODEL_REVIEW_MODE_DEFAULT = "single"
@@ -85,6 +86,10 @@ class ModelAnalysisRequest:
     created_by: str = "cli"
     trace_id: str = field(default_factory=lambda: uuid4().hex)
     use_real_model: bool = False
+    model_key: str | None = None
+    confirm_real_model_cost: bool = False
+    capture_raw_request: bool = False
+    capture_raw_response: bool = False
 
 
 @dataclass(frozen=True)
@@ -172,6 +177,48 @@ class ModelAnalysisRunPersistencePayload:
     hermes_message: str | None
     hermes_error: str | None
     hermes_sent_at_utc: datetime | None
+    profile_version: str | None = None
+    profile_hash: str | None = None
+    api_style: str | None = None
+    provider_request_id: str | None = None
+    finish_reason: str | None = None
+    request_payload_hash: str | None = None
+    rendered_prompt_hash: str | None = None
+    prompt_template_hash: str | None = None
+    request_params_summary_json: Mapping[str, Any] = field(default_factory=dict)
+    capabilities_json: Mapping[str, Any] = field(default_factory=dict)
+    response_metadata_summary_json: Mapping[str, Any] = field(default_factory=dict)
+    provider_usage_json: Mapping[str, Any] = field(default_factory=dict)
+    raw_request_hash: str | None = None
+    raw_response_hash: str | None = None
+    raw_request_storage_ref: str | None = None
+    raw_response_storage_ref: str | None = None
+    raw_response_char_count: int = 0
+    raw_response_byte_count: int = 0
+    input_token_count: int | None = None
+    output_token_count: int | None = None
+    total_token_count: int | None = None
+    estimated_cost: str | None = None
+    cost_currency: str | None = None
+
+
+@dataclass(frozen=True)
+class ModelProviderCallArtifactPersistencePayload:
+    """Repository payload for one isolated provider-call artifact."""
+
+    artifact_id: str
+    model_analysis_run_id: str
+    artifact_type: str
+    provider: str
+    model_key: str
+    model_name: str
+    model_version: str
+    profile_hash: str
+    storage_ref: str
+    sha256_hash: str
+    char_count: int
+    byte_count: int
+    capture_reason: str
 
 
 @dataclass(frozen=True)
@@ -229,6 +276,10 @@ class ModelAnalysisServiceResult:
     input_byte_count: int = 0
     output_char_count: int = 0
     output_byte_count: int = 0
+    raw_response_char_count: int = 0
+    raw_response_byte_count: int = 0
+    estimated_cost: str | None = None
+    cost_currency: str | None = None
     message: str = ""
     error_code: str | None = None
     error_message: str | None = None
@@ -264,6 +315,10 @@ def format_model_analysis_result_lines(result: ModelAnalysisServiceResult) -> li
         f"input_byte_count={result.input_byte_count}",
         f"output_char_count={result.output_char_count}",
         f"output_byte_count={result.output_byte_count}",
+        f"raw_response_char_count={result.raw_response_char_count}",
+        f"raw_response_byte_count={result.raw_response_byte_count}",
+        f"estimated_cost={result.estimated_cost or ''}",
+        f"cost_currency={result.cost_currency or ''}",
         f"message={result.message}",
         f"error_message={result.error_message or ''}",
     ]
@@ -280,6 +335,7 @@ __all__ = [
     "MODEL_REVIEW_MODEL_KEY_DEFAULT",
     "MODEL_REVIEW_MODEL_ROLE_DEFAULT",
     "MODEL_REVIEW_MODE_DEFAULT",
+    "MODEL_REVIEW_PROVIDER_DEEPSEEK",
     "MODEL_REVIEW_PROVIDER_MOCK",
     "ModelAnalysisHermesStatus",
     "ModelAnalysisRequest",
@@ -287,6 +343,7 @@ __all__ = [
     "ModelAnalysisRunPersistencePayload",
     "ModelAnalysisServiceResult",
     "ModelAnalysisStatus",
+    "ModelProviderCallArtifactPersistencePayload",
     "ModelProviderResult",
     "PromptBuildResult",
     "ReviewDecision",

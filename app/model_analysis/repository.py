@@ -17,12 +17,14 @@ from typing import Any
 
 from app.core.time_utils import now_utc
 from app.model_analysis.types import (
+    ModelProviderCallArtifactPersistencePayload,
     ModelAnalysisResultPersistencePayload,
     ModelAnalysisRunPersistencePayload,
 )
 from app.storage.mysql.models.model_analysis import (
     ModelAnalysisResult as ModelAnalysisResultRow,
     ModelAnalysisRun,
+    ModelProviderCallArtifact,
 )
 from app.storage.mysql.models.strategy_aggregation import AnalysisMaterialPack
 
@@ -108,8 +110,59 @@ class ModelAnalysisRepository:
             hermes_message=payload.hermes_message,
             hermes_error=payload.hermes_error,
             hermes_sent_at_utc=payload.hermes_sent_at_utc,
+            profile_version=payload.profile_version,
+            profile_hash=payload.profile_hash,
+            api_style=payload.api_style,
+            provider_request_id=payload.provider_request_id,
+            finish_reason=payload.finish_reason,
+            request_payload_hash=payload.request_payload_hash,
+            rendered_prompt_hash=payload.rendered_prompt_hash,
+            prompt_template_hash=payload.prompt_template_hash,
+            request_params_summary_json=_json_text(payload.request_params_summary_json),
+            capabilities_json=_json_text(payload.capabilities_json),
+            response_metadata_summary_json=_json_text(payload.response_metadata_summary_json),
+            provider_usage_json=_json_text(payload.provider_usage_json),
+            raw_request_hash=payload.raw_request_hash,
+            raw_response_hash=payload.raw_response_hash,
+            raw_request_storage_ref=payload.raw_request_storage_ref,
+            raw_response_storage_ref=payload.raw_response_storage_ref,
+            raw_response_char_count=payload.raw_response_char_count,
+            raw_response_byte_count=payload.raw_response_byte_count,
+            input_token_count=payload.input_token_count,
+            output_token_count=payload.output_token_count,
+            total_token_count=payload.total_token_count,
+            estimated_cost=payload.estimated_cost,
+            cost_currency=payload.cost_currency,
             created_at_utc=created_at_utc,
             updated_at_utc=created_at_utc,
+        )
+        db_session.add(row)
+        _flush_if_possible(db_session)
+        return row
+
+    def create_model_provider_call_artifact(
+        self,
+        db_session: Any,
+        *,
+        payload: ModelProviderCallArtifactPersistencePayload,
+    ) -> ModelProviderCallArtifact:
+        """Insert one isolated provider-call artifact row without committing."""
+
+        row = ModelProviderCallArtifact(
+            artifact_id=payload.artifact_id,
+            model_analysis_run_id=payload.model_analysis_run_id,
+            artifact_type=payload.artifact_type,
+            provider=payload.provider,
+            model_key=payload.model_key,
+            model_name=payload.model_name,
+            model_version=payload.model_version,
+            profile_hash=payload.profile_hash,
+            storage_ref=payload.storage_ref,
+            sha256_hash=payload.sha256_hash,
+            char_count=payload.char_count,
+            byte_count=payload.byte_count,
+            capture_reason=payload.capture_reason,
+            created_at_utc=now_utc(),
         )
         db_session.add(row)
         _flush_if_possible(db_session)

@@ -691,7 +691,11 @@ def test_prompt_builder_compresses_dynamic_strategy_list_without_name_assumption
 def test_model_analysis_schema_uses_attempt_key_and_single_result_unique_key() -> None:
     from sqlalchemy import UniqueConstraint
 
-    from app.storage.mysql.models.model_analysis import ModelAnalysisResult, ModelAnalysisRun
+    from app.storage.mysql.models.model_analysis import (
+        ModelAnalysisResult,
+        ModelAnalysisRun,
+        ModelProviderCallArtifact,
+    )
 
     run_table = ModelAnalysisRun.__table__
     run_unique_names = {
@@ -725,6 +729,15 @@ def test_model_analysis_schema_uses_attempt_key_and_single_result_unique_key() -
     assert "chain_step" in run_columns
     assert "parent_model_analysis_run_id" in run_columns
     assert "comparison_group_id" in run_columns
+    assert "profile_version" in run_columns
+    assert "profile_hash" in run_columns
+    assert "api_style" in run_columns
+    assert "raw_response_hash" in run_columns
+    assert "raw_response_storage_ref" in run_columns
+    assert "input_token_count" in run_columns
+    assert "output_token_count" in run_columns
+    assert "total_token_count" in run_columns
+    assert "estimated_cost" in run_columns
     run_index_names = {index.name for index in run_table.indexes}
     assert "idx_model_analysis_run_review_version_key" in run_index_names
     assert "idx_model_analysis_run_model_key" in run_index_names
@@ -734,6 +747,18 @@ def test_model_analysis_schema_uses_attempt_key_and_single_result_unique_key() -
         assert len(index.columns) <= 2
         assert index.unique is False
 
+    artifact_table = ModelProviderCallArtifact.__table__
+    artifact_columns = {column.name for column in artifact_table.columns}
+    artifact_unique_names = {
+        constraint.name
+        for constraint in artifact_table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert "artifact_id" in artifact_columns
+    assert "storage_ref" in artifact_columns
+    assert "sha256_hash" in artifact_columns
+    assert "uq_model_provider_call_artifact_id" in artifact_unique_names
+
 
 def test_stage19_migration_does_not_create_large_composite_varchar_indexes() -> None:
     source = "\n".join(
@@ -742,6 +767,7 @@ def test_stage19_migration_does_not_create_large_composite_varchar_indexes() -> 
             "migrations/versions/20260520_19_create_model_analysis_tables.py",
             "migrations/versions/20260521_19a_model_review_registry_fields.py",
             "migrations/versions/20260522_19a_model_analysis_run_human_review_default.py",
+            "migrations/versions/20260523_19b_deepseek_provider_fields.py",
         )
     )
 
@@ -818,7 +844,16 @@ def test_cli_dry_run_confirm_write_and_real_model_rejection(monkeypatch: Any, ca
     )
     confirm_output = _captured_key_values(capsys)
     real_exit = model_analysis_cli.main(
-        ["--material-pack-id", "AMP-cli", "--trigger-source", "cli", "--use-real-model"]
+        [
+            "--material-pack-id",
+            "AMP-cli",
+            "--trigger-source",
+            "cli",
+            "--use-real-model",
+            "--model-key",
+            "deepseek_v4_pro_review",
+            "--confirm-real-model-cost",
+        ]
     )
     real_output = _captured_key_values(capsys)
 
@@ -830,8 +865,11 @@ def test_cli_dry_run_confirm_write_and_real_model_rejection(monkeypatch: Any, ca
     assert confirm_output["model_analysis_result_id"] == "MARES-cli"
     assert captured[1].dry_run is False
     assert captured[1].confirm_write is True
-    assert real_exit == EXIT_PARAMETER_ERROR
-    assert real_output["error_message"] == "real model provider is not implemented in stage 19A"
+    assert real_exit == 0
+    assert real_output["model_analysis_run_id"] == "MAR-cli"
+    assert captured[2].use_real_model is True
+    assert captured[2].model_key == "deepseek_v4_pro_review"
+    assert captured[2].confirm_real_model_cost is True
 
 
 def _valid_provider_output(

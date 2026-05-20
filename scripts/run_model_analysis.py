@@ -1,4 +1,4 @@
-"""Manual CLI entry for stage-19A model analysis review gate.
+"""Manual CLI entry for stage-19 model analysis review gate.
 
 Triggered by: a user running `python -m scripts.run_model_analysis`.
 Manual execution: allowed for dry-run validation and explicit confirmed writes.
@@ -15,8 +15,10 @@ Hermes impact: delegated to stage 19A only during confirmed writes and only
 when `.env` enables it.
 Formal Kline impact: this script is not allowed to modify `market_kline_4h` or
 `market_kline_1d`.
-Data repair/model/trading impact: no automatic repair, no real model provider
-call, no final trading advice, no private trading state reads, and no trading.
+Data repair/model/trading impact: no automatic repair, no final trading
+advice, no private trading state reads, and no trading. Real model calls are
+allowed only in stage 19B when the user explicitly passes the real-model and
+cost-confirmation flags.
 """
 
 from __future__ import annotations
@@ -34,13 +36,10 @@ from app.model_analysis.types import (
 )
 from app.storage.mysql.session import session_scope
 
-REAL_MODEL_NOT_IMPLEMENTED_MESSAGE = "real model provider is not implemented in stage 19A"
-
-
 def build_arg_parser() -> argparse.ArgumentParser:
-    """Build the manual stage-19A model analysis CLI parser."""
+    """Build the manual stage-19 model analysis CLI parser."""
 
-    parser = argparse.ArgumentParser(description="Run stage-19A mock model analysis review gate.")
+    parser = argparse.ArgumentParser(description="Run stage-19 model analysis review gate.")
     parser.add_argument("--material-pack-id", required=True)
     parser.add_argument("--trigger-source", required=True, choices=[TRIGGER_SOURCE_CLI])
     mode = parser.add_mutually_exclusive_group()
@@ -49,22 +48,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--use-real-model",
         action="store_true",
-        help="Reserved for a later stage; stage 19A always rejects it.",
+        help="Enable explicit stage-19B real provider flow.",
     )
+    parser.add_argument("--model-key", default="", help="Required with --use-real-model.")
+    parser.add_argument(
+        "--confirm-real-model-cost",
+        action="store_true",
+        help="Required before any real provider call.",
+    )
+    parser.add_argument("--capture-raw-response", action="store_true", help="Store raw response as artifact.")
+    parser.add_argument("--capture-raw-request", action="store_true", help="Store raw request as artifact when supported.")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Parse args, call only the stage-19A service, print compact output."""
+    """Parse args, call only the stage-19 service, print compact output."""
 
     parser = build_arg_parser()
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return 0 if int(exc.code) == 0 else EXIT_PARAMETER_ERROR
-    if bool(args.use_real_model):
-        print(f"error_message={REAL_MODEL_NOT_IMPLEMENTED_MESSAGE}")
-        return EXIT_PARAMETER_ERROR
 
     request = ModelAnalysisRequest(
         material_pack_id=args.material_pack_id.strip(),
@@ -72,6 +76,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         dry_run=not bool(args.confirm_write),
         confirm_write=bool(args.confirm_write),
         created_by="cli",
+        use_real_model=bool(args.use_real_model),
+        model_key=args.model_key.strip() or None,
+        confirm_real_model_cost=bool(args.confirm_real_model_cost),
+        capture_raw_request=bool(args.capture_raw_request),
+        capture_raw_response=bool(args.capture_raw_response),
     )
     settings = get_settings()
     with session_scope(settings=settings, commit_on_success=False) as db_session:
