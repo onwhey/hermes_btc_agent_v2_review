@@ -17,6 +17,7 @@ from app.model_analysis.model_registry import ModelRegistryError, resolve_model_
 from app.model_analysis.prompt_builder import build_model_review_prompt
 from app.model_analysis.providers.deepseek import DeepSeekReviewProvider
 from app.model_analysis.providers.base import ProviderCallError, ProviderRequest, ProviderResponse
+from app.model_analysis.schema_validator import validate_model_review_output
 from app.model_analysis.service import ModelAnalysisService
 from app.model_analysis.types import (
     ModelAnalysisRequest,
@@ -417,6 +418,50 @@ def test_real_deepseek_evidence_quality_low_is_controlled_normalized(tmp_path: P
     assert "low" in cli_output["schema_enum_normalizations"]
 
 
+def test_require_more_evidence_forces_human_review_required_true(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    output = _valid_provider_output(
+        review_decision="require_more_evidence",
+        human_review_required=False,
+    )
+    client = FakeDeepSeekHttpClient(_deepseek_raw_response(json.dumps(output, ensure_ascii=False)))
+    repo = ArtifactRepository(material_pack=material_pack())
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir, enabled=True),
+        repository=repo,
+        provider=DeepSeekReviewProvider(http_client=client),
+    ).run_model_analysis(FakeSession(), request=_real_request(confirm=True))
+
+    assert result.status == ModelAnalysisStatus.SUCCESS
+    assert result.review_decision == "require_more_evidence"
+    assert result.human_review_required is True
+    assert result.is_final_trading_advice is False
+    assert result.is_trading_signal is False
+    assert result.is_executable is False
+    assert result.auto_trading_allowed is False
+    schema_result = validate_model_review_output(output)
+    assert schema_result.normalized_output["not_trading_advice"] is True
+    assert repo.result_rows[0].human_review_required is True
+    normalization = result.details["schema_enum_normalizations"][0]
+    assert normalization["field"] == "human_review_required"
+    assert normalization["original_value"] == "false"
+    assert normalization["normalized_value"] == "true"
+    assert normalization["reason"] == "require_more_evidence_requires_human_review"
+
+
+def test_wait_with_human_review_required_false_is_allowed() -> None:
+    output = _valid_provider_output(review_decision="wait", human_review_required=False)
+
+    result = validate_model_review_output(output)
+
+    assert result.is_valid is True
+    assert result.normalized_output["review_decision"] == "wait"
+    assert result.normalized_output["human_review_required"] is False
+    assert result.normalized_output["not_trading_advice"] is True
+    assert result.enum_normalizations == ()
+
+
 def test_real_deepseek_unknown_enum_value_remains_schema_invalid(tmp_path: Path) -> None:
     config_dir = _write_deepseek_config(tmp_path / "config")
     output = _valid_provider_output()
@@ -463,6 +508,14 @@ def test_prompt_includes_exact_allowed_enum_values() -> None:
         "unknown",
     }
     assert "Enum fields must use allowed_enum_values exactly." in prompt_payload["instructions"]
+    assert "review_decision=require_more_evidence requires human_review_required=true." in prompt_payload["instructions"]
+    assert (
+        "If evidence is insufficient but no human intervention is required, use review_decision=wait"
+        in prompt_payload["instructions"]
+    )
+    semantic_rules = prompt_payload["review_decision_semantic_rules"]
+    assert semantic_rules["require_more_evidence"]["human_review_required"] is True
+    assert semantic_rules["wait"]["human_review_required_false_allowed"] is True
 
 
 def test_real_deepseek_extra_text_is_schema_invalid_not_guessed(tmp_path: Path) -> None:

@@ -70,6 +70,8 @@ CONTROLLED_ENUM_ALIASES: dict[str, dict[str, str]] = {
     }
 }
 
+REVIEW_DECISION_HUMAN_REVIEW_NORMALIZATION_REASON = "require_more_evidence_requires_human_review"
+
 
 def validate_model_review_output(output: Mapping[str, Any]) -> SchemaValidationResult:
     """Validate and normalize provider output.
@@ -139,13 +141,15 @@ def validate_model_review_output(output: Mapping[str, Any]) -> SchemaValidationR
                 error_message=f"{field_name} is invalid: {value}",
             )
 
+    normalized_semantic_output, semantic_normalizations = _normalize_human_review_semantics(normalized_enum_output)
+
     normalized: dict[str, Any] = {
-        "review_decision": str(normalized_enum_output["review_decision"]),
+        "review_decision": str(normalized_semantic_output["review_decision"]),
         "evidence_quality": str(normalized_enum_output["evidence_quality"]),
         "logic_consistency": str(normalized_enum_output["logic_consistency"]),
         "risk_acceptability": str(normalized_enum_output["risk_acceptability"]),
         "strategy_conflict_level": str(normalized_enum_output["strategy_conflict_level"]),
-        "human_review_required": bool(output["human_review_required"]),
+        "human_review_required": bool(normalized_semantic_output["human_review_required"]),
         "missing_evidence": _list_field(output.get("missing_evidence")),
         "rejection_reasons": _list_field(output.get("rejection_reasons")),
         "risk_warnings": _list_field(output.get("risk_warnings")),
@@ -162,7 +166,7 @@ def validate_model_review_output(output: Mapping[str, Any]) -> SchemaValidationR
     return SchemaValidationResult(
         is_valid=True,
         normalized_output=normalized,
-        enum_normalizations=tuple(enum_normalizations),
+        enum_normalizations=tuple([*enum_normalizations, *semantic_normalizations]),
     )
 
 
@@ -185,6 +189,28 @@ def _normalize_controlled_enum_aliases(output: Mapping[str, Any]) -> tuple[dict[
                 "original_value": raw_value,
                 "normalized_value": normalized_value,
                 "reason": "controlled_schema_enum_alias",
+            }
+        )
+    return normalized, warnings
+
+
+def _normalize_human_review_semantics(output: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Normalize safe review-decision semantics without changing trading fields."""
+
+    normalized = dict(output)
+    warnings: list[dict[str, str]] = []
+    if (
+        normalized.get("review_decision") == ReviewDecision.REQUIRE_MORE_EVIDENCE.value
+        and normalized.get("human_review_required") is False
+    ):
+        normalized["human_review_required"] = True
+        warnings.append(
+            {
+                "field": "human_review_required",
+                "original_value": "false",
+                "normalized_value": "true",
+                "review_decision": ReviewDecision.REQUIRE_MORE_EVIDENCE.value,
+                "reason": REVIEW_DECISION_HUMAN_REVIEW_NORMALIZATION_REASON,
             }
         )
     return normalized, warnings
@@ -226,5 +252,6 @@ __all__ = [
     "ENUM_ALLOWED_VALUES",
     "FORBIDDEN_TRADING_FIELDS",
     "REQUIRED_FIELDS",
+    "REVIEW_DECISION_HUMAN_REVIEW_NORMALIZATION_REASON",
     "validate_model_review_output",
 ]

@@ -76,12 +76,24 @@ REVIEW_OUTPUT_ALLOWED_ENUM_VALUES: dict[str, list[str]] = {
     **{field_name: sorted(values) for field_name, values in ENUM_ALLOWED_VALUES.items()},
 }
 
+REVIEW_DECISION_SEMANTIC_RULES: dict[str, Any] = {
+    "require_more_evidence": {
+        "human_review_required": True,
+        "rule": "When review_decision=require_more_evidence, human_review_required must be true.",
+    },
+    "wait": {
+        "human_review_required_false_allowed": True,
+        "rule": "If evidence is insufficient but no human intervention is required, use review_decision=wait with human_review_required=false.",
+    },
+}
+
 REVIEW_OUTPUT_RULES = (
     "JSON object only; no markdown/code fence/prose; include all skeleton keys.",
     "Enum fields must use allowed_enum_values exactly.",
     "No trading/action fields: entry_price, stop_loss, take_profit, position_size, leverage, order_type, final_advice, buy_now, sell_now.",
     "not_trading_advice=true; human_review_required=boolean; final/signal/executable/auto flags=false.",
-    "If evidence is insufficient, choose require_more_evidence or human_review_required.",
+    "review_decision=require_more_evidence requires human_review_required=true.",
+    "If evidence is insufficient but no human intervention is required, use review_decision=wait and human_review_required=false.",
 )
 
 REVIEW_INSTRUCTIONS = "\n".join(
@@ -146,6 +158,7 @@ def build_model_review_prompt(material_pack: Any, *, settings: AppSettings) -> P
     prompt_input = {
         "instructions": REVIEW_INSTRUCTIONS,
         "allowed_enum_values": REVIEW_OUTPUT_ALLOWED_ENUM_VALUES,
+        "review_decision_semantic_rules": REVIEW_DECISION_SEMANTIC_RULES,
         "required_output_json_skeleton": REVIEW_OUTPUT_JSON_SKELETON,
         "input_summary": _prompt_input_summary(input_summary),
     }
@@ -312,6 +325,7 @@ def _compact_scalar(value: Any, *, max_chars: int = 300) -> Any:
 __all__ = [
     "REVIEW_OUTPUT_JSON_SKELETON",
     "REVIEW_OUTPUT_ALLOWED_ENUM_VALUES",
+    "REVIEW_DECISION_SEMANTIC_RULES",
     "REVIEW_OUTPUT_RULES",
     "REVIEW_PROVIDER_SYSTEM_MESSAGE",
     "build_model_review_prompt",

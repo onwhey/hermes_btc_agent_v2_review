@@ -973,3 +973,78 @@ tests/model_analysis/test_model_analysis_19b.py
 `model_analysis_persistence_failed` 时仍保留 `model_key`、`model_role`、
 `analysis_mode` 等上下文。默认 pytest 不访问真实外网、不发送真实 Hermes、
 不调用交易接口、不修改正式 K 线表。
+
+## 7. 19B review_decision 与 human_review_required 语义一致性修复
+
+### 7.1 发起方式
+
+仍由用户手动执行 19B CLI：
+
+```bash
+python -m scripts.run_model_analysis --material-pack-id AMP-xxx --trigger-source cli --dry-run --use-real-model --model-key deepseek_v4_pro_review --confirm-real-model-cost
+```
+
+confirm-write 仍必须显式传入 `--confirm-write`。本修复不新增 scheduler，不修改正式 K 线表，
+不生成交易建议，不调用交易接口。
+
+### 7.2 核心调用链路
+
+```text
+scripts/run_model_analysis.py::main
+    -> app/model_analysis/service.py::ModelAnalysisService.run_model_analysis
+    -> app/model_analysis/prompt_builder.py::build_model_review_prompt
+    -> app/model_analysis/provider_response_parser.py::parse_openai_style_response
+    -> app/model_analysis/schema_validator.py::validate_model_review_output
+```
+
+### 7.3 Prompt 约束
+
+`app/model_analysis/prompt_builder.py` 在 prompt 中补充
+`review_decision_semantic_rules`，并在 instructions 中明确：
+
+```text
+review_decision=require_more_evidence requires human_review_required=true.
+If evidence is insufficient but no human intervention is required, use review_decision=wait and human_review_required=false.
+```
+
+这让真实 DeepSeek 在 JSON skeleton 和 enum 说明旁边看到明确语义：证据不足且需要人工介入时，
+才使用 `require_more_evidence`；证据不足但无需人工介入时，应使用 `wait`。
+
+### 7.4 Validator 规范化
+
+`app/model_analysis/schema_validator.py::validate_model_review_output` 在 enum 校验通过后执行受控语义规范化：
+
+```text
+review_decision=require_more_evidence
+human_review_required=false
+    -> human_review_required=true
+```
+
+该规范化只修正人工审核标记，不改变交易安全字段，不放宽禁止字段校验。规范化摘要写入
+`schema_enum_normalizations`，reason 为
+`require_more_evidence_requires_human_review`，便于后续复盘知道模型原始返回过不一致组合。
+
+`review_decision=wait` 且 `human_review_required=false` 仍允许通过。
+
+### 7.5 本修复不负责
+
+- 不新增真实策略。
+- 不接 scheduler。
+- 不修改正式 K 线表。
+- 不生成入场价、止损价、止盈价、仓位、杠杆。
+- 不调用交易接口。
+- 不自动交易。
+- 不把完整 raw request 或 raw response 写入主业务表。
+
+### 7.6 测试
+
+对应测试：
+
+```text
+tests/model_analysis/test_model_analysis_19b.py
+```
+
+覆盖 `require_more_evidence + human_review_required=false` 会规范化为
+`human_review_required=true`、`wait + human_review_required=false` 允许通过、prompt 包含
+明确语义规则、`not_trading_advice=true` 和 final/signal/executable/auto flags=false
+继续保持原安全约束。默认 pytest 不访问真实外网、不发送真实 Hermes、不调用交易接口、不修改正式 K 线表。
