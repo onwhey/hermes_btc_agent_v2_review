@@ -28,6 +28,7 @@ from app.storage.mysql.models import market_kline_1d as _market_kline_1d_model  
 from app.storage.mysql.models import market_kline_4h as _market_kline_4h_model  # noqa: F401
 from app.storage.mysql.models import model_analysis as _model_analysis_model  # noqa: F401
 from app.storage.mysql.models import model_review_aggregation as _model_review_aggregation_model  # noqa: F401
+from app.storage.mysql.models import model_review_chain as _model_review_chain_model  # noqa: F401
 from app.storage.mysql.models import strategy_aggregation as _strategy_aggregation_model  # noqa: F401
 from app.storage.mysql.models import strategy_signal as _strategy_signal_model  # noqa: F401
 from app.storage.mysql.models import strategy_signal_scheduler_event as _strategy_signal_scheduler_event_model  # noqa: F401
