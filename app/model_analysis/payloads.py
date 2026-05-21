@@ -63,11 +63,13 @@ def build_review_version_key(
     schema_normalization_policy_version: str,
     schema_normalization_policy_hash: str,
     review_mode: str,
+    chain_id: str | None = None,
+    chain_step: int | None = None,
+    parent_model_analysis_run_id: str | None = None,
 ) -> str:
     """Build the single-column final-result idempotency key."""
 
-    raw_key = "|".join(
-        (
+    parts = [
             material_pack_id,
             model_key,
             model_provider,
@@ -80,8 +82,16 @@ def build_review_version_key(
             schema_normalization_policy_version,
             schema_normalization_policy_hash,
             review_mode,
+    ]
+    if chain_id or chain_step is not None or parent_model_analysis_run_id:
+        parts.extend(
+            (
+                chain_id or "",
+                "" if chain_step is None else str(chain_step),
+                parent_model_analysis_run_id or "",
+            )
         )
-    )
+    raw_key = "|".join(parts)
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 

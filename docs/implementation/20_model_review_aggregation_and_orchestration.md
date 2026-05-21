@@ -366,3 +366,322 @@ scheduler 不会自动创建 chain、不会 resume chain、不会触发阶段 19
     python -m pytest tests/model_analysis -q
     python -m pytest tests -q
     python -m alembic current -v
+
+## 2. 功能：20C scheduler/worker 自动模型审查调用与恢复机制
+
+### 2.1 发起方式
+
+scheduler 自动链路：
+
+    4h K线采集完成
+        -> app/scheduler/runner.py::SchedulerRunner._run_strategy_signal_post_collect_if_needed
+        -> app/scheduler/jobs/strategy_signal_scheduler_job.py::run_strategy_signal_scheduler_after_collect_job
+        -> app/scheduler/jobs/strategy_aggregation_job.py::run_strategy_aggregation_after_signal_job
+        -> app/scheduler/runner.py::_run_model_review_chain_worker_after_aggregation_if_needed
+        -> app/scheduler/jobs/model_review_chain_worker_job.py::run_model_review_chain_worker_after_aggregation_job
+        -> app/model_review_chain/worker.py::run_model_review_chain_worker
+
+手动 worker tick：
+
+    python -m scripts.run_model_review_chain_worker \
+      --trigger-source cli \
+      --dry-run
+
+或确认推进：
+
+    python -m scripts.run_model_review_chain_worker \
+      --material-pack-id AMP-xxx \
+      --trigger-source cli \
+      --confirm-write
+
+手动恢复某条 chain：
+
+    python -m scripts.run_model_review_chain_worker \
+      --chain-id CHAIN-xxx \
+      --trigger-source cli \
+      --confirm-write
+
+20C CLI 不提供 `--confirm-real-model-cost`；该参数仍只属于 stage 19 手动 CLI。
+20C worker 自动调用真实模型时，不依赖 CLI 成本确认，而是必须同时通过配置总闸、预算、白名单、频率、锁和 step 状态机检查。
+
+### 2.2 入口文件
+
+`scripts/run_model_review_chain_worker.py`
+
+入口方法：
+
+`main()`
+
+脚本只解析参数、创建 `ModelReviewChainWorkerRequest`、打开 MySQL session、调用 worker service 并打印紧凑结果。脚本不直接调用 stage 19、不直接请求模型 provider、不写 K线、不发送 Hermes、不生成最终建议。
+
+### 2.3 核心 service
+
+`app/model_review_chain/worker.py`
+
+核心方法：
+
+`ModelReviewChainWorker.run_model_review_chain_worker()`
+
+### 2.4 核心调用链路
+
+material_pack 入口：
+
+    app/model_review_chain/worker.py::run_model_review_chain_worker
+        -> app/model_review_aggregation/service.py::run_model_review_aggregation
+        -> app/model_review_chain/repository.py::get_latest_chain_run_for_material_pack
+        -> app/model_review_chain/repository.py::create_model_review_chain_run
+        -> app/model_review_chain/repository.py::create_model_review_chain_step
+        -> app/model_review_chain/worker.py::_advance_chain_steps
+        -> app/model_review_chain/automation_policy.py::evaluate_automatic_step_policy
+        -> app/model_analysis/service.py::run_model_analysis
+
+chain 恢复入口：
+
+    app/model_review_chain/worker.py::run_model_review_chain_worker
+        -> app/model_review_chain/repository.py::get_chain_run_by_chain_id
+        -> app/model_review_chain/repository.py::list_chain_steps
+        -> app/model_review_chain/state_machine.py::step_is_resumable
+        -> app/model_review_chain/automation_policy.py::evaluate_automatic_step_policy
+        -> app/model_analysis/service.py::run_model_analysis
+
+scheduler 只触发 20C worker，不直接调用 `app/model_analysis/service.py`。
+
+### 2.5 读取配置
+
+新增或使用以下配置：
+
+- `MODEL_REVIEW_REAL_MODEL_ENABLED`：真实模型总闸，默认 `false`。
+- `MODEL_REVIEW_AUTO_RUN_ENABLED`：自动模型审查总开关，默认 `false`。
+- `MODEL_REVIEW_SCHEDULER_ENABLED`：是否允许 scheduler/worker 自动推进，默认 `false`。
+- `MODEL_REVIEW_SCHEDULER_ALLOWED_MODEL_KEYS`：scheduler 自动调用模型 key 白名单，默认空。
+- `MODEL_REVIEW_DAILY_BUDGET_USD`：每日自动模型调用预算上限，默认 `0`。
+- `MODEL_REVIEW_MAX_RUNS_PER_4H`：每个 4h 周期最多自动模型调用次数，默认 `2`。
+- `MODEL_REVIEW_REUSE_MAX_BASE_BARS`：旧模型审查复用最多 base K线根数，默认 `3`。
+
+这些配置在 `app/core/config.py` 读取，并在 `.env.example` 中给出默认关闭示例。
+
+### 2.6 复用与过期规则
+
+20C 先调用 20A 做 dry-run 聚合判断：
+
+- 当前 `material_pack` 已有成功 stage-19 结果时，直接使用 `current_model_review`，本轮不调用大模型。
+- 没有当前结果但 20A 判断旧结果仍在 `MODEL_REVIEW_REUSE_MAX_BASE_BARS` 内时，复用旧结果，结果中记录 `reused_model_analysis_run_id`。
+- 旧结果超过复用期限时，不把它伪装成最新审查。
+- 如果旧结果过期且 `MODEL_REVIEW_REAL_MODEL_ENABLED=false`，返回 `model_review_expired_but_real_model_disabled`，并明确 `本轮未调用大模型`。
+
+### 2.7 自动调用前置检查
+
+每个 step 调用 stage 19 前，由 `app/model_review_chain/automation_policy.py::evaluate_automatic_step_policy()` 检查：
+
+- `MODEL_REVIEW_REAL_MODEL_ENABLED=true`
+- `MODEL_REVIEW_AUTO_RUN_ENABLED=true`
+- `MODEL_REVIEW_SCHEDULER_ENABLED=true`
+- `model_key` 在 `MODEL_REVIEW_SCHEDULER_ALLOWED_MODEL_KEYS` 中
+- profile 和 provider config 都是 `enabled=true`
+- `MODEL_REVIEW_DAILY_BUDGET_USD` 未超限
+- 本次 `estimated_cost_usd` 不会导致预算超限
+- 当前 UTC 4h bucket 的 worker 真实模型调用次数未超过 `MODEL_REVIEW_MAX_RUNS_PER_4H`
+- 当前 step 不是 `success`
+- 当前 step retry 次数未超过 `max_retry_count`
+
+预算检查先于 stage 19 调用；预算不足时 step 记录为 `blocked`，不会先调用模型再发现超预算。
+
+### 2.8 锁和并发
+
+20C 使用 `app/core/task_lock.py::RedisTaskLock`：
+
+- material lock：`model_review_chain:material:{material_pack_id}`
+- chain lock：`model_review_chain:chain:{chain_id}`
+- step lock：`model_review_chain:step:{chain_id}:{step_no}`
+
+拿不到锁时返回 `skipped`，写明 `worker_lock_already_held`，不异常崩溃。Redis 失败时返回 `blocked`，写明 `worker_lock_failed`。
+
+### 2.9 读取数据库
+
+20C 读取：
+
+- `analysis_material_pack`：确认材料包存在并构造 chain 元信息。
+- `model_analysis_run` / `model_analysis_result`：通过 20A 判断当前结果、旧结果复用、过期和聚合摘要。
+- `model_review_chain_run`：查找待恢复 chain 或同 material_pack 最新 chain。
+- `model_review_chain_step`：按 `step_no` 恢复 step。
+- `model_analysis_run`：读取 worker 真实模型调用历史，用于预算与 4h 频率控制。
+
+### 2.10 写入数据库
+
+20C confirm-write 可能写入：
+
+- `model_review_chain_run`
+  - 新建自动 chain，或更新 chain status / step 统计 / error 信息。
+- `model_review_chain_step`
+  - 新建 step，或更新 step status / attempt_no / model_analysis_run_id / hash / error 信息。
+- `model_analysis_run` 和 `model_analysis_result`
+  - 只通过 `app/model_analysis/service.py::run_model_analysis` 写入。
+  - 20C 不绕过 stage 19 的模型调用记录体系。
+
+20C 本阶段不新增数据库迁移；理由是 20B 已有 `model_review_chain_run`、`model_review_chain_step`，stage 19 已有 `model_analysis_run` / `model_analysis_result`，足以保存 chain/step 状态、attempt 追踪、预算依据和 provider 结果。
+
+### 2.11 Redis、Hermes 与外部接口
+
+Redis：
+
+- 20C 只读写 worker 锁 key。
+- 不读写 `bitcoin_price`，不缓存行情，不修改 K线相关 Redis 状态。
+
+Hermes：
+
+- 20C worker 和 scheduler job 自身不发送 Hermes。
+- 如果 stage 19 真实调用成功且其既有配置启用了模型审查 Hermes，Hermes 行为仍由 stage 19 service 负责。
+
+外部接口：
+
+- dry-run 和默认配置不请求任何外部模型接口。
+- scheduler 不直接请求外部模型接口。
+- 只有 20C worker 通过全部 gate 后，才会委托 stage 19 调用其已实现的 provider。
+
+### 2.12 trigger_source 与 data_source
+
+20C worker 接受：
+
+- `trigger_source=cli`
+- `trigger_source=scheduler`
+
+20C 调用 stage 19 时固定传入：
+
+- `trigger_source=worker`
+
+本功能不写正式 K线，因此不涉及 `data_source`。
+
+### 2.13 透明度输出
+
+20C worker result 和 scheduler details 保留：
+
+- `model_review_invoked`
+- `model_review_invocation_mode`
+- `model_review_reused`
+- `reused_model_analysis_run_id`
+- `model_review_skip_reason`
+- `model_review_block_reason`
+- `invoked_model_keys_json`
+- `invoked_model_roles_json`
+- `model_review_chain_status`
+- `latest_model_review_at_utc`
+- `model_review_basis`
+- `model_review_expired`
+
+如果未调用大模型，输出必须包含 `本轮未调用大模型`。如果复用旧结果，输出复用的 `model_analysis_run_id`。如果因配置关闭而跳过，输出具体配置名。
+
+### 2.14 状态机与断点续跑
+
+20C 复用 20B step 状态：
+
+- `pending`
+- `running`
+- `success`
+- `failed`
+- `timeout`
+- `retry_waiting`
+- `skipped`
+- `blocked`
+
+恢复规则：
+
+- `success` step 只作为 parent context，不重复调用 stage 19。
+- `pending` / `failed` / `retry_waiting` / `timeout` 可由 worker 恢复。
+- 超过 `max_retry_count` 后不再重试。
+- step 1 成功、step 2 失败后，worker resume 只推进 step 2。
+- chain 未完整成功时只会返回 `partial_success` / `failed` / `blocked`，不会伪装成完整模型审查。
+
+### 2.15 边界字段
+
+以下字段固定为 false：
+
+- `is_final_trading_advice`
+- `is_trading_signal`
+- `is_executable`
+- `auto_trading_allowed`
+
+20C 不生成入场价、止损价、止盈价、仓位、杠杆，不生成最终交易建议，不进入 21。
+
+### 2.16 异常处理
+
+参数错误：
+
+- 发生在 `app/model_review_chain/worker.py::_validate_worker_request`
+- 返回 `status=failed`
+- 不写数据库，不读写 Redis，不调用 stage 19。
+
+20A 聚合读取失败或材料包不存在：
+
+- 由 20A service 返回结构化结果。
+- 20C 转换为 blocked/failed worker result。
+- 不调用真实模型。
+
+锁失败：
+
+- 发生在 `app/model_review_chain/worker.py::_acquire_lock_or_skipped`
+- Redis 异常返回 `worker_lock_failed`
+- 锁被占用返回 `worker_lock_already_held`
+- 不调用 stage 19。
+
+预算、白名单、频率或 provider/profile gate 失败：
+
+- 发生在 `app/model_review_chain/automation_policy.py::evaluate_automatic_step_policy`
+- step 写为 `blocked`
+- chain 根据 step 状态更新为 `blocked` 或 `partial_success`
+- 不调用 stage 19。
+
+stage 19 调用失败：
+
+- 发生在 `app/model_review_chain/worker.py::_call_stage19_for_step`
+- stage 19 返回 `failed` / `blocked` / `timeout` 后，20C 更新对应 step 状态
+- 已成功 step 不会被回滚或重复执行
+- chain 不完整时不标记为 `success`
+
+### 2.17 本功能不负责
+
+- 不让 scheduler 直接调用 stage 19。
+- 不接 21。
+- 不发送最终交易建议。
+- 不生成交易信号。
+- 不生成入场价、止损价、止盈价、仓位、杠杆。
+- 不自动交易。
+- 不修改 K线数据。
+- 不修改 16/17/18/19 的既有业务语义。
+- 不提交真实密钥，不修改 `.env` 中真实密钥。
+
+### 2.18 对应测试
+
+对应测试文件：
+
+- `tests/model_review_chain/test_model_review_chain_worker.py`
+- `tests/scheduler/test_model_review_chain_worker_hook.py`
+- 回归：`tests/model_review_chain/test_model_review_chain_service.py`
+- 回归：`tests/model_review_aggregation/test_model_review_aggregation_service.py`
+- 回归：`tests/model_analysis`
+
+覆盖内容：
+
+- `MODEL_REVIEW_REAL_MODEL_ENABLED=false` 时不调用 stage 19。
+- `MODEL_REVIEW_AUTO_RUN_ENABLED=false` 时不自动推进。
+- `MODEL_REVIEW_SCHEDULER_ENABLED=false` 时 scheduler/worker 不执行。
+- model_key 不在白名单时不调用模型。
+- 每日预算不足时不调用模型。
+- 4h 频率超限时不调用模型。
+- 旧模型结果在 TTL 内复用。
+- 旧模型结果过期时不伪装成最新审查。
+- step1 success、step2 failed 后 resume 只跑 step2。
+- success step 不重复执行。
+- partial_success 不伪装成 success。
+- dry-run 不写库。
+- confirm-write 写 chain/step 状态。
+- 默认测试不调用真实模型、不连接真实 Redis、不发送 Hermes。
+- 边界字段全部为 false。
+
+人工检查命令：
+
+    python -m pytest tests/model_review_chain -q
+    python -m pytest tests/model_review_aggregation -q
+    python -m pytest tests/model_analysis -q
+    python -m pytest tests/scheduler -q
+    python -m pytest tests -q
+    python -m alembic current -v

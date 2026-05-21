@@ -115,8 +115,27 @@ def resolve_provider_for_request(
     """Resolve mock or real provider metadata without external calls."""
 
     if request.use_real_model:
-        return _resolve_real_model_provider(settings=settings, request=request, injected_provider=injected_provider)
-    return _resolve_mock_provider(settings=settings, injected_provider=injected_provider)
+        return _apply_chain_context(
+            _resolve_real_model_provider(settings=settings, request=request, injected_provider=injected_provider),
+            request=request,
+        )
+    return _apply_chain_context(
+        _resolve_mock_provider(settings=settings, injected_provider=injected_provider),
+        request=request,
+    )
+
+
+def _apply_chain_context(resolution: ProviderResolution, *, request: ModelAnalysisRequest) -> ProviderResolution:
+    """Attach optional stage-20 chain context to the provider metadata."""
+
+    if request.chain_id:
+        resolution.chain_id = request.chain_id
+        resolution.chain_step = request.chain_step
+        resolution.parent_model_analysis_run_id = request.parent_model_analysis_run_id
+        resolution.analysis_mode = request.analysis_mode or "relay_chain"
+        if request.model_role:
+            resolution.model_role = request.model_role
+    return resolution
 
 
 def _resolve_mock_provider(*, settings: AppSettings, injected_provider: Any | None) -> ProviderResolution:

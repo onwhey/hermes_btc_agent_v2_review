@@ -15,6 +15,7 @@ from app.model_review_chain.schema import ModelReviewChainStatus, ModelReviewCha
 
 RESUMABLE_STEP_STATUSES = frozenset(
     {
+        ModelReviewChainStepStatus.PENDING,
         ModelReviewChainStepStatus.FAILED,
         ModelReviewChainStepStatus.TIMEOUT,
         ModelReviewChainStepStatus.RETRY_WAITING,
@@ -90,6 +91,19 @@ def calculate_chain_state(steps: Iterable[Any], *, total_steps: int) -> ChainSta
             summary_text="Mock chain is partially complete; incomplete steps must not be treated as a full review.",
             error_code="partial_success",
             error_message="At least one chain step did not complete successfully.",
+        )
+    if blocked_count > 0 and failed_count == 0 and timeout_count == 0 and retry_waiting_count == 0:
+        return ChainStateSummary(
+            status=ModelReviewChainStatus.BLOCKED,
+            current_step=current_step,
+            success_step_count=success_count,
+            failed_step_count=failed_count,
+            timeout_step_count=timeout_count,
+            skipped_step_count=skipped_count,
+            blocked_step_count=blocked_count,
+            summary_text="Mock or automatic chain is blocked by configuration, budget, whitelist, or policy.",
+            error_code="chain_blocked",
+            error_message="At least one chain step is blocked.",
         )
     if failure_like_count > 0:
         return ChainStateSummary(

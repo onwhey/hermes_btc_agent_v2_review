@@ -25,7 +25,10 @@ from app.market_data.kline_constants import TRIGGER_SOURCE_CLI
 
 MODEL_REVIEW_CHAIN_EVENT_SOURCE = "app.model_review_chain.service"
 DEFAULT_CHAIN_KEY = "mock_deepseek_then_gpt_risk_review"
+DEFAULT_SCHEDULER_CHAIN_KEY = "scheduler_deepseek_pro_review"
+SCHEDULER_RELAY_CHAIN_KEY = "scheduler_deepseek_pro_then_flash_review"
 MOCK_CHAIN_PROFILE_VERSION = "mock_chain_profile_v1"
+SCHEDULER_CHAIN_PROFILE_VERSION = "scheduler_chain_profile_v1"
 DEFAULT_MAX_RETRY_COUNT = 1
 
 EXIT_SUCCESS = 0
@@ -285,11 +288,14 @@ def _step_to_dict(step: ModelReviewChainStepResult) -> dict[str, Any]:
 __all__ = [
     "DEFAULT_CHAIN_KEY",
     "DEFAULT_MAX_RETRY_COUNT",
+    "DEFAULT_SCHEDULER_CHAIN_KEY",
     "EXIT_BLOCKED",
     "EXIT_FAILED",
     "EXIT_PARAMETER_ERROR",
     "EXIT_SUCCESS",
     "MOCK_CHAIN_PROFILE_VERSION",
+    "SCHEDULER_CHAIN_PROFILE_VERSION",
+    "SCHEDULER_RELAY_CHAIN_KEY",
     "MODEL_REVIEW_CHAIN_EVENT_SOURCE",
     "ChainProfile",
     "ChainStepDefinition",

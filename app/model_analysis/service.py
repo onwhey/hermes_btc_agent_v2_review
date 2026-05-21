@@ -81,6 +81,7 @@ from app.model_analysis.types import (
     MODEL_REVIEW_MODEL_ROLE_DEFAULT,
     MODEL_REVIEW_MODE_DEFAULT,
     MODEL_REVIEW_PROVIDER_MOCK,
+    MODEL_REVIEW_TRIGGER_SOURCE_WORKER,
     ModelAnalysisHermesStatus,
     ModelAnalysisRequest,
     ModelAnalysisServiceResult,
@@ -97,7 +98,7 @@ try:
 except ImportError:  # pragma: no cover - dependencies are managed by pyproject.
     IntegrityError = None  # type: ignore[assignment]
 
-ALLOWED_MODEL_ANALYSIS_TRIGGER_SOURCES = frozenset({TRIGGER_SOURCE_CLI})
+ALLOWED_MODEL_ANALYSIS_TRIGGER_SOURCES = frozenset({TRIGGER_SOURCE_CLI, MODEL_REVIEW_TRIGGER_SOURCE_WORKER})
 FINAL_REVIEW_RESULT_STATUSES = (
     ModelAnalysisStatus.SUCCESS,
     ModelAnalysisStatus.PARTIAL_SUCCESS,
@@ -183,6 +184,9 @@ class ModelAnalysisService:
             schema_normalization_policy_version=provider_resolution.schema_normalization_policy_version,
             schema_normalization_policy_hash=provider_resolution.schema_normalization_policy_hash,
             review_mode=provider_resolution.analysis_mode,
+            chain_id=provider_resolution.chain_id,
+            chain_step=provider_resolution.chain_step,
+            parent_model_analysis_run_id=provider_resolution.parent_model_analysis_run_id,
         )
         if provider_resolution.blocked_message:
             return build_blocked_result(
@@ -1798,7 +1802,7 @@ def _validate_request(
     if not request.material_pack_id.strip():
         problems.append("material_pack_id is required")
     if request.trigger_source not in ALLOWED_MODEL_ANALYSIS_TRIGGER_SOURCES:
-        problems.append("trigger_source supports only cli in stage 19")
+        problems.append("trigger_source supports only cli or worker in stage 19/20C")
     if request.dry_run and request.confirm_write:
         problems.append("dry_run and confirm_write cannot both be true")
     if not request.dry_run and not request.confirm_write:

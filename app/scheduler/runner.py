@@ -57,6 +57,7 @@ DAILY_1D_JOB_CATCH_UP_WINDOW = timedelta(hours=2)
 JobCallable = Callable[[], Any]
 StrategySignalAfterCollectCallable = Callable[..., Any]
 StrategyAggregationAfterSignalCallable = Callable[..., Any]
+ModelReviewChainWorkerAfterAggregationCallable = Callable[..., Any]
 AlertSender = Callable[..., Any]
 
 
@@ -108,6 +109,9 @@ class SchedulerRunner:
         daily_integrity_job: JobCallable | None = None,
         strategy_signal_after_collect_job: StrategySignalAfterCollectCallable | None = None,
         strategy_aggregation_after_signal_job: StrategyAggregationAfterSignalCallable | None = None,
+        model_review_chain_worker_after_aggregation_job: (
+            ModelReviewChainWorkerAfterAggregationCallable | None
+        ) = None,
         alert_sender: AlertSender | None = None,
         sleep_fn: Callable[[float], None] = time_module.sleep,
     ) -> None:
@@ -121,6 +125,10 @@ class SchedulerRunner:
         self.strategy_signal_after_collect_job = strategy_signal_after_collect_job or _default_strategy_signal_after_collect_job
         self.strategy_aggregation_after_signal_job = (
             strategy_aggregation_after_signal_job or _default_strategy_aggregation_after_signal_job
+        )
+        self.model_review_chain_worker_after_aggregation_job = (
+            model_review_chain_worker_after_aggregation_job
+            or _default_model_review_chain_worker_after_aggregation_job
         )
         self.alert_sender = alert_sender or _default_alert_sender
         self.sleep_fn = sleep_fn
@@ -434,13 +442,68 @@ class SchedulerRunner:
                 settings=self.settings,
                 config=self.config,
             )
-            return _strategy_aggregation_result_details(aggregation_result)
+            details = _strategy_aggregation_result_details(aggregation_result)
+            worker_details = self._run_model_review_chain_worker_after_aggregation_if_needed(
+                due_job,
+                aggregation_result=aggregation_result,
+                trace_id=trace_id,
+                current_time_utc=current_time_utc,
+            )
+            if worker_details:
+                details["model_review_chain_worker"] = worker_details
+            return details
         except Exception as exc:  # noqa: BLE001 - aggregation hook must not rewrite stage-17 or collector result.
             LOGGER.exception("strategy aggregation post-signal hook failed job=%s", due_job.name)
             self._send_scheduler_system_alert(
                 trace_id=trace_id,
                 job_name=due_job.name,
                 summary="Strategy aggregation post-signal hook failed.",
+                error=exc,
+                details={"slot": due_job.slot_id, "slot_time_utc": due_job.slot_time_utc.isoformat()},
+            )
+            return {
+                "status": "failed",
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc),
+            }
+
+    def _run_model_review_chain_worker_after_aggregation_if_needed(
+        self,
+        due_job: DueSchedulerJob,
+        *,
+        aggregation_result: Any,
+        trace_id: str,
+        current_time_utc: datetime,
+    ) -> dict[str, object]:
+        """Run 20C worker after stage-18, never stage 19 directly."""
+
+        status = _result_status_text(aggregation_result)
+        if status not in {"success", "partial_success"}:
+            return {}
+        material_pack_id = str(getattr(aggregation_result, "material_pack_id", "") or "").strip()
+        if not material_pack_id:
+            return {
+                "status": "skipped",
+                "message": "material_pack_id missing; 20C worker was not started.",
+            }
+        if not self.config.model_review_scheduler_enabled:
+            return {"status": "disabled", "reason": "MODEL_REVIEW_SCHEDULER_ENABLED=false"}
+        if not self.config.model_review_auto_run_enabled:
+            return {"status": "disabled", "reason": "MODEL_REVIEW_AUTO_RUN_ENABLED=false"}
+        try:
+            worker_result = self.model_review_chain_worker_after_aggregation_job(
+                aggregation_result=aggregation_result,
+                current_time_utc=current_time_utc,
+                settings=self.settings,
+                config=self.config,
+            )
+            return _model_review_chain_worker_result_details(worker_result)
+        except Exception as exc:  # noqa: BLE001 - 20C hook must not rewrite upstream results.
+            LOGGER.exception("model review chain worker post-aggregation hook failed job=%s", due_job.name)
+            self._send_scheduler_system_alert(
+                trace_id=trace_id,
+                job_name=due_job.name,
+                summary="Model review chain worker post-aggregation hook failed.",
                 error=exc,
                 details={"slot": due_job.slot_id, "slot_time_utc": due_job.slot_time_utc.isoformat()},
             )
@@ -679,6 +742,14 @@ def _default_strategy_aggregation_after_signal_job(*args: Any, **kwargs: Any) ->
     from app.scheduler.jobs.strategy_aggregation_job import run_strategy_aggregation_after_signal_job
 
     return run_strategy_aggregation_after_signal_job(*args, **kwargs)
+
+
+def _default_model_review_chain_worker_after_aggregation_job(*args: Any, **kwargs: Any) -> Any:
+    from app.scheduler.jobs.model_review_chain_worker_job import (
+        run_model_review_chain_worker_after_aggregation_job,
+    )
+
+    return run_model_review_chain_worker_after_aggregation_job(*args, **kwargs)
 
 
 def _default_alert_sender(*args: Any, **kwargs: Any) -> Any:
@@ -920,6 +991,33 @@ def _strategy_aggregation_result_details(result: Any) -> dict[str, object]:
         "conflict_level": str(getattr(conflict_level, "value", conflict_level)),
         "hermes_status": str(getattr(hermes_status, "value", hermes_status)),
         "message": getattr(result, "message", ""),
+    }
+
+
+def _model_review_chain_worker_result_details(result: Any) -> dict[str, object]:
+    return {
+        "status": str(getattr(result, "status", "") or ""),
+        "exit_code": getattr(result, "exit_code", None),
+        "material_pack_id": getattr(result, "material_pack_id", None),
+        "chain_id": getattr(result, "chain_id", None),
+        "model_review_invoked": getattr(result, "model_review_invoked", False),
+        "model_review_invocation_mode": getattr(result, "model_review_invocation_mode", "none"),
+        "model_review_reused": getattr(result, "model_review_reused", False),
+        "reused_model_analysis_run_id": getattr(result, "reused_model_analysis_run_id", None),
+        "model_review_skip_reason": getattr(result, "model_review_skip_reason", ""),
+        "model_review_block_reason": getattr(result, "model_review_block_reason", None),
+        "invoked_model_keys_json": list(getattr(result, "invoked_model_keys_json", ()) or ()),
+        "invoked_model_roles_json": list(getattr(result, "invoked_model_roles_json", ()) or ()),
+        "model_review_chain_status": getattr(result, "model_review_chain_status", ""),
+        "model_review_basis": getattr(result, "model_review_basis", ""),
+        "model_review_expired": getattr(result, "model_review_expired", False),
+        "summary_text": getattr(result, "summary_text", ""),
+        "error_code": getattr(result, "error_code", None),
+        "error_message": getattr(result, "error_message", None),
+        "is_final_trading_advice": getattr(result, "is_final_trading_advice", False),
+        "is_trading_signal": getattr(result, "is_trading_signal", False),
+        "is_executable": getattr(result, "is_executable", False),
+        "auto_trading_allowed": getattr(result, "auto_trading_allowed", False),
     }
 
 

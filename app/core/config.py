@@ -100,6 +100,11 @@ from app.core.constants import (
     DEFAULT_MODEL_REVIEW_MAX_STRATEGY_ITEMS,
     DEFAULT_MODEL_REVIEW_PROMPT_TEMPLATE_VERSION,
     DEFAULT_MODEL_REVIEW_PROVIDER,
+    DEFAULT_MODEL_REVIEW_AUTO_RUN_ENABLED,
+    DEFAULT_MODEL_REVIEW_DAILY_BUDGET_USD,
+    DEFAULT_MODEL_REVIEW_MAX_RUNS_PER_4H,
+    DEFAULT_MODEL_REVIEW_SCHEDULER_ALLOWED_MODEL_KEYS,
+    DEFAULT_MODEL_REVIEW_SCHEDULER_ENABLED,
     DEFAULT_MODEL_REVIEW_ARTIFACT_DIR,
     DEFAULT_MODEL_REVIEW_CAPTURE_RAW_REQUEST,
     DEFAULT_MODEL_REVIEW_CAPTURE_RAW_RESPONSE,
@@ -266,6 +271,11 @@ class AppSettings:
     model_review_prompt_template_version: str = DEFAULT_MODEL_REVIEW_PROMPT_TEMPLATE_VERSION
     model_review_schema_version: str = DEFAULT_MODEL_REVIEW_SCHEMA_VERSION
     model_review_real_model_enabled: bool = DEFAULT_MODEL_REVIEW_REAL_MODEL_ENABLED
+    model_review_auto_run_enabled: bool = DEFAULT_MODEL_REVIEW_AUTO_RUN_ENABLED
+    model_review_scheduler_enabled: bool = DEFAULT_MODEL_REVIEW_SCHEDULER_ENABLED
+    model_review_scheduler_allowed_model_keys: str = DEFAULT_MODEL_REVIEW_SCHEDULER_ALLOWED_MODEL_KEYS
+    model_review_daily_budget_usd: str = DEFAULT_MODEL_REVIEW_DAILY_BUDGET_USD
+    model_review_max_runs_per_4h: int = DEFAULT_MODEL_REVIEW_MAX_RUNS_PER_4H
     model_review_reuse_max_base_bars: int = DEFAULT_MODEL_REVIEW_REUSE_MAX_BASE_BARS
     model_review_artifact_dir: str = DEFAULT_MODEL_REVIEW_ARTIFACT_DIR
     model_review_capture_raw_request: bool = DEFAULT_MODEL_REVIEW_CAPTURE_RAW_REQUEST
@@ -1197,6 +1207,43 @@ def load_settings(
             ),
             "MODEL_REVIEW_REAL_MODEL_ENABLED",
             DEFAULT_MODEL_REVIEW_REAL_MODEL_ENABLED,
+        ),
+        model_review_auto_run_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_AUTO_RUN_ENABLED",
+                str(DEFAULT_MODEL_REVIEW_AUTO_RUN_ENABLED).lower(),
+            ),
+            "MODEL_REVIEW_AUTO_RUN_ENABLED",
+            DEFAULT_MODEL_REVIEW_AUTO_RUN_ENABLED,
+        ),
+        model_review_scheduler_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_SCHEDULER_ENABLED",
+                str(DEFAULT_MODEL_REVIEW_SCHEDULER_ENABLED).lower(),
+            ),
+            "MODEL_REVIEW_SCHEDULER_ENABLED",
+            DEFAULT_MODEL_REVIEW_SCHEDULER_ENABLED,
+        ),
+        model_review_scheduler_allowed_model_keys=_get_config_value(
+            merged_values,
+            "MODEL_REVIEW_SCHEDULER_ALLOWED_MODEL_KEYS",
+            DEFAULT_MODEL_REVIEW_SCHEDULER_ALLOWED_MODEL_KEYS,
+        ),
+        model_review_daily_budget_usd=_get_config_value(
+            merged_values,
+            "MODEL_REVIEW_DAILY_BUDGET_USD",
+            DEFAULT_MODEL_REVIEW_DAILY_BUDGET_USD,
+        ),
+        model_review_max_runs_per_4h=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_MAX_RUNS_PER_4H",
+                str(DEFAULT_MODEL_REVIEW_MAX_RUNS_PER_4H),
+            ),
+            "MODEL_REVIEW_MAX_RUNS_PER_4H",
+            DEFAULT_MODEL_REVIEW_MAX_RUNS_PER_4H,
         ),
         model_review_reuse_max_base_bars=_parse_int_config(
             _get_config_value(

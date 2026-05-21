@@ -10,7 +10,10 @@ from __future__ import annotations
 
 from app.model_review_chain.schema import (
     DEFAULT_CHAIN_KEY,
+    DEFAULT_SCHEDULER_CHAIN_KEY,
     MOCK_CHAIN_PROFILE_VERSION,
+    SCHEDULER_CHAIN_PROFILE_VERSION,
+    SCHEDULER_RELAY_CHAIN_KEY,
     ChainProfile,
     ChainStepDefinition,
 )
@@ -28,6 +31,35 @@ def resolve_chain_profile(chain_key: str) -> ChainProfile | None:
 
     normalized_key = (chain_key or "").strip()
     if normalized_key != DEFAULT_CHAIN_KEY:
+        if normalized_key == DEFAULT_SCHEDULER_CHAIN_KEY:
+            return ChainProfile(
+                chain_key=DEFAULT_SCHEDULER_CHAIN_KEY,
+                chain_profile_version=SCHEDULER_CHAIN_PROFILE_VERSION,
+                steps=(
+                    ChainStepDefinition(
+                        step_no=1,
+                        model_key="deepseek_v4_pro_review",
+                        model_role="mathematical_structure_review",
+                    ),
+                ),
+            )
+        if normalized_key == SCHEDULER_RELAY_CHAIN_KEY:
+            return ChainProfile(
+                chain_key=SCHEDULER_RELAY_CHAIN_KEY,
+                chain_profile_version=SCHEDULER_CHAIN_PROFILE_VERSION,
+                steps=(
+                    ChainStepDefinition(
+                        step_no=1,
+                        model_key="deepseek_v4_pro_review",
+                        model_role="mathematical_structure_review",
+                    ),
+                    ChainStepDefinition(
+                        step_no=2,
+                        model_key="deepseek_v4_flash_review",
+                        model_role="fast_low_cost_review",
+                    ),
+                ),
+            )
         return None
     return ChainProfile(
         chain_key=DEFAULT_CHAIN_KEY,

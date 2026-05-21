@@ -28,6 +28,7 @@ MODEL_REVIEW_MODE_DEFAULT = "single"
 MODEL_REVIEW_MODEL_KEY_DEFAULT = "mock_review"
 MODEL_REVIEW_MODEL_ROLE_DEFAULT = "review_gate"
 MODEL_ANALYSIS_EVENT_SOURCE = "app.model_analysis.service"
+MODEL_REVIEW_TRIGGER_SOURCE_WORKER = "worker"
 
 EXIT_SUCCESS = 0
 EXIT_PARAMETER_ERROR = 1
@@ -92,6 +93,11 @@ class ModelAnalysisRequest:
     confirm_real_model_cost: bool = False
     capture_raw_request: bool = False
     capture_raw_response: bool = False
+    chain_id: str | None = None
+    chain_step: int | None = None
+    parent_model_analysis_run_id: str | None = None
+    model_role: str | None = None
+    analysis_mode: str | None = None
 
 
 @dataclass(frozen=True)

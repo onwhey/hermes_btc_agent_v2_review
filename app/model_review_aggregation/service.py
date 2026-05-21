@@ -27,7 +27,8 @@ from dataclasses import replace
 from typing import Any, Sequence
 
 from app.core.config import AppSettings, get_settings
-from app.market_data.kline_constants import TRIGGER_SOURCE_CLI
+from app.market_data.kline_constants import TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER
+from app.model_analysis.types import MODEL_REVIEW_TRIGGER_SOURCE_WORKER
 from app.model_review_aggregation.candidate_rules import (
     SUCCESS_MODEL_RUN_STATUSES,
     candidate_boundary_fields_are_false,
@@ -64,7 +65,9 @@ from app.model_review_aggregation.schema import (
     ModelReviewAggregationStatus,
 )
 
-ALLOWED_MODEL_REVIEW_AGGREGATION_TRIGGER_SOURCES = frozenset({TRIGGER_SOURCE_CLI})
+ALLOWED_MODEL_REVIEW_AGGREGATION_TRIGGER_SOURCES = frozenset(
+    {TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER, MODEL_REVIEW_TRIGGER_SOURCE_WORKER}
+)
 
 
 class ModelReviewAggregationService:

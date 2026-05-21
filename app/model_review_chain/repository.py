@@ -17,7 +17,11 @@ from typing import Any
 
 from app.core.time_utils import now_utc
 from app.model_analysis.repository import ModelAnalysisRepository, create_default_model_analysis_repository
-from app.model_analysis.types import ModelAnalysisRunPersistencePayload
+from app.model_analysis.types import (
+    MODEL_REVIEW_PROVIDER_MOCK,
+    MODEL_REVIEW_TRIGGER_SOURCE_WORKER,
+    ModelAnalysisRunPersistencePayload,
+)
 from app.model_review_chain.models import AnalysisMaterialPack, ModelReviewChainRun, ModelReviewChainStep
 from app.model_review_chain.schema import (
     ModelReviewChainRunPersistencePayload,
@@ -58,6 +62,35 @@ class ModelReviewChainRepository:
         _require_sqlalchemy()
         stmt = select(ModelReviewChainRun).where(ModelReviewChainRun.chain_id == chain_id).limit(1)
         return db_session.execute(stmt).scalar_one_or_none()
+
+    def get_latest_chain_run_for_material_pack(self, db_session: Any, *, material_pack_id: str) -> Any | None:
+        """Return the latest chain run for one material pack.
+
+        This read helper lets the 20C worker resume an existing automatic chain
+        instead of creating duplicate model-review costs for the same material.
+        """
+
+        _require_sqlalchemy()
+        stmt = (
+            select(ModelReviewChainRun)
+            .where(ModelReviewChainRun.material_pack_id == material_pack_id)
+            .order_by(ModelReviewChainRun.created_at_utc.desc(), ModelReviewChainRun.id.desc())
+            .limit(1)
+        )
+        return db_session.execute(stmt).scalar_one_or_none()
+
+    def list_unfinished_chain_runs(self, db_session: Any, *, limit: int = 20) -> tuple[Any, ...]:
+        """Return compact unfinished chains for worker/watchdog resume scans."""
+
+        _require_sqlalchemy()
+        statuses = ("pending", "running", "partial_success", "failed")
+        stmt = (
+            select(ModelReviewChainRun)
+            .where(ModelReviewChainRun.status.in_(statuses))
+            .order_by(ModelReviewChainRun.updated_at_utc.asc(), ModelReviewChainRun.id.asc())
+            .limit(max(1, int(limit)))
+        )
+        return tuple(db_session.execute(stmt).scalars().all())
 
     def list_chain_steps(self, db_session: Any, *, chain_id: str) -> tuple[Any, ...]:
         """Return chain steps in execution order."""
@@ -200,6 +233,30 @@ class ModelReviewChainRepository:
         """
 
         return self._model_analysis_repository.create_model_analysis_run(db_session, payload=payload)
+
+    def list_worker_real_model_runs_between(
+        self,
+        db_session: Any,
+        *,
+        start_at_utc: Any,
+        end_at_utc: Any,
+    ) -> tuple[Any, ...]:
+        """Return worker-created real-model attempt rows in a UTC window.
+
+        The 20C policy uses these compact stage-19 attempt rows for budget and
+        per-4h frequency checks before it allows another provider call.
+        """
+
+        _require_sqlalchemy()
+        stmt = (
+            select(ModelAnalysisRun)
+            .where(ModelAnalysisRun.trigger_source == MODEL_REVIEW_TRIGGER_SOURCE_WORKER)
+            .where(ModelAnalysisRun.model_provider != MODEL_REVIEW_PROVIDER_MOCK)
+            .where(ModelAnalysisRun.created_at_utc >= start_at_utc)
+            .where(ModelAnalysisRun.created_at_utc < end_at_utc)
+            .order_by(ModelAnalysisRun.created_at_utc.desc(), ModelAnalysisRun.id.desc())
+        )
+        return tuple(db_session.execute(stmt).scalars().all())
 
 
 def create_default_model_review_chain_repository() -> ModelReviewChainRepository:
