@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from app.core.config import AppSettings
 from app.market_data.kline_constants import TRIGGER_SOURCE_CLI
 from app.model_analysis.prompt_builder import PROMPT_TEMPLATE_HASH
+from app.model_review_aggregation.fingerprint import build_material_fingerprint
 from app.model_review_aggregation.schema import (
     EXIT_BLOCKED,
     EXIT_SUCCESS,
@@ -154,6 +155,35 @@ def test_old_stage19_result_within_three_base_bars_can_be_reused():
     assert "本轮未调用大模型" in result.model_review_skip_reason
 
 
+def test_support_resistance_price_changes_make_material_fingerprint_different():
+    first_material = _material_pack(
+        "AMP-first",
+        base_end_ms=BASE_TIME_MS,
+        support_candidates=[{"price": "65000"}, {"low": "64100", "high": "64500"}],
+        resistance_candidates=[{"zone": {"lower": "68200", "upper": "68900"}}],
+    )
+    second_material = _material_pack(
+        "AMP-second",
+        base_end_ms=BASE_TIME_MS,
+        support_candidates=[{"price": "66000"}, {"low": "64100", "high": "64500"}],
+        resistance_candidates=[{"zone": {"lower": "68200", "upper": "68900"}}],
+    )
+
+    first_fingerprint = build_material_fingerprint(first_material)
+    second_fingerprint = build_material_fingerprint(second_material)
+
+    assert first_fingerprint.details["support_candidate_count"] == 2
+    assert second_fingerprint.details["support_candidate_count"] == 2
+    assert first_fingerprint.details["resistance_candidate_count"] == 1
+    assert second_fingerprint.details["resistance_candidate_count"] == 1
+    assert "support_candidates_summary" in first_fingerprint.details
+    assert "resistance_candidates_summary" in first_fingerprint.details
+    assert first_fingerprint.details["support_candidates_summary"] != second_fingerprint.details[
+        "support_candidates_summary"
+    ]
+    assert first_fingerprint.fingerprint != second_fingerprint.fingerprint
+
+
 def test_old_stage19_result_after_three_base_bars_is_expired_and_not_latest_review():
     old_material = _material_pack("AMP-old", base_end_ms=BASE_TIME_MS)
     current_material = _material_pack("AMP-current", base_end_ms=BASE_TIME_MS + 4 * BASE_INTERVAL_MS)
@@ -286,7 +316,15 @@ def _run(repo, *, material_pack_id, confirm_write=False, settings=None):
     return service.run_model_review_aggregation(session, request=request), session
 
 
-def _material_pack(material_pack_id, *, base_end_ms):
+def _material_pack(
+    material_pack_id,
+    *,
+    base_end_ms,
+    support_candidates=None,
+    resistance_candidates=None,
+):
+    support_candidates = support_candidates or [{"level": "support-zone"}]
+    resistance_candidates = resistance_candidates or [{"level": "resistance-zone"}]
     material_json = {
         "symbol": "BTCUSDT",
         "base_interval": "4h",
@@ -298,8 +336,8 @@ def _material_pack(material_pack_id, *, base_end_ms):
         "volatility": {"volatility_state": "normal"},
         "strategy_conflict_points": {"conflict_level": "low"},
         "support_resistance": {
-            "support_candidates": [{"level": "support-zone"}],
-            "resistance_candidates": [{"level": "resistance-zone"}],
+            "support_candidates": support_candidates,
+            "resistance_candidates": resistance_candidates,
         },
         "hypothesis_invalidation_check": "close below structure support",
         "hypothesis_target_observation_zone": "prior resistance zone",

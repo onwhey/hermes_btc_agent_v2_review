@@ -14,10 +14,18 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
 from app.market_data.kline_constants import KLINE_1D_INTERVAL_MS, KLINE_4H_INTERVAL_MS
 from app.model_review_aggregation.schema import REVIEW_INPUT_FINGERPRINT_VERSION
+
+MAX_CANDIDATE_SUMMARY_ITEMS = 8
+MAX_CANDIDATE_FIELD_CHARS = 48
+MAX_CANDIDATE_ITEM_CHARS = 160
+MAX_CANDIDATE_SUMMARY_CHARS = 640
+DIRECT_PRICE_FIELDS = ("price", "level", "low", "high", "lower", "upper", "start", "end")
+ZONE_FIELDS = ("zone", "range", "interval", "area")
 
 
 @dataclass(frozen=True)
@@ -46,6 +54,8 @@ def build_material_fingerprint(material_pack: Any) -> MaterialFingerprint:
     support_resistance = _mapping(material_json.get("support_resistance"))
     support_candidates = _list_value(support_resistance.get("support_candidates"))
     resistance_candidates = _list_value(support_resistance.get("resistance_candidates"))
+    support_candidates_summary = _summarize_price_candidates(support_candidates)
+    resistance_candidates_summary = _summarize_price_candidates(resistance_candidates)
     details = {
         "fingerprint_version": REVIEW_INPUT_FINGERPRINT_VERSION,
         "symbol": str(getattr(material_pack, "symbol", "") or material_json.get("symbol", "")),
@@ -70,7 +80,9 @@ def build_material_fingerprint(material_pack: Any) -> MaterialFingerprint:
             _mapping(material_json.get("volatility")).get("volatility_state"),
         ),
         "support_candidate_count": len(support_candidates),
+        "support_candidates_summary": support_candidates_summary,
         "resistance_candidate_count": len(resistance_candidates),
+        "resistance_candidates_summary": resistance_candidates_summary,
         "hypothesis_invalidation_check": _bounded_text(material_json.get("hypothesis_invalidation_check")),
         "hypothesis_target_observation_zone": _bounded_text(material_json.get("hypothesis_target_observation_zone")),
         "base_open_time_end_ms": _optional_int(data_window_json.get("base_open_time_end_ms")),
@@ -133,6 +145,114 @@ def calculate_reuse_base_bars(*, current_open_time_ms: int | None, previous_open
     if delta < 0:
         return None
     return delta // interval_ms
+
+
+def _summarize_price_candidates(candidates: list[Any]) -> list[str]:
+    """Return bounded, stable summaries for support/resistance candidates.
+
+    The fingerprint must react to key price-zone changes, but it must not copy
+    full strategy JSON into a hash input. This helper extracts only common
+    price or interval fields, bounds every text fragment, sorts the resulting
+    item summaries, and caps the final list length.
+    """
+
+    summaries = [_candidate_summary(candidate) for candidate in candidates]
+    filtered = sorted(summary for summary in summaries if summary)
+    return _bound_summary_list(filtered)
+
+
+def _candidate_summary(candidate: Any) -> str:
+    if isinstance(candidate, Mapping):
+        parts: list[str] = []
+        for field_name in DIRECT_PRICE_FIELDS:
+            if field_name in candidate:
+                parts.append(f"{field_name}={_compact_value(candidate.get(field_name))}")
+        for field_name in ZONE_FIELDS:
+            if field_name in candidate:
+                zone_summary = _zone_summary(candidate.get(field_name))
+                if zone_summary:
+                    parts.append(f"{field_name}={zone_summary}")
+        if not parts:
+            parts.append(f"value={_bounded_json(candidate)}")
+        return _bounded_text("|".join(parts), max_chars=MAX_CANDIDATE_ITEM_CHARS)
+    return _bounded_text(f"value={_compact_value(candidate)}", max_chars=MAX_CANDIDATE_ITEM_CHARS)
+
+
+def _zone_summary(value: Any) -> str:
+    if isinstance(value, Mapping):
+        parts = [
+            f"{field_name}:{_compact_value(value.get(field_name))}"
+            for field_name in DIRECT_PRICE_FIELDS
+            if field_name in value
+        ]
+        if parts:
+            return _bounded_text(",".join(parts), max_chars=MAX_CANDIDATE_ITEM_CHARS)
+        return _bounded_json(value)
+    if isinstance(value, list):
+        values = [_compact_value(item) for item in value[:MAX_CANDIDATE_SUMMARY_ITEMS]]
+        return _bounded_text(",".join(values), max_chars=MAX_CANDIDATE_ITEM_CHARS)
+    return _compact_value(value)
+
+
+def _bound_summary_list(values: list[str]) -> list[str]:
+    result: list[str] = []
+    used_chars = 0
+    for value in values:
+        if len(result) >= MAX_CANDIDATE_SUMMARY_ITEMS:
+            break
+        bounded = _bounded_text(value, max_chars=MAX_CANDIDATE_ITEM_CHARS)
+        next_chars = used_chars + len(bounded)
+        if result and next_chars > MAX_CANDIDATE_SUMMARY_CHARS:
+            break
+        result.append(bounded)
+        used_chars = next_chars
+    return result
+
+
+def _compact_value(value: Any) -> str:
+    if isinstance(value, Mapping):
+        return _bounded_json(value)
+    if isinstance(value, list):
+        return _bounded_text(
+            ",".join(_compact_value(item) for item in value[:MAX_CANDIDATE_SUMMARY_ITEMS]),
+            max_chars=MAX_CANDIDATE_FIELD_CHARS,
+        )
+    if isinstance(value, (int, float, Decimal)):
+        return _normalize_number(value)
+    if isinstance(value, str):
+        normalized = _normalize_numeric_text(value)
+        if normalized is not None:
+            return normalized
+    return _bounded_text(value, max_chars=MAX_CANDIDATE_FIELD_CHARS)
+
+
+def _normalize_number(value: Any) -> str:
+    try:
+        decimal_value = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return _bounded_text(value, max_chars=MAX_CANDIDATE_FIELD_CHARS)
+    if not decimal_value.is_finite():
+        return _bounded_text(value, max_chars=MAX_CANDIDATE_FIELD_CHARS)
+    text = format(decimal_value.normalize(), "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _normalize_numeric_text(value: str) -> str | None:
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+    return _normalize_number(text)
+
+
+def _bounded_json(value: Any) -> str:
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return _bounded_text(raw, max_chars=MAX_CANDIDATE_FIELD_CHARS)
 
 
 def _json_mapping(raw_value: Any) -> Mapping[str, Any]:

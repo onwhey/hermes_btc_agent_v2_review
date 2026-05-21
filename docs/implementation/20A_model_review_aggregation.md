@@ -293,9 +293,20 @@ scheduler 当前仍不直接触发阶段 19。
 - `structure_state`
 - `volatility_state`
 - 支撑候选数量
+- 支撑候选摘要 `support_candidates_summary`
 - 压力候选数量
+- 压力候选摘要 `resistance_candidates_summary`
 - 假设失效检查摘要
 - 目标观察区摘要
+
+支撑/压力候选摘要规则：
+
+- 只提取常见关键价位或区间字段，例如 `price`、`level`、`zone`、`low/high`、`lower/upper`、`start/end`。
+- 每个候选项摘要限制长度。
+- 候选项列表先稳定排序再限制数量。
+- 最终摘要限制总长度。
+- 不把完整支撑/压力 JSON 原文塞进 fingerprint。
+- 支撑/压力数量相同但关键价位不同，`material_summary_hash` 必须变化，从而阻止错误复用。
 
 `base_open_time_end_ms` 不参与材料内容指纹等价比较，只用于计算相隔多少根 base interval K 线。
 
