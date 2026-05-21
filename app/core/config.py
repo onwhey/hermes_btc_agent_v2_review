@@ -106,6 +106,7 @@ from app.core.constants import (
     DEFAULT_MODEL_REVIEW_HERMES_ON_OVERSIZED_OUTPUT,
     DEFAULT_MODEL_REVIEW_RAW_ARTIFACT_MAX_BYTES,
     DEFAULT_MODEL_REVIEW_REAL_MODEL_ENABLED,
+    DEFAULT_MODEL_REVIEW_REUSE_MAX_BASE_BARS,
     DEFAULT_MODEL_REVIEW_SCHEMA_VERSION,
     DEFAULT_STRATEGY_AGGREGATION_AUTO_RUN_ENABLED,
     DEFAULT_STRATEGY_AGGREGATION_HERMES_ENABLED,
@@ -265,6 +266,7 @@ class AppSettings:
     model_review_prompt_template_version: str = DEFAULT_MODEL_REVIEW_PROMPT_TEMPLATE_VERSION
     model_review_schema_version: str = DEFAULT_MODEL_REVIEW_SCHEMA_VERSION
     model_review_real_model_enabled: bool = DEFAULT_MODEL_REVIEW_REAL_MODEL_ENABLED
+    model_review_reuse_max_base_bars: int = DEFAULT_MODEL_REVIEW_REUSE_MAX_BASE_BARS
     model_review_artifact_dir: str = DEFAULT_MODEL_REVIEW_ARTIFACT_DIR
     model_review_capture_raw_request: bool = DEFAULT_MODEL_REVIEW_CAPTURE_RAW_REQUEST
     model_review_capture_raw_response: bool = DEFAULT_MODEL_REVIEW_CAPTURE_RAW_RESPONSE
@@ -1195,6 +1197,15 @@ def load_settings(
             ),
             "MODEL_REVIEW_REAL_MODEL_ENABLED",
             DEFAULT_MODEL_REVIEW_REAL_MODEL_ENABLED,
+        ),
+        model_review_reuse_max_base_bars=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_REUSE_MAX_BASE_BARS",
+                str(DEFAULT_MODEL_REVIEW_REUSE_MAX_BASE_BARS),
+            ),
+            "MODEL_REVIEW_REUSE_MAX_BASE_BARS",
+            DEFAULT_MODEL_REVIEW_REUSE_MAX_BASE_BARS,
         ),
         model_review_artifact_dir=_get_config_value(
             merged_values,
