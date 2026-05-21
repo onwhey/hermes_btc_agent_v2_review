@@ -60,6 +60,8 @@ def build_review_version_key(
     prompt_template_hash: str,
     prompt_template_version: str,
     review_schema_version: str,
+    schema_normalization_policy_version: str,
+    schema_normalization_policy_hash: str,
     review_mode: str,
 ) -> str:
     """Build the single-column final-result idempotency key."""
@@ -75,6 +77,8 @@ def build_review_version_key(
             prompt_template_hash,
             prompt_template_version,
             review_schema_version,
+            schema_normalization_policy_version,
+            schema_normalization_policy_hash,
             review_mode,
         )
     )

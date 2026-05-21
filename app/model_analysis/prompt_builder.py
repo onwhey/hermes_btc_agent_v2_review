@@ -87,6 +87,31 @@ REVIEW_DECISION_SEMANTIC_RULES: dict[str, Any] = {
     },
 }
 
+PROMPT_TEMPLATE_POLICY_VERSION = "review_prompt_policy_v2"
+
+
+def build_prompt_template_hash(
+    *,
+    policy_version: str | None = None,
+    skeleton: Mapping[str, Any] | None = None,
+    allowed_enum_values: Mapping[str, Any] | None = None,
+    semantic_rules: Mapping[str, Any] | None = None,
+    output_rules: tuple[str, ...] | None = None,
+) -> str:
+    """Hash the prompt template rules that affect model-review output shape."""
+
+    canonical = {
+        "policy_version": policy_version or PROMPT_TEMPLATE_POLICY_VERSION,
+        "required_output_json_skeleton": skeleton or REVIEW_OUTPUT_JSON_SKELETON,
+        "allowed_enum_values": allowed_enum_values or REVIEW_OUTPUT_ALLOWED_ENUM_VALUES,
+        "review_decision_semantic_rules": semantic_rules or REVIEW_DECISION_SEMANTIC_RULES,
+        "output_rules": list(output_rules or REVIEW_OUTPUT_RULES),
+    }
+    return hashlib.sha256(
+        json.dumps(canonical, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
 REVIEW_OUTPUT_RULES = (
     "JSON object only; no markdown/code fence/prose; include all skeleton keys.",
     "Enum fields must use allowed_enum_values exactly.",
@@ -95,6 +120,8 @@ REVIEW_OUTPUT_RULES = (
     "review_decision=require_more_evidence requires human_review_required=true.",
     "If evidence is insufficient but no human intervention is required, use review_decision=wait and human_review_required=false.",
 )
+
+PROMPT_TEMPLATE_HASH = build_prompt_template_hash()
 
 REVIEW_INSTRUCTIONS = "\n".join(
     (
@@ -327,6 +354,9 @@ __all__ = [
     "REVIEW_OUTPUT_ALLOWED_ENUM_VALUES",
     "REVIEW_DECISION_SEMANTIC_RULES",
     "REVIEW_OUTPUT_RULES",
+    "PROMPT_TEMPLATE_HASH",
+    "PROMPT_TEMPLATE_POLICY_VERSION",
     "REVIEW_PROVIDER_SYSTEM_MESSAGE",
+    "build_prompt_template_hash",
     "build_model_review_prompt",
 ]

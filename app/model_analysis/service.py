@@ -178,6 +178,8 @@ class ModelAnalysisService:
             prompt_template_hash=provider_resolution.prompt_template_hash,
             prompt_template_version=provider_resolution.prompt_template_version,
             review_schema_version=provider_resolution.review_schema_version,
+            schema_normalization_policy_version=provider_resolution.schema_normalization_policy_version,
+            schema_normalization_policy_hash=provider_resolution.schema_normalization_policy_hash,
             review_mode=provider_resolution.analysis_mode,
         )
         if provider_resolution.blocked_message:
@@ -498,6 +500,9 @@ class ModelAnalysisService:
                 "not_final_trading_advice": True,
                 "profile_hash": provider_resolution.profile_hash,
                 "profile_version": provider_resolution.profile_version,
+                "prompt_template_hash": provider_resolution.prompt_template_hash,
+                "schema_normalization_policy_version": provider_resolution.schema_normalization_policy_version,
+                "schema_normalization_policy_hash": provider_resolution.schema_normalization_policy_hash,
                 "raw_request_hash": provider_resolution.raw_request_hash,
                 "raw_request_storage_ref": provider_resolution.raw_request_storage_ref,
                 "raw_response_hash": getattr(provider_output, "raw_response_hash", None),

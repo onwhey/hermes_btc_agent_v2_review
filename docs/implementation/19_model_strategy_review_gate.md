@@ -1048,3 +1048,80 @@ tests/model_analysis/test_model_analysis_19b.py
 `human_review_required=true`、`wait + human_review_required=false` 允许通过、prompt 包含
 明确语义规则、`not_trading_advice=true` 和 final/signal/executable/auto flags=false
 继续保持原安全约束。默认 pytest 不访问真实外网、不发送真实 Hermes、不调用交易接口、不修改正式 K 线表。
+
+## 8. 19B review_version_key 版本追溯修复
+
+### 8.1 发起方式
+
+仍由用户手动执行 19B CLI。dry-run 不写库、不发送 Hermes；confirm-write 仍必须显式传入
+`--confirm-write`，并受 `MODEL_REVIEW_ENABLED`、provider/profile/API key/成本确认等门控约束。
+
+### 8.2 核心调用链路
+
+```text
+scripts/run_model_analysis.py::main
+    -> app/model_analysis/service.py::ModelAnalysisService.run_model_analysis
+    -> app/model_analysis/provider_resolution.py::resolve_provider_for_request
+    -> app/model_analysis/payloads.py::build_review_version_key
+```
+
+### 8.3 key 组成
+
+`review_version_key` 继续用于 `model_analysis_result` 的 final-result 幂等键。本次补足版本追溯输入，
+使 prompt 或 schema 语义规则变化后，同一个 `material_pack_id` 不会复用旧 result。
+
+当前 key 纳入：
+
+```text
+material_pack_id
+model_key
+provider
+model_name
+model_version
+profile_hash
+prompt_template_hash
+prompt_template_version
+review_schema_version
+schema_normalization_policy_version
+schema_normalization_policy_hash
+analysis_mode
+```
+
+`app/model_analysis/prompt_builder.py::PROMPT_TEMPLATE_HASH` 由 JSON skeleton、allowed enum values、
+review_decision semantic rules 和 output rules 计算得出。修改 prompt skeleton、枚举说明或字段语义后，
+hash 会变化。
+
+`app/model_analysis/schema_validator.py::SCHEMA_NORMALIZATION_POLICY_HASH` 由 required fields、forbidden
+trading fields、allowed enum values、controlled enum aliases 和 human-review semantic normalization
+计算得出。修改 schema_validator 的字段语义、枚举规范化或组合规则后，hash 会变化。
+
+### 8.4 旧结果跳过行为
+
+同一个 `material_pack_id`、同一个 `model_key`，如果旧 `model_analysis_result` 的
+`review_version_key` 是基于旧 prompt/schema policy 生成的，本次请求会生成新的
+`review_version_key`，不会 skipped 到旧 result。这样可以重新验证
+`review_decision=require_more_evidence` 时 `human_review_required=true` 的新规则。
+
+### 8.5 本修复不负责
+
+- 不新增真实策略。
+- 不接 scheduler。
+- 不修改正式 K 线表。
+- 不生成入场价、止损价、止盈价、仓位、杠杆。
+- 不调用交易接口。
+- 不自动交易。
+- 不把完整 raw request 或 raw response 写入主业务表。
+
+### 8.6 测试
+
+对应测试：
+
+```text
+tests/model_analysis/test_model_analysis_19b.py
+```
+
+覆盖 prompt_template_hash 变化时 `review_version_key` 变化、review_schema_version 或
+normalization policy 变化时 key 变化、profile_hash 变化时 key 变化、旧 key 不再导致
+skipped、新规则会把 `require_more_evidence + human_review_required=false` 规范化为 true、
+`wait + human_review_required=false` 允许通过。默认 pytest 不访问真实外网、不发送真实 Hermes、
+不调用交易接口、不修改正式 K 线表。

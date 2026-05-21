@@ -10,7 +10,6 @@ none.
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any, Mapping
 
 from app.core.config import AppSettings
@@ -21,8 +20,13 @@ from app.model_analysis.model_registry import (
     resolve_model_review_profile,
     select_stage19a_mock_model_config,
 )
+from app.model_analysis.prompt_builder import PROMPT_TEMPLATE_HASH
 from app.model_analysis.providers.deepseek import DeepSeekReviewProvider
 from app.model_analysis.providers.mock import MockModelReviewProvider
+from app.model_analysis.schema_validator import (
+    SCHEMA_NORMALIZATION_POLICY_HASH,
+    SCHEMA_NORMALIZATION_POLICY_VERSION,
+)
 from app.model_analysis.types import (
     MODEL_REVIEW_MODEL_KEY_DEFAULT,
     MODEL_REVIEW_MODEL_ROLE_DEFAULT,
@@ -50,6 +54,9 @@ class ProviderResolution:
         review_schema_version: str,
         profile_version: str,
         profile_hash: str,
+        prompt_template_hash: str,
+        schema_normalization_policy_version: str,
+        schema_normalization_policy_hash: str,
         api_style: str,
         profile: ModelProfile | None,
         provider_config: ModelProviderConfig | None,
@@ -72,7 +79,9 @@ class ProviderResolution:
         self.profile = profile
         self.provider_config = provider_config
         self.api_key = api_key
-        self.prompt_template_hash = hashlib.sha256(prompt_template_version.encode("utf-8")).hexdigest()
+        self.prompt_template_hash = prompt_template_hash
+        self.schema_normalization_policy_version = schema_normalization_policy_version
+        self.schema_normalization_policy_hash = schema_normalization_policy_hash
         self.chain_id = None
         self.chain_step = None
         self.parent_model_analysis_run_id = None
@@ -137,6 +146,9 @@ def _resolve_mock_provider(*, settings: AppSettings, injected_provider: Any | No
             review_schema_version=selected_config.review_schema_version,
             profile_version=selected_config.profile_version,
             profile_hash=selected_config.profile_hash,
+            prompt_template_hash=PROMPT_TEMPLATE_HASH,
+            schema_normalization_policy_version=SCHEMA_NORMALIZATION_POLICY_VERSION,
+            schema_normalization_policy_hash=SCHEMA_NORMALIZATION_POLICY_HASH,
             api_style=selected_config.api_style,
             profile=selected_config,
             provider_config=None,
@@ -156,6 +168,9 @@ def _resolve_mock_provider(*, settings: AppSettings, injected_provider: Any | No
         review_schema_version=selected_config.review_schema_version,
         profile_version=selected_config.profile_version,
         profile_hash=selected_config.profile_hash,
+        prompt_template_hash=PROMPT_TEMPLATE_HASH,
+        schema_normalization_policy_version=SCHEMA_NORMALIZATION_POLICY_VERSION,
+        schema_normalization_policy_hash=SCHEMA_NORMALIZATION_POLICY_HASH,
         api_style=selected_config.api_style,
         profile=selected_config,
         provider_config=None,
@@ -183,6 +198,9 @@ def _resolve_real_model_provider(
         review_schema_version=settings.model_review_schema_version,
         profile_version="",
         profile_hash="",
+        prompt_template_hash=PROMPT_TEMPLATE_HASH,
+        schema_normalization_policy_version=SCHEMA_NORMALIZATION_POLICY_VERSION,
+        schema_normalization_policy_hash=SCHEMA_NORMALIZATION_POLICY_HASH,
         api_style="",
         profile=None,
         provider_config=None,
@@ -220,6 +238,9 @@ def _resolve_real_model_provider(
     base.review_schema_version = profile.review_schema_version
     base.profile_version = profile.profile_version
     base.profile_hash = profile.profile_hash
+    base.prompt_template_hash = PROMPT_TEMPLATE_HASH
+    base.schema_normalization_policy_version = SCHEMA_NORMALIZATION_POLICY_VERSION
+    base.schema_normalization_policy_hash = SCHEMA_NORMALIZATION_POLICY_HASH
     base.api_style = profile.api_style
     base.profile = profile
     base.provider_config = provider_config
@@ -267,6 +288,9 @@ def _base_resolution(
         review_schema_version=settings.model_review_schema_version,
         profile_version="",
         profile_hash="",
+        prompt_template_hash=PROMPT_TEMPLATE_HASH,
+        schema_normalization_policy_version=SCHEMA_NORMALIZATION_POLICY_VERSION,
+        schema_normalization_policy_hash=SCHEMA_NORMALIZATION_POLICY_HASH,
         api_style="",
         profile=None,
         provider_config=None,

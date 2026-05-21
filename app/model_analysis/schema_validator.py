@@ -11,6 +11,8 @@ calls: none. Trading execution: none.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Mapping
 
 from app.model_analysis.types import ReviewDecision, SchemaValidationResult
@@ -71,6 +73,43 @@ CONTROLLED_ENUM_ALIASES: dict[str, dict[str, str]] = {
 }
 
 REVIEW_DECISION_HUMAN_REVIEW_NORMALIZATION_REASON = "require_more_evidence_requires_human_review"
+SCHEMA_NORMALIZATION_POLICY_VERSION = "schema_normalization_policy_v2"
+
+
+def build_schema_normalization_policy_hash(
+    *,
+    policy_version: str | None = None,
+    required_fields: frozenset[str] | None = None,
+    forbidden_fields: frozenset[str] | None = None,
+    enum_allowed_values: Mapping[str, frozenset[str]] | None = None,
+    enum_aliases: Mapping[str, Mapping[str, str]] | None = None,
+) -> str:
+    """Hash schema and normalization rules that affect accepted outputs."""
+
+    canonical = {
+        "policy_version": policy_version or SCHEMA_NORMALIZATION_POLICY_VERSION,
+        "required_fields": sorted(required_fields or REQUIRED_FIELDS),
+        "forbidden_trading_fields": sorted(forbidden_fields or FORBIDDEN_TRADING_FIELDS),
+        "enum_allowed_values": {
+            field_name: sorted(values) for field_name, values in (enum_allowed_values or ENUM_ALLOWED_VALUES).items()
+        },
+        "controlled_enum_aliases": {
+            field_name: dict(values) for field_name, values in (enum_aliases or CONTROLLED_ENUM_ALIASES).items()
+        },
+        "human_review_semantics": {
+            "require_more_evidence": {
+                "human_review_required": True,
+                "reason": REVIEW_DECISION_HUMAN_REVIEW_NORMALIZATION_REASON,
+            },
+            "wait": {"human_review_required_false_allowed": True},
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(canonical, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+SCHEMA_NORMALIZATION_POLICY_HASH = build_schema_normalization_policy_hash()
 
 
 def validate_model_review_output(output: Mapping[str, Any]) -> SchemaValidationResult:
@@ -252,6 +291,9 @@ __all__ = [
     "ENUM_ALLOWED_VALUES",
     "FORBIDDEN_TRADING_FIELDS",
     "REQUIRED_FIELDS",
+    "SCHEMA_NORMALIZATION_POLICY_HASH",
+    "SCHEMA_NORMALIZATION_POLICY_VERSION",
     "REVIEW_DECISION_HUMAN_REVIEW_NORMALIZATION_REASON",
+    "build_schema_normalization_policy_hash",
     "validate_model_review_output",
 ]

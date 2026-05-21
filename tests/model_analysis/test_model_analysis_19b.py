@@ -14,10 +14,21 @@ from app.model_analysis.hermes_formatter import (
     build_model_analysis_provider_call_failed_visible_body,
 )
 from app.model_analysis.model_registry import ModelRegistryError, resolve_model_review_profile
-from app.model_analysis.prompt_builder import build_model_review_prompt
+from app.model_analysis.payloads import build_review_version_key
+from app.model_analysis.prompt_builder import (
+    PROMPT_TEMPLATE_HASH,
+    REVIEW_OUTPUT_RULES,
+    build_model_review_prompt,
+    build_prompt_template_hash,
+)
 from app.model_analysis.providers.deepseek import DeepSeekReviewProvider
 from app.model_analysis.providers.base import ProviderCallError, ProviderRequest, ProviderResponse
-from app.model_analysis.schema_validator import validate_model_review_output
+from app.model_analysis.schema_validator import (
+    SCHEMA_NORMALIZATION_POLICY_HASH,
+    SCHEMA_NORMALIZATION_POLICY_VERSION,
+    build_schema_normalization_policy_hash,
+    validate_model_review_output,
+)
 from app.model_analysis.service import ModelAnalysisService
 from app.model_analysis.types import (
     ModelAnalysisRequest,
@@ -989,6 +1000,75 @@ def test_review_version_key_includes_profile_hash_and_model_key(tmp_path: Path) 
     assert first.review_version_key != second.review_version_key
 
 
+def test_review_version_key_changes_with_prompt_schema_and_profile_policy() -> None:
+    base_key = _review_version_key_for_test()
+    changed_prompt_hash = build_prompt_template_hash(
+        output_rules=(*REVIEW_OUTPUT_RULES, "new prompt semantic rule for test")
+    )
+    changed_schema_hash = build_schema_normalization_policy_hash(
+        policy_version="schema_normalization_policy_test_next"
+    )
+
+    assert changed_prompt_hash != PROMPT_TEMPLATE_HASH
+    assert changed_schema_hash != SCHEMA_NORMALIZATION_POLICY_HASH
+    assert base_key != _review_version_key_for_test(prompt_template_hash=changed_prompt_hash)
+    assert base_key != _review_version_key_for_test(review_schema_version="review_schema_v2")
+    assert base_key != _review_version_key_for_test(
+        schema_normalization_policy_version="schema_normalization_policy_test_next",
+        schema_normalization_policy_hash=changed_schema_hash,
+    )
+    assert base_key != _review_version_key_for_test(profile_hash="changed-profile-hash")
+
+
+def test_old_review_version_key_does_not_skip_new_prompt_schema_policy(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    selection = resolve_model_review_profile(str(config_dir), model_key="deepseek_v4_pro_review")
+    old_review_version_key = build_review_version_key(
+        material_pack_id="AMP-stage19",
+        model_provider="deepseek",
+        model_key="deepseek_v4_pro_review",
+        model_name="deepseek-v4-pro",
+        model_version="v4_pro",
+        profile_hash=selection.profile.profile_hash,
+        prompt_template_hash="legacy-prompt-template-hash",
+        prompt_template_version="review_gate_v1",
+        review_schema_version="review_schema_v1",
+        schema_normalization_policy_version="legacy_schema_policy",
+        schema_normalization_policy_hash="legacy-schema-policy-hash",
+        review_mode="single",
+    )
+    legacy_result = SimpleNamespace(
+        review_version_key=old_review_version_key,
+        material_pack_id="AMP-stage19",
+        aggregation_run_id="SAR-stage19",
+        strategy_signal_run_id="SSR-stage19",
+        review_decision="require_more_evidence",
+        human_review_required=False,
+        evidence_quality="moderate",
+        risk_acceptability="caution",
+        strategy_conflict_level="low",
+    )
+    repo = ArtifactRepository(material_pack=material_pack(), existing_result=legacy_result)
+    provider = FakeDeepSeekProvider(
+        output=_valid_provider_output(
+            review_decision="require_more_evidence",
+            human_review_required=False,
+        )
+    )
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir),
+        repository=repo,
+        provider=provider,
+    ).run_model_analysis(FakeSession(), request=_real_request(confirm=False))
+
+    assert result.status == ModelAnalysisStatus.SUCCESS
+    assert result.review_version_key != old_review_version_key
+    assert provider.calls == 1
+    assert result.review_decision == "require_more_evidence"
+    assert result.human_review_required is True
+
+
 def test_oversized_raw_response_is_artifacted_and_warned_without_main_raw_text(tmp_path: Path) -> None:
     config_dir = _write_deepseek_config(tmp_path / "config")
     repo = ArtifactRepository(material_pack=material_pack())
@@ -1083,6 +1163,31 @@ def _real_settings(
         deepseek_api_key="test-deepseek-key",
         model_review_artifact_dir=str(artifact_dir or (config_dir / "artifacts")),
         model_review_raw_artifact_max_bytes=raw_artifact_max_bytes,
+    )
+
+
+def _review_version_key_for_test(
+    *,
+    profile_hash: str = "profile-hash",
+    prompt_template_hash: str = PROMPT_TEMPLATE_HASH,
+    prompt_template_version: str = "review_gate_v1",
+    review_schema_version: str = "review_schema_v1",
+    schema_normalization_policy_version: str = SCHEMA_NORMALIZATION_POLICY_VERSION,
+    schema_normalization_policy_hash: str = SCHEMA_NORMALIZATION_POLICY_HASH,
+) -> str:
+    return build_review_version_key(
+        material_pack_id="AMP-stage19",
+        model_provider="deepseek",
+        model_key="deepseek_v4_pro_review",
+        model_name="deepseek-v4-pro",
+        model_version="v4_pro",
+        profile_hash=profile_hash,
+        prompt_template_hash=prompt_template_hash,
+        prompt_template_version=prompt_template_version,
+        review_schema_version=review_schema_version,
+        schema_normalization_policy_version=schema_normalization_policy_version,
+        schema_normalization_policy_hash=schema_normalization_policy_hash,
+        review_mode="single",
     )
 
 
