@@ -124,11 +124,13 @@ class ModelAnalysisService:
         repository: ModelAnalysisRepository | Any | None = None,
         provider: Any | None = None,
         alert_sender: Any | None = None,
+        alert_repository: Any | None = None,
     ) -> None:
         self._settings = settings or get_settings()
         self._repository = repository or create_default_model_analysis_repository()
         self._provider = provider
         self._alert_sender = alert_sender or _default_alert_sender
+        self._alert_repository = alert_repository
 
     def run_model_analysis(
         self,
@@ -1357,11 +1359,15 @@ class ModelAnalysisService:
         run_row: Any,
         result: ModelAnalysisServiceResult,
     ) -> ModelAnalysisServiceResult:
-        hermes_status, hermes_message, hermes_error, hermes_sent_at_utc = self._send_or_skip_hermes(result=result)
+        hermes_status, hermes_message, hermes_error, hermes_sent_at_utc = self._send_or_skip_hermes(
+            db_session=db_session,
+            result=result,
+        )
         try:
             self._repository.record_hermes_result(
                 db_session,
                 run_row,
+                hermes_enabled=_hermes_enabled_from_status(hermes_status),
                 hermes_status=hermes_status.value,
                 hermes_message=hermes_message,
                 hermes_error=hermes_error,
@@ -1385,12 +1391,14 @@ class ModelAnalysisService:
         result: ModelAnalysisServiceResult,
     ) -> ModelAnalysisServiceResult:
         hermes_status, hermes_message, hermes_error, hermes_sent_at_utc = self._send_or_skip_oversized_hermes(
-            result=result
+            db_session=db_session,
+            result=result,
         )
         try:
             self._repository.record_hermes_result(
                 db_session,
                 run_row,
+                hermes_enabled=_hermes_enabled_from_status(hermes_status),
                 hermes_status=hermes_status.value,
                 hermes_message=hermes_message,
                 hermes_error=hermes_error,
@@ -1414,12 +1422,14 @@ class ModelAnalysisService:
         result: ModelAnalysisServiceResult,
     ) -> ModelAnalysisServiceResult:
         hermes_status, hermes_message, hermes_error, hermes_sent_at_utc = self._send_or_skip_artifact_failed_hermes(
-            result=result
+            db_session=db_session,
+            result=result,
         )
         try:
             self._repository.record_hermes_result(
                 db_session,
                 run_row,
+                hermes_enabled=_hermes_enabled_from_status(hermes_status),
                 hermes_status=hermes_status.value,
                 hermes_message=hermes_message,
                 hermes_error=hermes_error,
@@ -1443,12 +1453,14 @@ class ModelAnalysisService:
         result: ModelAnalysisServiceResult,
     ) -> ModelAnalysisServiceResult:
         hermes_status, hermes_message, hermes_error, hermes_sent_at_utc = self._send_or_skip_provider_failed_hermes(
-            result=result
+            db_session=db_session,
+            result=result,
         )
         try:
             self._repository.record_hermes_result(
                 db_session,
                 run_row,
+                hermes_enabled=_hermes_enabled_from_status(hermes_status),
                 hermes_status=hermes_status.value,
                 hermes_message=hermes_message,
                 hermes_error=hermes_error,
@@ -1472,12 +1484,14 @@ class ModelAnalysisService:
         result: ModelAnalysisServiceResult,
     ) -> ModelAnalysisServiceResult:
         hermes_status, hermes_message, hermes_error, hermes_sent_at_utc = self._send_or_skip_persistence_failed_hermes(
-            result=result
+            db_session=db_session,
+            result=result,
         )
         try:
             self._repository.record_hermes_result(
                 db_session,
                 run_row,
+                hermes_enabled=_hermes_enabled_from_status(hermes_status),
                 hermes_status=hermes_status.value,
                 hermes_message=hermes_message,
                 hermes_error=hermes_error,
@@ -1496,6 +1510,7 @@ class ModelAnalysisService:
     def _send_or_skip_provider_failed_hermes(
         self,
         *,
+        db_session: Any,
         result: ModelAnalysisServiceResult,
     ) -> tuple[ModelAnalysisHermesStatus, str | None, str | None, datetime | None]:
         if not self._settings.model_review_hermes_enabled:
@@ -1521,7 +1536,7 @@ class ModelAnalysisService:
             trace_id=result.trace_id,
         )
         try:
-            send_result = self._alert_sender(alert_event, settings=self._settings, send_real_alert=True)
+            send_result = self._send_model_analysis_alert(alert_event, db_session=db_session)
         except Exception as exc:  # noqa: BLE001
             return ModelAnalysisHermesStatus.FAILED, visible_body, str(exc), None
         if getattr(send_result, "status", None) == AlertSendStatus.SUBMITTED_TO_HERMES:
@@ -1541,6 +1556,7 @@ class ModelAnalysisService:
     def _send_or_skip_persistence_failed_hermes(
         self,
         *,
+        db_session: Any,
         result: ModelAnalysisServiceResult,
     ) -> tuple[ModelAnalysisHermesStatus, str | None, str | None, datetime | None]:
         if not self._settings.model_review_hermes_enabled:
@@ -1567,7 +1583,7 @@ class ModelAnalysisService:
             trace_id=result.trace_id,
         )
         try:
-            send_result = self._alert_sender(alert_event, settings=self._settings, send_real_alert=True)
+            send_result = self._send_model_analysis_alert(alert_event, db_session=db_session)
         except Exception as exc:  # noqa: BLE001
             return ModelAnalysisHermesStatus.FAILED, visible_body, str(exc), None
         if getattr(send_result, "status", None) == AlertSendStatus.SUBMITTED_TO_HERMES:
@@ -1587,6 +1603,7 @@ class ModelAnalysisService:
     def _send_or_skip_artifact_failed_hermes(
         self,
         *,
+        db_session: Any,
         result: ModelAnalysisServiceResult,
     ) -> tuple[ModelAnalysisHermesStatus, str | None, str | None, datetime | None]:
         if not self._settings.model_review_hermes_on_oversized_output:
@@ -1609,7 +1626,7 @@ class ModelAnalysisService:
             trace_id=result.trace_id,
         )
         try:
-            send_result = self._alert_sender(alert_event, settings=self._settings, send_real_alert=True)
+            send_result = self._send_model_analysis_alert(alert_event, db_session=db_session)
         except Exception as exc:  # noqa: BLE001
             return ModelAnalysisHermesStatus.FAILED, visible_body, str(exc), None
         if getattr(send_result, "status", None) == AlertSendStatus.SUBMITTED_TO_HERMES:
@@ -1629,6 +1646,7 @@ class ModelAnalysisService:
     def _send_or_skip_oversized_hermes(
         self,
         *,
+        db_session: Any,
         result: ModelAnalysisServiceResult,
     ) -> tuple[ModelAnalysisHermesStatus, str | None, str | None, datetime | None]:
         if not self._settings.model_review_hermes_on_oversized_output:
@@ -1643,16 +1661,23 @@ class ModelAnalysisService:
                 WECHAT_VISIBLE_BODY_DETAIL_KEY: visible_body,
                 "model_analysis_run_id": result.model_analysis_run_id,
                 "material_pack_id": result.material_pack_id,
+                "provider": result.details.get("provider", "") if result.details else "",
+                "model_key": result.model_key or "",
+                "model_name": result.details.get("model_name", "") if result.details else "",
+                "raw_response_storage_ref": result.details.get("raw_response_storage_ref", "") if result.details else "",
+                "trace_id": result.trace_id,
                 "raw_response_char_count": result.raw_response_char_count,
                 "raw_response_byte_count": result.raw_response_byte_count,
                 "not_final_trading_advice": True,
                 "no_auto_trading": True,
+                "no_order_generated": True,
+                "no_position_or_leverage": True,
             },
             source=MODEL_ANALYSIS_EVENT_SOURCE,
             trace_id=result.trace_id,
         )
         try:
-            send_result = self._alert_sender(alert_event, settings=self._settings, send_real_alert=True)
+            send_result = self._send_model_analysis_alert(alert_event, db_session=db_session)
         except Exception as exc:  # noqa: BLE001
             return ModelAnalysisHermesStatus.FAILED, visible_body, str(exc), None
         if getattr(send_result, "status", None) == AlertSendStatus.SUBMITTED_TO_HERMES:
@@ -1672,6 +1697,7 @@ class ModelAnalysisService:
     def _send_or_skip_hermes(
         self,
         *,
+        db_session: Any,
         result: ModelAnalysisServiceResult,
     ) -> tuple[ModelAnalysisHermesStatus, str | None, str | None, datetime | None]:
         if not self._settings.model_review_hermes_enabled:
@@ -1701,11 +1727,7 @@ class ModelAnalysisService:
             trace_id=result.trace_id,
         )
         try:
-            send_result = self._alert_sender(
-                alert_event,
-                settings=self._settings,
-                send_real_alert=True,
-            )
+            send_result = self._send_model_analysis_alert(alert_event, db_session=db_session)
         except Exception as exc:  # noqa: BLE001
             return ModelAnalysisHermesStatus.FAILED, visible_body, str(exc), None
         if getattr(send_result, "status", None) == AlertSendStatus.SUBMITTED_TO_HERMES:
@@ -1721,6 +1743,31 @@ class ModelAnalysisService:
             getattr(send_result, "error_message", "") or getattr(send_result, "message", "") or "Hermes not sent",
             None,
         )
+
+    def _send_model_analysis_alert(self, alert_event: AlertEvent, *, db_session: Any) -> Any:
+        """Send one model-analysis alert through the shared alerting service.
+
+        The alerting service owns `alert_message` creation and Hermes dispatch.
+        This service only passes the current session and repository so model
+        alerts participate in the global alert audit without writing raw model
+        request or response text into business tables.
+        """
+
+        return self._alert_sender(
+            alert_event,
+            settings=self._settings,
+            repository=self._resolve_alert_repository(),
+            db_session=db_session,
+            send_real_alert=True,
+        )
+
+    def _resolve_alert_repository(self) -> Any:
+        if self._alert_repository is not None:
+            return self._alert_repository
+        from app.storage.mysql.repositories.alert_message_repository import create_default_alert_message_repository
+
+        self._alert_repository = create_default_alert_message_repository()
+        return self._alert_repository
 
 
 def run_model_analysis(
@@ -1784,6 +1831,14 @@ def _rollback_if_possible(db_session: Any) -> None:
     rollback = getattr(db_session, "rollback", None)
     if callable(rollback):
         rollback()
+
+
+def _hermes_enabled_from_status(hermes_status: ModelAnalysisHermesStatus) -> bool | None:
+    if hermes_status == ModelAnalysisHermesStatus.DISABLED:
+        return False
+    if hermes_status in {ModelAnalysisHermesStatus.SENT, ModelAnalysisHermesStatus.FAILED}:
+        return True
+    return None
 
 
 def _redact_sensitive_mapping(value: Any) -> Any:

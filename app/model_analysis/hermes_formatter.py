@@ -56,6 +56,7 @@ def build_model_analysis_oversized_response_visible_body(result: ModelAnalysisSe
     if result.status == ModelAnalysisStatus.SUCCESS:
         processing_result = "已隔离保存 / 已生成结构化审查结果"
     provider = result.details.get("provider", "deepseek") if result.details else "deepseek"
+    raw_response_storage_ref = result.details.get("raw_response_storage_ref", "") if result.details else ""
     return "\n".join(
         [
             "【标题】BTC 大模型审查返回过长",
@@ -66,6 +67,7 @@ def build_model_analysis_oversized_response_visible_body(result: ModelAnalysisSe
             f"- model_name：{result.details.get('model_name', 'unknown') if result.details else 'unknown'}",
             f"- material_pack_id：{result.material_pack_id}",
             f"- model_analysis_run_id：{result.model_analysis_run_id}",
+            f"- raw_response_storage_ref：{raw_response_storage_ref or 'unknown'}",
             f"- raw_response_char_count：{result.raw_response_char_count}",
             f"- raw_response_byte_count：{result.raw_response_byte_count}",
             f"- 处理结果：{processing_result}",

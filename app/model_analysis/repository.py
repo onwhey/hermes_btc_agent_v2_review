@@ -235,6 +235,7 @@ class ModelAnalysisRepository:
         db_session: Any,
         run_row: Any,
         *,
+        hermes_enabled: bool | None = None,
         hermes_status: str,
         hermes_message: str | None,
         hermes_error: str | None,
@@ -242,6 +243,8 @@ class ModelAnalysisRepository:
     ) -> Any:
         """Store Hermes dispatch outcome without changing review status."""
 
+        if hermes_enabled is not None:
+            run_row.hermes_enabled = hermes_enabled
         run_row.hermes_status = hermes_status
         run_row.hermes_message = hermes_message
         run_row.hermes_error = hermes_error

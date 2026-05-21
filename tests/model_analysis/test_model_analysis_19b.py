@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
 
+from app.alerting.service import send_alert
+from app.alerting.types import AlertSendResult, AlertSendStatus
 from app.core.config import AppSettings
 from app.model_analysis.hermes_formatter import (
     build_model_analysis_artifact_write_failed_visible_body,
@@ -57,6 +59,48 @@ class ArtifactRepository(FakeModelAnalysisRepository):
         row.id = len(self.artifact_rows) + 1
         self.artifact_rows.append(row)
         return row
+
+
+class FakeAlertMessageRepository:
+    def __init__(self) -> None:
+        self.records: list[Any] = []
+
+    def create_pending_alert_message(self, _db_session: Any, event: Any, message: str) -> Any:
+        row = SimpleNamespace(
+            alert_type=event.alert_type.value,
+            severity=event.severity.value,
+            title=event.title,
+            message=message,
+            status=AlertSendStatus.PENDING.value,
+            source=event.source,
+            trace_id=event.trace_id,
+            channel_response=None,
+            error_message=None,
+            sent_at_utc=None,
+        )
+        self.records.append(row)
+        return row
+
+    def update_alert_message_result(self, _db_session: Any, alert_message: Any, result: AlertSendResult) -> Any:
+        alert_message.status = result.status.value
+        alert_message.channel_response = dict(result.channel_response)
+        alert_message.error_message = result.error_message or None
+        alert_message.sent_at_utc = result.submitted_at_utc
+        return alert_message
+
+
+class FakeHermesClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, str, bool]] = []
+
+    def send_alert_message(self, event: Any, message: str, *, send_real_alert: bool = False) -> AlertSendResult:
+        self.calls.append((event, message, send_real_alert))
+        return AlertSendResult(
+            status=AlertSendStatus.SUBMITTED_TO_HERMES,
+            message="submitted",
+            submitted_at_utc=event.occurred_at_utc,
+            attempted_real_send=send_real_alert,
+        )
 
 
 class FakeDeepSeekProvider:
@@ -1092,6 +1136,49 @@ def test_oversized_raw_response_is_artifacted_and_warned_without_main_raw_text(t
     assert "BTC 大模型审查返回过长" in body
     assert "不是最终交易建议" in body
     assert "本阶段未自动交易" in body
+
+
+def test_oversized_raw_response_records_model_analysis_alert_message(tmp_path: Path) -> None:
+    config_dir = _write_deepseek_config(tmp_path / "config")
+    repo = ArtifactRepository(material_pack=material_pack())
+    provider = FakeDeepSeekProvider(raw_padding=12_000)
+    alert_repo = FakeAlertMessageRepository()
+    hermes_client = FakeHermesClient()
+
+    def alert_sender(event: Any, **kwargs: Any) -> AlertSendResult:
+        return send_alert(event, client=hermes_client, **kwargs)
+
+    result = ModelAnalysisService(
+        settings=_real_settings(config_dir, enabled=True, artifact_dir=tmp_path / "artifacts"),
+        repository=repo,
+        provider=provider,
+        alert_sender=alert_sender,
+        alert_repository=alert_repo,
+    ).run_model_analysis(FakeSession(), request=_real_request(confirm=True))
+
+    assert result.status == ModelAnalysisStatus.SUCCESS
+    assert result.hermes_status.value == "sent"
+    assert repo.run_rows[0].hermes_status == "sent"
+    assert repo.run_rows[0].hermes_enabled is True
+    assert repo.run_rows[0].raw_response_storage_ref
+
+    assert len(alert_repo.records) == 1
+    alert_message = alert_repo.records[0]
+    assert alert_message.alert_type == "model_analysis"
+    assert alert_message.severity == "warning"
+    assert alert_message.status == "submitted_to_hermes"
+    assert "BTC 大模型审查返回过长" in alert_message.title
+    assert "deepseek_v4_pro_review" in alert_message.message
+    assert "deepseek" in alert_message.message
+    assert "deepseek-v4-pro" in alert_message.message
+    assert "AMP-stage19" in alert_message.message
+    assert result.model_analysis_run_id in alert_message.message
+    assert repo.run_rows[0].raw_response_storage_ref in alert_message.message
+    assert "trace-stage19b" in alert_message.message
+    assert "不是最终交易建议" in alert_message.message
+    assert "未自动交易" in alert_message.message
+    assert "未生成订单" in alert_message.message
+    assert "仓位或杠杆" in alert_message.message
 
 
 def test_oversized_raw_response_dry_run_has_no_artifact_or_hermes_side_effect(tmp_path: Path) -> None:

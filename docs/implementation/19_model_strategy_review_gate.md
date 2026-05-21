@@ -1125,3 +1125,77 @@ normalization policy 变化时 key 变化、profile_hash 变化时 key 变化、
 skipped、新规则会把 `require_more_evidence + human_review_required=false` 规范化为 true、
 `wait + human_review_required=false` 允许通过。默认 pytest 不访问真实外网、不发送真实 Hermes、
 不调用交易接口、不修改正式 K 线表。
+## 9. 19B model_analysis 告警审计表收口修复
+
+### 9.1 发起方式
+
+仍由用户手动执行 19B CLI。dry-run 不写库、不发送 Hermes、不写 `alert_message`；confirm-write
+在真实模型调用、超长 raw response、artifact 写入失败、provider 调用失败或持久化失败等路径中，才可能触发模型分析告警。
+
+### 9.2 核心调用链路
+
+```text
+scripts/run_model_analysis.py::main
+    -> app/model_analysis/service.py::ModelAnalysisService.run_model_analysis
+    -> app/model_analysis/service.py::_record_oversized_hermes_and_return
+    -> app/model_analysis/service.py::_send_or_skip_oversized_hermes
+    -> app/model_analysis/service.py::_send_model_analysis_alert
+    -> app/alerting/service.py::send_alert
+    -> app/storage/mysql/repositories/alert_message_repository.py::create_pending_alert_message
+    -> app/alerting/hermes_client.py::HermesClient.send_alert_message
+    -> app/storage/mysql/repositories/alert_message_repository.py::update_alert_message_result
+    -> app/model_analysis/repository.py::record_hermes_result
+```
+
+### 9.3 告警记录位置
+
+模型分析告警现在同时记录两层审计：
+
+```text
+model_analysis_run.hermes_*：
+    保存本次 model_analysis_run 内部的 Hermes 摘要状态、正文摘要、错误和发送时间。
+
+alert_message：
+    保存全局告警审计记录，alert_type=model_analysis，severity=warning 或对应级别，
+    status 使用统一 alerting 模块的提交状态。
+```
+
+超长 raw response 告警内容包含 `model_key`、provider、`model_name`、`material_pack_id`、
+`model_analysis_run_id`、`raw_response_storage_ref`、`trace_id`、raw response 长度，以及明确边界：
+不是最终交易建议、未自动交易、未生成订单、未给出仓位或杠杆。
+
+### 9.4 hermes_enabled 语义修复
+
+此前超长 raw response 使用 `MODEL_REVIEW_HERMES_ON_OVERSIZED_OUTPUT` 开关发送 warning，
+但 run 初始化时 `hermes_enabled` 只看普通 `MODEL_REVIEW_HERMES_ENABLED`，可能出现
+`hermes_enabled=0` 且 `hermes_status=sent`。现在 `record_hermes_result` 在记录最终 Hermes
+结果时会按实际发送状态同步修正：
+
+```text
+hermes_status = sent / failed -> hermes_enabled = true
+hermes_status = disabled      -> hermes_enabled = false
+not_required                  -> 保持原始运行配置语义
+```
+
+### 9.5 本修复不负责
+
+- 不新增真实策略。
+- 不接 scheduler。
+- 不修改正式 K 线表。
+- 不生成入场价、止损价、止盈价、仓位、杠杆。
+- 不调用交易接口。
+- 不自动交易。
+- 不把完整 raw request 或 raw response 写入主业务表。
+
+### 9.6 测试
+
+对应测试：
+
+```text
+tests/model_analysis/test_model_analysis_19b.py
+```
+
+新增覆盖：真实模型 confirm-write 下 raw response 超长时，仍写入 artifact 引用，更新
+`model_analysis_run.hermes_*`，并通过统一 `app/alerting/service.py::send_alert` 写入
+`alert_message` 审计记录；记录中 `alert_type=model_analysis`、`severity=warning`、
+`status=submitted_to_hermes`，且消息包含模型、材料包、run、artifact 引用和安全边界说明。
