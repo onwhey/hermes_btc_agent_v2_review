@@ -75,6 +75,13 @@ from app.model_review_chain.state_machine import (
     step_retry_is_available,
     step_status,
 )
+from app.model_review_chain.worker_safety import (
+    build_stale_running_recovery_plan,
+    cli_real_model_cost_confirmation_missing,
+    retry_available_after_attempt,
+    stage19_result_is_temporary_failure,
+    temporary_retry_after_utc,
+)
 from app.model_review_chain.worker_schema import (
     MODEL_REVIEW_CHAIN_WORKER_STATUS_BLOCKED,
     MODEL_REVIEW_CHAIN_WORKER_STATUS_FAILED,
@@ -96,7 +103,10 @@ from app.model_review_chain.worker_result_builder import (
     result_from_reusable_aggregation,
 )
 
-ALLOWED_MODEL_REVIEW_CHAIN_WORKER_TRIGGER_SOURCES = frozenset({TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER})
+ALLOWED_MODEL_REVIEW_CHAIN_WORKER_TRIGGER_SOURCES = frozenset(
+    {TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER, MODEL_REVIEW_TRIGGER_SOURCE_WORKER}
+)
+_RETRY_AFTER_UNCHANGED = object()
 
 
 class ModelReviewChainWorker:
@@ -157,7 +167,7 @@ class ModelReviewChainWorker:
     ) -> ModelReviewChainWorkerResult | None:
         problems: list[str] = []
         if request.trigger_source not in ALLOWED_MODEL_REVIEW_CHAIN_WORKER_TRIGGER_SOURCES:
-            problems.append("trigger_source supports only cli or scheduler for stage 20C worker")
+            problems.append("trigger_source supports only cli, scheduler, or worker for stage 20C worker")
         if request.dry_run and request.confirm_write:
             problems.append("dry_run and confirm_write cannot both be true")
         if not request.dry_run and not request.confirm_write:
@@ -421,6 +431,14 @@ class ModelReviewChainWorker:
     ) -> ModelReviewChainWorkerResult:
         if profile is None:
             return chain_result_without_step(request=request, chain_row=chain_row, error_code="unknown_chain_key")
+        stale_running_result = self._normalize_stale_running_steps(
+            db_session,
+            request=request,
+            chain_row=chain_row,
+            step_rows=step_rows,
+        )
+        if stale_running_result is not None:
+            return stale_running_result
         invoked_keys: list[str] = []
         invoked_roles: list[str] = []
         result_steps: list[ModelReviewChainStepResult] = []
@@ -491,6 +509,71 @@ class ModelReviewChainWorker:
                 error_message=str(exc),
             )
 
+    def _normalize_stale_running_steps(
+        self,
+        db_session: Any,
+        *,
+        request: ModelReviewChainWorkerRequest,
+        chain_row: Any,
+        step_rows: tuple[Any, ...],
+    ) -> ModelReviewChainWorkerResult | None:
+        """Convert stale RUNNING steps into recoverable timeout states.
+
+        A worker process can crash after setting a step to RUNNING. This method
+        is intentionally called before any new provider call so that a stale
+        RUNNING row does not permanently block the chain or trigger duplicate
+        costs in the same tick.
+        """
+
+        plan = build_stale_running_recovery_plan(
+            step_rows=step_rows,
+            current_time_utc=now_utc(),
+            timeout_seconds=int(self._settings.model_review_step_running_timeout_seconds),
+        )
+        if not plan.changed:
+            return None
+        for update in plan.updates:
+            step_row = update.step_row
+            self._apply_step_state(
+                db_session,
+                step_row=step_row,
+                status=update.status,
+                attempt_no=update.attempt_no,
+                parent_model_analysis_run_id=(
+                    str(getattr(step_row, "parent_model_analysis_run_id", "") or "") or None
+                ),
+                model_analysis_run_id=str(getattr(step_row, "model_analysis_run_id", "") or "") or None,
+                started_at_utc=getattr(step_row, "started_at_utc", None),
+                finished_at_utc=update.finished_at_utc,
+                step_input_hash=str(getattr(step_row, "step_input_hash", "") or "") or None,
+                step_output_hash=str(getattr(step_row, "step_output_hash", "") or "") or None,
+                error_code=update.error_code,
+                error_message=update.error_message,
+                retry_after_utc=update.retry_after_utc,
+            )
+        state = calculate_chain_state(step_rows, total_steps=len(step_rows))
+        self._persist_chain_state(db_session, chain_row=chain_row, state=state)
+        _commit_if_possible(db_session)
+        result_status = MODEL_REVIEW_CHAIN_WORKER_STATUS_SKIPPED if plan.retryable_timeout_found else MODEL_REVIEW_CHAIN_WORKER_STATUS_BLOCKED
+        return build_worker_result(
+            status=result_status,
+            trace_id=request.trace_id,
+            material_pack_id=str(getattr(chain_row, "material_pack_id", "") or "") or None,
+            chain_id=str(getattr(chain_row, "chain_id", "") or "") or None,
+            aggregation_run_id=str(getattr(chain_row, "aggregation_run_id", "") or "") or None,
+            strategy_signal_run_id=str(getattr(chain_row, "strategy_signal_run_id", "") or "") or None,
+            snapshot_id=str(getattr(chain_row, "snapshot_id", "") or "") or None,
+            model_review_skip_reason="本轮未调用大模型；worker 先恢复超时 RUNNING step，后续 tick 可继续 resume。",
+            model_review_block_reason="step_running_timeout",
+            model_review_chain_status=state.status.value,
+            model_review_basis="running_step_timeout_recovery",
+            summary_text="本轮未调用大模型；worker 已将超时 RUNNING step 标记为 timeout/failed，避免 chain 永久卡在 running。",
+            error_code="step_running_timeout_recovered",
+            error_message="Stale RUNNING step was normalized before any stage-19 call.",
+            steps=tuple(build_step_result(step_row) for step_row in step_rows),
+            details={"timeout_seconds": plan.timeout_seconds},
+        )
+
     def _advance_one_step(
         self,
         db_session: Any,
@@ -511,6 +594,16 @@ class ModelReviewChainWorker:
             material_pack_id=str(getattr(chain_row, "material_pack_id", "") or ""),
         )
         if isinstance(step_lock, ModelReviewChainWorkerResult):
+            if step_lock.error_code == "worker_lock_already_held":
+                self._mark_step_retry_waiting(
+                    db_session,
+                    step_row=step_row,
+                    parent_model_analysis_run_id=parent_model_analysis_run_id,
+                    error_code="worker_lock_already_held",
+                    error_message="A worker lock is already held for this step; retry later.",
+                    retry_after_utc=temporary_retry_after_utc(now_utc()),
+                )
+                _commit_if_possible(db_session)
             return step_lock
         try:
             policy = evaluate_automatic_step_policy(
@@ -521,10 +614,15 @@ class ModelReviewChainWorker:
                 current_time_utc=now_utc(),
             )
             if not policy.allowed:
+                next_step_status = (
+                    ModelReviewChainStepStatus.RETRY_WAITING
+                    if policy.is_temporary
+                    else ModelReviewChainStepStatus.BLOCKED
+                )
                 self._apply_step_state(
                     db_session,
                     step_row=step_row,
-                    status=ModelReviewChainStepStatus.BLOCKED,
+                    status=next_step_status,
                     attempt_no=int(getattr(step_row, "attempt_no", 0) or 0),
                     parent_model_analysis_run_id=parent_model_analysis_run_id,
                     model_analysis_run_id=str(getattr(step_row, "model_analysis_run_id", "") or "") or None,
@@ -534,6 +632,7 @@ class ModelReviewChainWorker:
                     step_output_hash=str(getattr(step_row, "step_output_hash", "") or "") or None,
                     error_code=policy.error_code,
                     error_message=policy.message,
+                    retry_after_utc=policy.retry_after_utc,
                 )
                 _commit_if_possible(db_session)
                 return build_worker_result(
@@ -557,7 +656,52 @@ class ModelReviewChainWorker:
                         "daily_budget_usd": str(policy.daily_budget_usd),
                         "current_4h_run_count": policy.current_4h_run_count,
                         "max_runs_per_4h": policy.max_runs_per_4h,
+                        "temporary_block": policy.is_temporary,
+                        "retry_after_utc": (
+                            policy.retry_after_utc.isoformat()
+                            if policy.retry_after_utc
+                            else None
+                        ),
                     },
+                )
+
+            if cli_real_model_cost_confirmation_missing(request):
+                retry_after = temporary_retry_after_utc(now_utc())
+                self._mark_step_retry_waiting(
+                    db_session,
+                    step_row=step_row,
+                    parent_model_analysis_run_id=parent_model_analysis_run_id,
+                    error_code="cli_real_model_cost_not_confirmed",
+                    error_message=(
+                        "CLI-triggered 20C worker requires --confirm-real-model-cost before "
+                        "it may ask stage 19 to call a real model."
+                    ),
+                    retry_after_utc=retry_after,
+                )
+                _commit_if_possible(db_session)
+                return build_worker_result(
+                    status=MODEL_REVIEW_CHAIN_WORKER_STATUS_BLOCKED,
+                    trace_id=request.trace_id,
+                    material_pack_id=str(getattr(chain_row, "material_pack_id", "") or "") or None,
+                    chain_id=chain_id,
+                    aggregation_run_id=str(getattr(chain_row, "aggregation_run_id", "") or "") or None,
+                    strategy_signal_run_id=str(getattr(chain_row, "strategy_signal_run_id", "") or "") or None,
+                    snapshot_id=str(getattr(chain_row, "snapshot_id", "") or "") or None,
+                    model_review_skip_reason=(
+                        "本轮未调用大模型；CLI worker 缺少 --confirm-real-model-cost。"
+                    ),
+                    model_review_block_reason=(
+                        "CLI trigger_source requires --confirm-real-model-cost for real model cost confirmation."
+                    ),
+                    model_review_chain_status=ModelReviewChainStatus.BLOCKED.value,
+                    model_review_basis="cli_cost_confirmation_blocked",
+                    summary_text="本轮未调用大模型；CLI worker 缺少 --confirm-real-model-cost。",
+                    error_code="cli_real_model_cost_not_confirmed",
+                    error_message=(
+                        "CLI-triggered worker did not pass --confirm-real-model-cost; "
+                        "stage 19 was not called."
+                    ),
+                    details={"retry_after_utc": retry_after.isoformat()},
                 )
 
             attempt_no = int(getattr(step_row, "attempt_no", 0) or 0) + 1
@@ -580,6 +724,7 @@ class ModelReviewChainWorker:
                 step_output_hash=None,
                 error_code=None,
                 error_message=None,
+                retry_after_utc=None,
             )
             _commit_if_possible(db_session)
             model_result = self._call_stage19_for_step(
@@ -622,7 +767,9 @@ class ModelReviewChainWorker:
             trace_id=request.trace_id,
             use_real_model=True,
             model_key=str(getattr(step_row, "model_key", "") or ""),
-            confirm_real_model_cost=True,
+            confirm_real_model_cost=(
+                request.trigger_source != TRIGGER_SOURCE_CLI or request.confirm_real_model_cost
+            ),
             chain_id=str(getattr(chain_row, "chain_id", "") or ""),
             chain_step=int(getattr(step_row, "step_no", 0) or 0),
             parent_model_analysis_run_id=parent_model_analysis_run_id,
@@ -651,17 +798,31 @@ class ModelReviewChainWorker:
             error_code = None
             error_message = None
         elif status == ModelAnalysisStatus.BLOCKED:
-            step_status_value = ModelReviewChainStepStatus.BLOCKED
             error_code = getattr(stage19_result, "error_code", None) or "model_analysis_blocked"
             error_message = getattr(stage19_result, "error_message", None) or getattr(stage19_result, "message", "")
+            step_status_value = (
+                ModelReviewChainStepStatus.RETRY_WAITING
+                if stage19_result_is_temporary_failure(stage19_result)
+                and retry_available_after_attempt(
+                    attempt_no=attempt_no,
+                    max_retry_count=int(getattr(step_row, "max_retry_count", 0) or 0),
+                )
+                else ModelReviewChainStepStatus.BLOCKED
+            )
         else:
             error_code = getattr(stage19_result, "error_code", None) or "model_analysis_failed"
             error_message = getattr(stage19_result, "error_message", None) or getattr(stage19_result, "message", "")
-            step_status_value = (
-                ModelReviewChainStepStatus.TIMEOUT
-                if "timeout" in str(error_code).lower()
-                else ModelReviewChainStepStatus.FAILED
-            )
+            if stage19_result_is_temporary_failure(stage19_result) and retry_available_after_attempt(
+                attempt_no=attempt_no,
+                max_retry_count=int(getattr(step_row, "max_retry_count", 0) or 0),
+            ):
+                step_status_value = ModelReviewChainStepStatus.RETRY_WAITING
+            else:
+                step_status_value = (
+                    ModelReviewChainStepStatus.TIMEOUT
+                    if "timeout" in str(error_code).lower()
+                    else ModelReviewChainStepStatus.FAILED
+                )
         run_id = str(getattr(stage19_result, "model_analysis_run_id", "") or "")
         output_hash = stable_sha256_text(
             {
@@ -683,6 +844,39 @@ class ModelReviewChainWorker:
             step_output_hash=output_hash,
             error_code=error_code,
             error_message=error_message,
+            retry_after_utc=(
+                temporary_retry_after_utc(now_utc())
+                if step_status_value == ModelReviewChainStepStatus.RETRY_WAITING
+                else None
+            ),
+        )
+
+    def _mark_step_retry_waiting(
+        self,
+        db_session: Any,
+        *,
+        step_row: Any,
+        parent_model_analysis_run_id: str | None,
+        error_code: str,
+        error_message: str,
+        retry_after_utc: Any,
+    ) -> None:
+        """Mark one recoverable worker-side block as retry_waiting."""
+
+        self._apply_step_state(
+            db_session,
+            step_row=step_row,
+            status=ModelReviewChainStepStatus.RETRY_WAITING,
+            attempt_no=int(getattr(step_row, "attempt_no", 0) or 0),
+            parent_model_analysis_run_id=parent_model_analysis_run_id,
+            model_analysis_run_id=str(getattr(step_row, "model_analysis_run_id", "") or "") or None,
+            started_at_utc=getattr(step_row, "started_at_utc", None),
+            finished_at_utc=now_utc(),
+            step_input_hash=str(getattr(step_row, "step_input_hash", "") or "") or None,
+            step_output_hash=str(getattr(step_row, "step_output_hash", "") or "") or None,
+            error_code=error_code,
+            error_message=error_message,
+            retry_after_utc=retry_after_utc,
         )
 
     def _apply_step_state(
@@ -700,7 +894,11 @@ class ModelReviewChainWorker:
         step_output_hash: str | None,
         error_code: str | None,
         error_message: str | None,
+        retry_after_utc: Any = _RETRY_AFTER_UNCHANGED,
     ) -> None:
+        payload_kwargs: dict[str, Any] = {}
+        if retry_after_utc is not _RETRY_AFTER_UNCHANGED:
+            payload_kwargs["retry_after_utc"] = retry_after_utc
         payload = build_step_payload_from_row(
             step_row,
             status=status,
@@ -713,6 +911,7 @@ class ModelReviewChainWorker:
             step_output_hash=step_output_hash,
             error_code=error_code,
             error_message=error_message,
+            **payload_kwargs,
         )
         self._repository.update_model_review_chain_step(db_session, step_row, payload=payload)
         if not hasattr(step_row, "updated_at_utc"):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -205,7 +206,42 @@ def test_model_key_not_in_scheduler_whitelist_blocks_before_stage19() -> None:
     assert step.status == ModelReviewChainStepStatus.BLOCKED.value
 
 
-def test_daily_budget_exceeded_blocks_before_stage19() -> None:
+def test_cli_worker_without_cost_confirmation_does_not_call_stage19() -> None:
+    repo = FakeModelReviewChainRepository()
+    model_service = FakeModelAnalysisService([ModelAnalysisStatus.SUCCESS])
+
+    result = _worker(repo, _blocked_aggregation(), model_service).run_model_review_chain_worker(
+        FakeSession(),
+        request=_request(confirm=True, trigger_source=TRIGGER_SOURCE_CLI),
+    )
+
+    assert result.status == "blocked"
+    assert result.error_code == "cli_real_model_cost_not_confirmed"
+    assert model_service.calls == []
+    step = next(iter(repo.chain_steps.values()))[0]
+    assert step.status == ModelReviewChainStepStatus.RETRY_WAITING.value
+    assert step.error_code == "cli_real_model_cost_not_confirmed"
+
+
+def test_cli_worker_with_cost_confirmation_can_continue_after_policy() -> None:
+    repo = FakeModelReviewChainRepository()
+    model_service = FakeModelAnalysisService([ModelAnalysisStatus.SUCCESS])
+
+    result = _worker(repo, _blocked_aggregation(), model_service).run_model_review_chain_worker(
+        FakeSession(),
+        request=_request(
+            confirm=True,
+            trigger_source=TRIGGER_SOURCE_CLI,
+            confirm_real_model_cost=True,
+        ),
+    )
+
+    assert result.status == "success"
+    assert len(model_service.calls) == 1
+    assert model_service.calls[0].confirm_real_model_cost is True
+
+
+def test_daily_budget_exceeded_enters_retry_waiting_before_stage19() -> None:
     repo = FakeModelReviewChainRepository()
     repo.worker_runs.append(SimpleNamespace(estimated_cost="1.00", created_at_utc=now_utc()))
     model_service = FakeModelAnalysisService([ModelAnalysisStatus.SUCCESS])
@@ -219,9 +255,12 @@ def test_daily_budget_exceeded_blocks_before_stage19() -> None:
     assert result.status == "blocked"
     assert result.error_code == "daily_budget_exceeded"
     assert model_service.calls == []
+    step = next(iter(repo.chain_steps.values()))[0]
+    assert step.status == ModelReviewChainStepStatus.RETRY_WAITING.value
+    assert step.retry_after_utc is not None
 
 
-def test_max_runs_per_4h_blocks_before_stage19() -> None:
+def test_max_runs_per_4h_enters_retry_waiting_before_stage19() -> None:
     repo = FakeModelReviewChainRepository()
     repo.worker_runs.append(SimpleNamespace(estimated_cost="0.01", created_at_utc=now_utc()))
     model_service = FakeModelAnalysisService([ModelAnalysisStatus.SUCCESS])
@@ -235,6 +274,9 @@ def test_max_runs_per_4h_blocks_before_stage19() -> None:
     assert result.status == "blocked"
     assert result.error_code == "max_runs_per_4h_exceeded"
     assert model_service.calls == []
+    step = next(iter(repo.chain_steps.values()))[0]
+    assert step.status == ModelReviewChainStepStatus.RETRY_WAITING.value
+    assert step.retry_after_utc is not None
 
 
 def test_reuse_within_base_bars_skips_chain_and_stage19() -> None:
@@ -298,6 +340,26 @@ def test_success_step_is_not_repeated() -> None:
     assert all(call.chain_step != 1 for call in model_service.calls)
 
 
+def test_running_step_timeout_is_normalized_before_stage19_call() -> None:
+    repo = FakeModelReviewChainRepository()
+    chain, step1, step2 = _seed_two_step_chain(repo, step2_status=ModelReviewChainStepStatus.RUNNING.value)
+    step2.started_at_utc = now_utc() - timedelta(seconds=600)
+    model_service = FakeModelAnalysisService([ModelAnalysisStatus.SUCCESS])
+    settings = _settings(step_timeout_seconds=60)
+
+    result = _worker_with_settings(settings, repo, _blocked_aggregation(), model_service).run_model_review_chain_worker(
+        FakeSession(),
+        request=_request(chain_id=chain.chain_id, confirm=True),
+    )
+
+    assert result.error_code == "step_running_timeout_recovered"
+    assert result.model_review_chain_status == ModelReviewChainStatus.PARTIAL_SUCCESS.value
+    assert model_service.calls == []
+    assert step1.status == ModelReviewChainStepStatus.SUCCESS.value
+    assert step2.status == ModelReviewChainStepStatus.TIMEOUT.value
+    assert step2.retry_after_utc is not None
+
+
 def test_partial_success_is_not_reported_as_full_success() -> None:
     repo = FakeModelReviewChainRepository()
     chain, _step1, _step2 = _seed_two_step_chain(repo, step2_status=ModelReviewChainStepStatus.FAILED.value)
@@ -351,6 +413,22 @@ def test_confirm_write_creates_chain_and_writes_success_step() -> None:
     assert result.is_executable is False
     assert result.auto_trading_allowed is False
     assert model_service.calls[0].trigger_source == "worker"
+    assert model_service.calls[0].confirm_real_model_cost is True
+
+
+def test_worker_cli_parser_accepts_real_model_cost_confirmation_flag() -> None:
+    from scripts.run_model_review_chain_worker import build_arg_parser
+
+    args = build_arg_parser().parse_args(
+        [
+            "--trigger-source",
+            TRIGGER_SOURCE_CLI,
+            "--confirm-write",
+            "--confirm-real-model-cost",
+        ]
+    )
+
+    assert args.confirm_real_model_cost is True
 
 
 def _worker(
@@ -391,6 +469,7 @@ def _settings(
     allowed_keys: str = "deepseek_v4_pro_review,deepseek_v4_flash_review",
     budget: str = "100",
     max_runs: int = 10,
+    step_timeout_seconds: int = 300,
 ) -> AppSettings:
     return AppSettings(
         model_review_enabled=True,
@@ -400,6 +479,7 @@ def _settings(
         model_review_scheduler_allowed_model_keys=allowed_keys,
         model_review_daily_budget_usd=budget,
         model_review_max_runs_per_4h=max_runs,
+        model_review_step_running_timeout_seconds=step_timeout_seconds,
     )
 
 
@@ -408,14 +488,17 @@ def _request(
     confirm: bool,
     chain_id: str | None = None,
     chain_key: str = DEFAULT_SCHEDULER_CHAIN_KEY,
+    trigger_source: str = TRIGGER_SOURCE_SCHEDULER,
+    confirm_real_model_cost: bool = False,
 ) -> ModelReviewChainWorkerRequest:
     return ModelReviewChainWorkerRequest(
         material_pack_id="" if chain_id else "AMP-1",
         chain_id=chain_id,
         chain_key=chain_key,
-        trigger_source=TRIGGER_SOURCE_SCHEDULER,
+        trigger_source=trigger_source,
         dry_run=not confirm,
         confirm_write=confirm,
+        confirm_real_model_cost=confirm_real_model_cost,
         trace_id="trace-20c",
     )
 

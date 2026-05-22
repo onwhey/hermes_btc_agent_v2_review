@@ -113,6 +113,7 @@ from app.core.constants import (
     DEFAULT_MODEL_REVIEW_REAL_MODEL_ENABLED,
     DEFAULT_MODEL_REVIEW_REUSE_MAX_BASE_BARS,
     DEFAULT_MODEL_REVIEW_SCHEMA_VERSION,
+    DEFAULT_MODEL_REVIEW_STEP_RUNNING_TIMEOUT_SECONDS,
     DEFAULT_STRATEGY_AGGREGATION_AUTO_RUN_ENABLED,
     DEFAULT_STRATEGY_AGGREGATION_HERMES_ENABLED,
     DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_BLOCKED,
@@ -277,6 +278,7 @@ class AppSettings:
     model_review_daily_budget_usd: str = DEFAULT_MODEL_REVIEW_DAILY_BUDGET_USD
     model_review_max_runs_per_4h: int = DEFAULT_MODEL_REVIEW_MAX_RUNS_PER_4H
     model_review_reuse_max_base_bars: int = DEFAULT_MODEL_REVIEW_REUSE_MAX_BASE_BARS
+    model_review_step_running_timeout_seconds: int = DEFAULT_MODEL_REVIEW_STEP_RUNNING_TIMEOUT_SECONDS
     model_review_artifact_dir: str = DEFAULT_MODEL_REVIEW_ARTIFACT_DIR
     model_review_capture_raw_request: bool = DEFAULT_MODEL_REVIEW_CAPTURE_RAW_REQUEST
     model_review_capture_raw_response: bool = DEFAULT_MODEL_REVIEW_CAPTURE_RAW_RESPONSE
@@ -1253,6 +1255,15 @@ def load_settings(
             ),
             "MODEL_REVIEW_REUSE_MAX_BASE_BARS",
             DEFAULT_MODEL_REVIEW_REUSE_MAX_BASE_BARS,
+        ),
+        model_review_step_running_timeout_seconds=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MODEL_REVIEW_STEP_RUNNING_TIMEOUT_SECONDS",
+                str(DEFAULT_MODEL_REVIEW_STEP_RUNNING_TIMEOUT_SECONDS),
+            ),
+            "MODEL_REVIEW_STEP_RUNNING_TIMEOUT_SECONDS",
+            DEFAULT_MODEL_REVIEW_STEP_RUNNING_TIMEOUT_SECONDS,
         ),
         model_review_artifact_dir=_get_config_value(
             merged_values,

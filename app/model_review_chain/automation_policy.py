@@ -41,6 +41,8 @@ class AutomationPolicyDecision:
     current_4h_run_count: int
     max_runs_per_4h: int
     profile: ModelProfile | None = None
+    is_temporary: bool = False
+    retry_after_utc: datetime | None = None
 
 
 def evaluate_automatic_step_policy(
@@ -148,6 +150,8 @@ def evaluate_automatic_step_policy(
             current_4h_run_count=0,
             max_runs_per_4h=settings.model_review_max_runs_per_4h,
             profile=profile,
+            is_temporary=True,
+            retry_after_utc=today_start + timedelta(days=1),
         )
 
     max_runs = int(settings.model_review_max_runs_per_4h)
@@ -182,6 +186,8 @@ def evaluate_automatic_step_policy(
             current_4h_run_count=current_4h_count,
             max_runs_per_4h=max_runs,
             profile=profile,
+            is_temporary=True,
+            retry_after_utc=bucket_start + timedelta(hours=4),
         )
     return AutomationPolicyDecision(
         allowed=True,
@@ -289,6 +295,8 @@ def _blocked(
         current_4h_run_count=0,
         max_runs_per_4h=max_runs,
         profile=profile,
+        is_temporary=False,
+        retry_after_utc=None,
     )
 
 

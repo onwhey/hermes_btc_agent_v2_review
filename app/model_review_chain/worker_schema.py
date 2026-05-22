@@ -42,8 +42,10 @@ class ModelReviewChainWorkerRequest:
 
     Parameters: `material_pack_id` starts or resumes work for one stage-18
     material pack; `chain_id` resumes one existing chain. `trigger_source`
-    identifies the caller as CLI or scheduler; the worker itself calls stage 19
+    identifies the caller as CLI, scheduler, or worker; this worker calls stage 19
     with the internal `worker` trigger source only after policy checks pass.
+    CLI-triggered confirmed ticks must also set `confirm_real_model_cost` before
+    any real model cost can be incurred.
     Return value: `ModelReviewChainWorkerResult`.
     Failure scenarios: invalid write mode, disabled config, missing rows,
     budget/whitelist/frequency gates, and database or lock failures.
@@ -56,6 +58,7 @@ class ModelReviewChainWorkerRequest:
     trigger_source: str = TRIGGER_SOURCE_CLI
     dry_run: bool = True
     confirm_write: bool = False
+    confirm_real_model_cost: bool = False
     created_by: str = "cli"
     trace_id: str = field(default_factory=lambda: uuid4().hex)
     limit: int = 20

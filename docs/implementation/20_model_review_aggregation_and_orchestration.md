@@ -401,8 +401,8 @@ scheduler 自动链路：
       --trigger-source cli \
       --confirm-write
 
-20C CLI 不提供 `--confirm-real-model-cost`；该参数仍只属于 stage 19 手动 CLI。
-20C worker 自动调用真实模型时，不依赖 CLI 成本确认，而是必须同时通过配置总闸、预算、白名单、频率、锁和 step 状态机检查。
+20C CLI 现在提供 `--confirm-real-model-cost`，只用于 `trigger_source=cli` 的手动 worker tick 成本确认。
+scheduler / worker 自动调用真实模型时不依赖 CLI 成本确认，而是必须同时通过配置总闸、预算、白名单、频率、锁和 step 状态机检查。
 
 ### 2.2 入口文件
 
@@ -544,6 +544,7 @@ Hermes：
 
 - `trigger_source=cli`
 - `trigger_source=scheduler`
+- `trigger_source=worker`
 
 20C 调用 stage 19 时固定传入：
 
@@ -685,3 +686,117 @@ stage 19 调用失败：
     python -m pytest tests/scheduler -q
     python -m pytest tests -q
     python -m alembic current -v
+
+### 2.19 20C 安全闭环修复：CLI 成本确认、临时等待与 RUNNING 超时恢复
+
+本次修复只调整 20C worker 安全边界，不进入 21，不修改 16/17/18/19 既有业务语义。
+
+#### 2.19.1 CLI 与 scheduler 的成本确认差异
+
+手动 CLI 入口：
+
+    scripts/run_model_review_chain_worker.py::main
+        -> app/model_review_chain/worker.py::run_model_review_chain_worker
+        -> app/model_review_chain/worker.py::_advance_one_step
+        -> app/model_review_chain/worker_safety.py::cli_real_model_cost_confirmation_missing
+
+CLI 使用 `trigger_source=cli` 且 `--confirm-write` 推进 worker 时，如果本轮会触发真实模型调用，必须额外传入：
+
+    --confirm-real-model-cost
+
+否则 worker 将 step 标记为 `retry_waiting`，返回 `error_code=cli_real_model_cost_not_confirmed`，并明确写出“本轮未调用大模型”。此路径不会调用 `app/model_analysis/service.py::run_model_analysis`，不会产生 stage-19 成本。
+
+scheduler / worker 自动路径：
+
+    app/scheduler/jobs/model_review_chain_worker_job.py::run_model_review_chain_worker_after_aggregation_job
+        -> app/model_review_chain/worker.py::run_model_review_chain_worker
+
+scheduler 不使用 CLI 成本确认参数。自动真实调用是否允许，只由以下配置与状态机 gate 决定：
+
+- `MODEL_REVIEW_REAL_MODEL_ENABLED`
+- `MODEL_REVIEW_AUTO_RUN_ENABLED`
+- `MODEL_REVIEW_SCHEDULER_ENABLED`
+- `MODEL_REVIEW_SCHEDULER_ALLOWED_MODEL_KEYS`
+- `MODEL_REVIEW_DAILY_BUDGET_USD`
+- `MODEL_REVIEW_MAX_RUNS_PER_4H`
+- Redis worker lock
+- step 是否已 success
+- step retry 次数是否耗尽
+
+20C 仍然不让 scheduler 直接调用 stage 19；stage 19 仍只由 worker 在所有 gate 通过后调用。
+
+#### 2.19.2 永久 BLOCKED 与临时 RETRY_WAITING
+
+永久阻断继续使用 `blocked`，用于配置或模型 profile 明确不允许的场景：
+
+- `MODEL_REVIEW_REAL_MODEL_ENABLED=false`
+- `MODEL_REVIEW_AUTO_RUN_ENABLED=false`
+- `MODEL_REVIEW_SCHEDULER_ENABLED=false`
+- `model_key_not_in_scheduler_whitelist`
+- `provider_config_missing`
+- `model_profile_disabled`
+- `model_provider_disabled`
+
+临时阻断使用 `retry_waiting`，并写入 `retry_after_utc`，避免 worker 后续扫描时永久卡死：
+
+- `daily_budget_exceeded`
+- `max_runs_per_4h_exceeded`
+- `worker_lock_already_held`
+- stage-19 返回的可恢复 timeout / rate limit / unavailable 类错误
+- CLI worker 缺少 `--confirm-real-model-cost`，需要人工重新带确认参数触发
+
+相关实现：
+
+    app/model_review_chain/automation_policy.py::evaluate_automatic_step_policy
+        -> 返回 AutomationPolicyDecision.is_temporary / retry_after_utc
+    app/model_review_chain/worker.py::_advance_one_step
+        -> 临时阻断写 step.status=retry_waiting
+        -> 永久阻断写 step.status=blocked
+
+worker 扫描未完成任务时仍会读取 `pending` / `running` / `partial_success` / `failed` chain；step 级 `retry_waiting` 已在 `app/model_review_chain/state_machine.py::RESUMABLE_STEP_STATUSES` 中，因此后续 tick 可以恢复。
+
+#### 2.19.3 RUNNING step 超时恢复
+
+新增配置：
+
+    MODEL_REVIEW_STEP_RUNNING_TIMEOUT_SECONDS=300
+
+读取位置：
+
+    app/core/config.py::load_settings
+    app/core/config.py::AppSettings.model_review_step_running_timeout_seconds
+
+恢复规则：
+
+    app/model_review_chain/worker.py::_advance_chain_steps
+        -> app/model_review_chain/worker.py::_normalize_stale_running_steps
+        -> app/model_review_chain/worker_safety.py::running_step_timed_out
+
+当 worker 发现 step 满足：
+
+- `status=running`
+- `started_at_utc` 距当前 UTC 时间超过 `MODEL_REVIEW_STEP_RUNNING_TIMEOUT_SECONDS`
+
+则先归一化旧状态，不立即继续调用模型：
+
+- retry 次数未耗尽：写为 `timeout`，设置 `retry_after_utc`，后续 tick 可 resume；
+- retry 次数已耗尽：写为 `failed`，chain 根据已有成功 step 数变为 `partial_success` 或 `failed`。
+
+这样进程崩溃、系统重启或网络卡死都不会让 step 永久停在 `running`。
+
+#### 2.19.4 本阶段仍不是最终建议层
+
+20C worker 仅负责自动模型审查链的安全推进与恢复：
+
+- 不生成最终交易建议；
+- 不生成交易信号；
+- 不生成入场价、止损价、止盈价、仓位、杠杆；
+- 不进入阶段 21；
+- 不自动交易；
+- 不修改 K线数据；
+- 不绕过 stage 19 的 `model_analysis_run` / `model_analysis_result` 记录体系。
+
+对应测试：
+
+- `tests/model_review_chain/test_model_review_chain_worker.py`
+- `tests/scheduler/test_model_review_chain_worker_hook.py`

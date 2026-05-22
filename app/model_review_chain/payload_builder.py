@@ -35,6 +35,8 @@ from app.model_review_chain.schema import (
     json_text,
 )
 
+_KEEP_RETRY_AFTER = object()
+
 
 def build_initial_chain_payload(
     *,
@@ -287,6 +289,7 @@ def build_step_payload_from_row(
     step_output_hash: str | None = None,
     error_code: str | None = None,
     error_message: str | None = None,
+    retry_after_utc: Any = _KEEP_RETRY_AFTER,
 ) -> ModelReviewChainStepPersistencePayload:
     """Build an updated step payload from the existing step row."""
 
@@ -310,7 +313,11 @@ def build_step_payload_from_row(
         finished_at_utc=finished_at_utc if finished_at_utc is not None else getattr(step_row, "finished_at_utc", None),
         error_code=error_code,
         error_message=error_message,
-        retry_after_utc=getattr(step_row, "retry_after_utc", None),
+        retry_after_utc=(
+            getattr(step_row, "retry_after_utc", None)
+            if retry_after_utc is _KEEP_RETRY_AFTER
+            else retry_after_utc
+        ),
         step_input_hash=step_input_hash if step_input_hash is not None else row_optional(step_row, "step_input_hash"),
         step_output_hash=step_output_hash if step_output_hash is not None else row_optional(step_row, "step_output_hash"),
     )

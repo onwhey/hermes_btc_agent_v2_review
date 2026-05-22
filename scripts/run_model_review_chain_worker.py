@@ -7,7 +7,10 @@ Scheduler execution: not through this script; scheduler calls the thin job in
 Required args: `--trigger-source cli`; optional `--material-pack-id` or
 `--chain-id` targets a specific object, otherwise the worker scans one pending
 chain.
-Real writes require `--confirm-write`; otherwise dry-run is the default.
+Real writes require `--confirm-write`; otherwise dry-run is the default. If a
+manual CLI tick may reach a real model call, `--confirm-real-model-cost` is
+also required; scheduler jobs do not use this script and remain controlled by
+config, budget, whitelist, locks, and state machine gates.
 Calls: `app/model_review_chain/worker.py::run_model_review_chain_worker`.
 Business logic: lives in `app/model_review_chain`, not in this script.
 Database impact: dry-run writes no rows; confirm-write delegates compact 20B
@@ -17,8 +20,8 @@ Hermes impact: none in this script.
 Formal Kline impact: this script is not allowed to modify formal Kline tables.
 Data repair/model/trading impact: no automatic repair, no final trading advice,
 no trading signal, no private trading state reads, and no trading. Any real
-model call is controlled by 20C config gates, budget, whitelist, locks, and
-state machine, not by a CLI cost-confirmation flag.
+model call from this manual CLI entry also requires the explicit cost
+confirmation flag.
 """
 
 from __future__ import annotations
@@ -47,6 +50,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trigger-source", required=True, choices=[TRIGGER_SOURCE_CLI])
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--max-retry-count", type=int, default=DEFAULT_MAX_RETRY_COUNT)
+    parser.add_argument(
+        "--confirm-real-model-cost",
+        action="store_true",
+        help="Required for CLI-triggered worker ticks that may call a real model.",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Read-only validation. This is the default.")
     mode.add_argument("--confirm-write", action="store_true", help="Allow 20C to write and advance eligible steps.")
@@ -69,6 +77,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         trigger_source=args.trigger_source,
         dry_run=not bool(args.confirm_write),
         confirm_write=bool(args.confirm_write),
+        confirm_real_model_cost=bool(args.confirm_real_model_cost),
         created_by="cli",
         limit=int(args.limit),
         max_retry_count=int(args.max_retry_count),

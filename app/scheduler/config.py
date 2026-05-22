@@ -71,6 +71,7 @@ class SchedulerRuntimeConfig:
     model_review_auto_run_enabled: bool = False
     model_review_scheduler_enabled: bool = False
     model_review_max_runs_per_4h: int = 2
+    model_review_step_running_timeout_seconds: int = 300
 
 
 def build_scheduler_runtime_config(
@@ -145,6 +146,7 @@ def build_scheduler_runtime_config(
         model_review_auto_run_enabled=active_settings.model_review_auto_run_enabled,
         model_review_scheduler_enabled=active_settings.model_review_scheduler_enabled,
         model_review_max_runs_per_4h=active_settings.model_review_max_runs_per_4h,
+        model_review_step_running_timeout_seconds=active_settings.model_review_step_running_timeout_seconds,
     )
     validate_scheduler_runtime_config(config)
     return config
@@ -211,6 +213,8 @@ def validate_scheduler_runtime_config(config: SchedulerRuntimeConfig) -> None:
         raise ConfigError("STRATEGY_SIGNAL_SCHEDULER_RUNNING_TIMEOUT_SECONDS must be greater than 0")
     if config.model_review_max_runs_per_4h < 0:
         raise ConfigError("MODEL_REVIEW_MAX_RUNS_PER_4H must be zero or greater")
+    if config.model_review_step_running_timeout_seconds <= 0:
+        raise ConfigError("MODEL_REVIEW_STEP_RUNNING_TIMEOUT_SECONDS must be greater than 0")
 
 
 def _parse_utc_hhmm(raw_value: str, *, key: str) -> time:
