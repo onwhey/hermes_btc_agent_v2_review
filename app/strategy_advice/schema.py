@@ -107,6 +107,10 @@ class AdviceEventType(str, Enum):
     EXPIRED = "expired"
     CLOSED = "closed"
     NOTIFICATION_PAYLOAD_CREATED = "notification_payload_created"
+    NOTIFICATION_PREPARED = "notification_prepared"
+    NOTIFICATION_SENT = "notification_sent"
+    NOTIFICATION_FAILED = "notification_failed"
+    NOTIFICATION_SKIPPED = "notification_skipped"
 
 
 @dataclass(frozen=True)

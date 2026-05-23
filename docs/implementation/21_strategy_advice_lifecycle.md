@@ -1,9 +1,11 @@
 # 21 Strategy Advice Lifecycle Implementation
 
-This document describes stage 21A only. Stage 21A persists bounded human
-strategy advice lifecycle state from an existing stage-20
-`model_review_aggregation_run`. It does not implement 21B Hermes delivery and
-does not implement 21C scheduler automation.
+This document describes stage 21A and stage 21B. Stage 21A persists bounded
+human strategy advice lifecycle state from an existing stage-20
+`model_review_aggregation_run`. Stage 21B reads the 21A notification payload,
+renders Chinese Hermes content, writes `alert_message` when confirmed, and only
+sends Hermes when explicitly allowed. It does not implement 21C scheduler
+automation.
 
 ## 1. Feature: CLI Strategy Advice Lifecycle Pass
 
@@ -573,3 +575,346 @@ Suggested checks:
 - generate position size or leverage
 - modify Kline, snapshot, strategy signal, material pack, or stage-20 rows
 - perform full backtesting or PnL review
+
+## 14. Feature: 21B Strategy Advice Hermes Notification
+
+21B only delivers notifications prepared by 21A. It does not re-run lifecycle
+logic and does not create or update `strategy_advice` or
+`strategy_advice_trade_setup`.
+
+### 14.1 Entry
+
+Dry-run preview:
+
+    python -m scripts.send_strategy_advice_notification \
+      --review-id ADVR-xxx \
+      --trigger-source cli \
+      --dry-run
+
+Prepare alert/event rows without real Hermes submission:
+
+    python -m scripts.send_strategy_advice_notification \
+      --review-id ADVR-xxx \
+      --trigger-source cli \
+      --confirm-write
+
+Prepare rows and explicitly submit to Hermes:
+
+    python -m scripts.send_strategy_advice_notification \
+      --review-id ADVR-xxx \
+      --trigger-source cli \
+      --confirm-write \
+      --send-real-alert
+
+`trigger_source` is restricted to `cli` in 21B. Scheduler triggering is reserved
+for 21C.
+
+### 14.2 Entry File
+
+`scripts/send_strategy_advice_notification.py`
+
+Entry method:
+
+`main()`
+
+The script parses CLI arguments, builds `StrategyAdviceNotificationRequest`,
+opens the caller-owned MySQL session, calls the 21B sender service, prints a
+compact preview/result, and returns the service exit code. It does not directly
+write tables, does not directly call Hermes, does not call model providers, and
+does not perform trading.
+
+### 14.3 Core Service
+
+`app/strategy_advice/notification_sender.py`
+
+Core methods:
+
+- `StrategyAdviceNotificationSender.send_strategy_advice_notification()`
+- `StrategyAdviceNotificationSender._persist_and_maybe_send()`
+- `send_strategy_advice_notification()`
+
+### 14.4 Core Call Chain
+
+    scripts/send_strategy_advice_notification.py::main
+        -> app/storage/mysql/session.py::session_scope
+        -> app/strategy_advice/notification_sender.py::send_strategy_advice_notification
+        -> app/strategy_advice/notification_sender.py::StrategyAdviceNotificationSender.send_strategy_advice_notification
+        -> app/strategy_advice/notification_repository.py::get_lifecycle_review_by_id
+        -> app/strategy_advice/notification_renderer.py::render_strategy_advice_notification
+        -> app/strategy_advice/notification_repository.py::has_successful_notification_event
+        -> app/strategy_advice/notification_repository.py::has_successful_alert_message
+        -> app/strategy_advice/notification_repository.py::create_alert_message
+        -> app/alerting/hermes_client.py::HermesClient.send_alert_message
+           (only with --confirm-write --send-real-alert)
+        -> app/strategy_advice/notification_repository.py::update_alert_message_result
+        -> app/strategy_advice/notification_repository.py::create_notification_event
+
+### 14.5 Inputs
+
+21B reads one row from:
+
+- `strategy_advice_lifecycle_review`
+  - `review_id`
+  - `result_advice_id`
+  - `reviewed_advice_id`
+  - `previous_advice_id`
+  - `lifecycle_action`
+  - `lifecycle_reason`
+  - source ids
+  - inherited model-review fields
+  - `notification_required`
+  - `notification_level`
+  - `notification_reason`
+  - `notification_payload_json`
+
+21B reads the existing event/alert state for idempotency:
+
+- `strategy_advice_event`
+  - checks `related_review_id = review_id`
+  - checks `event_type = notification_sent`
+- `alert_message`
+  - checks `alert_type = strategy_advice`
+  - checks related fields and successful status
+
+21B does not read stage-20 rows directly and does not re-judge advice action,
+direction, permission, model reuse, model expiration, chain status, or risk
+acceptability.
+
+### 14.6 Database Writes
+
+`--dry-run` writes nothing.
+
+`--confirm-write` can write:
+
+- `alert_message`
+  - `alert_type = strategy_advice`
+  - Chinese `title` and `message`
+  - `severity`
+  - `status = skipped` when real Hermes send is not requested
+  - `related_type`
+  - `related_id`
+  - `trace_id`
+- `strategy_advice_event`
+  - `notification_prepared`
+
+`--confirm-write --send-real-alert` can write:
+
+- `alert_message`
+  - starts as `pending`
+  - then updates to Hermes client result status such as
+    `submitted_to_hermes`, `submit_failed`, `gateway_rejected`, or `skipped`
+- `strategy_advice_event`
+  - `notification_sent` on Hermes gateway submission success
+  - `notification_failed` on failed/rejected submission
+  - `notification_skipped` when the Hermes client/config skips real send
+
+Hermes failure never changes `strategy_advice` status and never changes the
+21A lifecycle decision.
+
+### 14.7 New Migration
+
+Migration:
+
+`migrations/versions/20260527_21b_add_alert_message_related_fields.py`
+
+Revision:
+
+`20260527_21b`
+
+Down revision:
+
+`20260526_21a`
+
+This migration reuses the existing `alert_message` table and adds only:
+
+- `related_type`
+- `related_id`
+
+Both columns are nullable for compatibility with older alert rows. Indexes are
+added for lookup and idempotency checks.
+
+### 14.8 Related Type and Related ID Rule
+
+21B implements the required fallback:
+
+- if `result_advice_id` exists:
+  - `related_type = strategy_advice`
+  - `related_id = result_advice_id`
+- else if `reviewed_advice_id` exists:
+  - `related_type = strategy_advice`
+  - `related_id = reviewed_advice_id`
+- else:
+  - `related_type = strategy_advice_lifecycle_review`
+  - `related_id = review_id`
+
+This supports `wait_without_active_advice` reviews that do not have any
+strategy advice row.
+
+### 14.9 Notification Rendering
+
+Renderer:
+
+`app/strategy_advice/notification_renderer.py::render_strategy_advice_notification`
+
+21B renders Chinese text only from persisted 21A fields and
+`notification_payload_json`.
+
+Full notifications include:
+
+- lifecycle action, Chinese mapping, and reason
+- advice action, directional bias, and trade permission
+- model-review invocation/reuse/expiration/basis/chain status
+- no-model reason, skip reason, and block reason when present
+- explicit partial-success warning
+- risk acceptability, strategy conflict, risk warnings, missing evidence, and
+  risk-blocked state
+- source ids
+- boundary statement
+
+Brief notifications remain short but still include:
+
+- this run completed
+- lifecycle action
+- current advice action
+- model status
+- non-automatic-trading boundary
+
+English keys remain unchanged in database rows. Chinese wording is only a
+rendering layer.
+
+### 14.10 Hermes Sending Modes
+
+`--dry-run`:
+
+- renders title/message preview
+- writes no `alert_message`
+- writes no `strategy_advice_event`
+- sends no Hermes
+
+`--confirm-write`:
+
+- writes one `alert_message`
+- writes `notification_prepared`
+- sends no Hermes
+
+`--confirm-write --send-real-alert`:
+
+- writes one `alert_message`
+- calls `app/alerting/hermes_client.py::HermesClient.send_alert_message`
+- updates `alert_message` with the sanitized Hermes result
+- writes `notification_sent`, `notification_failed`, or `notification_skipped`
+
+The existing Hermes client still enforces Hermes configuration such as enabled,
+dry-run, webhook URL, timeout, and retry settings.
+
+### 14.11 Idempotency
+
+By default, the same review is successfully sent only once.
+
+21B skips without sending when:
+
+- a `strategy_advice_event` already exists with
+  `related_review_id = review_id` and `event_type = notification_sent`
+- or an `alert_message` already exists for the same related object with a
+  successful status such as `submitted_to_hermes`, `accepted`, or `success`
+
+If a previous attempt wrote `notification_failed`, a later attempt can retry and
+will write a new notification event. Existing failed rows are not overwritten.
+
+`--force-resend` is not implemented in 21B.
+
+### 14.12 Exceptions
+
+Invalid request:
+
+- handled by
+  `app/strategy_advice/notification_sender.py::_validate_notification_request`
+- returns `FAILED` with `error_code = invalid_request`
+- writes nothing
+
+Missing lifecycle review:
+
+- returns `BLOCKED` with `error_code = lifecycle_review_not_found`
+- writes nothing
+
+Empty or malformed notification payload:
+
+- returns `BLOCKED` with `error_code = notification_payload_empty` or
+  `notification_payload_render_failed`
+- writes nothing
+
+Hermes failure:
+
+- updates `alert_message` to the Hermes client result status
+- writes `notification_failed`
+- does not update advice status
+- does not update lifecycle review
+- does not modify upstream stage-20 rows
+
+### 14.13 Redis, Scheduler, Models, and Trading
+
+Redis:
+
+21B does not read Redis and does not write Redis.
+
+Scheduler:
+
+21B is not connected to scheduler. Scheduler automation belongs to 21C.
+
+Models:
+
+21B does not call stage 19 and does not call DeepSeek, GPT, Claude, or any
+other model provider.
+
+Trading:
+
+21B does not read accounts, does not create orders, does not generate position
+size or leverage, and does not perform automatic trading.
+
+## 15. 21B Tests
+
+Primary tests:
+
+`tests/strategy_advice/test_strategy_advice_notification_sender.py`
+
+Coverage includes:
+
+- dry-run brief rendering with no writes and no Hermes
+- dry-run full rendering with lifecycle/advice/model/risk/source/boundary
+- `notification_required=false` skipped
+- empty notification payload blocked
+- no-advice wait review related fallback
+- `result_advice_id` related fallback
+- confirm-write without real send writes prepared alert/event only
+- confirm-write with real send uses a mock Hermes client
+- Hermes success writes `notification_sent`
+- Hermes failure writes `notification_failed` and does not alter advice/review
+- successful sent event idempotency
+- successful alert-message idempotency
+- brief content remains short but includes model status and boundary
+- boundary flags remain false
+- scheduler trigger rejected
+
+Existing alerting test:
+
+`tests/test_alerting.py`
+
+Default pytest does not send real Hermes. The 21B tests use a mock Hermes client
+and in-memory repository.
+
+## 16. Explicit Non-Goals in 21B
+
+21B does not:
+
+- create or update strategy advice lifecycle decisions
+- create new `strategy_advice`
+- create new `strategy_advice_trade_setup`
+- call stage 19
+- call DeepSeek, GPT, Claude, or other model providers
+- modify stage-20 model review aggregation, reuse, expiration, chain, or step
+  logic
+- connect scheduler
+- read account/private trading state
+- place orders
+- generate position size or leverage
+- modify Kline, snapshot, strategy signal, material pack, or stage-20 rows

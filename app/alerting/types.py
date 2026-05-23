@@ -63,6 +63,7 @@ class AlertType(str, Enum):
     STRATEGY_SIGNAL_SCHEDULER = "strategy_signal_scheduler"
     STRATEGY_AGGREGATION = "strategy_aggregation"
     MODEL_ANALYSIS = "model_analysis"
+    STRATEGY_ADVICE = "strategy_advice"
     MANUAL_TEST_ALERT = "manual_test_alert"
 
 

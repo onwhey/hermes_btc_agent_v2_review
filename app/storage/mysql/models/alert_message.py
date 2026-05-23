@@ -48,6 +48,8 @@ if mapped_column is not None:
         status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
         source: Mapped[str] = mapped_column(String(128), nullable=False, default="unknown")
         trace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+        related_type: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+        related_id: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
         channel_response: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
         error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
         retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -82,6 +84,8 @@ else:
         status: str = ""
         source: str = "unknown"
         trace_id: str = ""
+        related_type: str | None = None
+        related_id: str | None = None
         channel_response: dict[str, Any] | None = None
         error_message: str | None = None
         retry_count: int = 0

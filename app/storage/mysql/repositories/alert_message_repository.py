@@ -33,6 +33,10 @@ class AlertMessageRepository:
         db_session: Any,
         event: AlertEvent,
         message: str,
+        *,
+        related_type: str | None = None,
+        related_id: str | None = None,
+        initial_status: str | None = None,
     ) -> AlertMessage:
         """创建 pending 报警记录。
 
@@ -52,9 +56,11 @@ class AlertMessageRepository:
             title=sanitize_text(event.title),
             message=sanitize_text(message),
             channel="hermes",
-            status=AlertSendStatus.PENDING.value,
+            status=initial_status or AlertSendStatus.PENDING.value,
             source=sanitize_text(event.source),
             trace_id=sanitize_text(event.trace_id),
+            related_type=sanitize_text(related_type) if related_type else None,
+            related_id=sanitize_text(related_id) if related_id else None,
             channel_response=None,
             error_message=None,
             retry_count=0,
