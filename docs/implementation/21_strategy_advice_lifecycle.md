@@ -674,7 +674,8 @@ Core methods:
   - checks `event_type = notification_sent`
 - `alert_message`
   - checks `alert_type = strategy_advice`
-  - checks related fields and successful status
+  - checks `related_review_id = review_id`
+  - checks successful status
 
 21B does not read stage-20 rows directly and does not re-judge advice action,
 direction, permission, model reuse, model expiration, chain status, or risk
@@ -693,6 +694,7 @@ acceptability.
   - `status = skipped` when real Hermes send is not requested
   - `related_type`
   - `related_id`
+  - `related_review_id`
   - `trace_id`
 - `strategy_advice_event`
   - `notification_prepared`
@@ -713,25 +715,34 @@ Hermes failure never changes `strategy_advice` status and never changes the
 
 ### 14.7 New Migration
 
-Migration:
+Migrations:
 
 `migrations/versions/20260527_21b_add_alert_message_related_fields.py`
 
-Revision:
+`migrations/versions/20260528_21b_add_alert_message_review_id.py`
+
+Revisions:
 
 `20260527_21b`
 
-Down revision:
+`20260528_21b`
+
+Down revisions:
 
 `20260526_21a`
 
-This migration reuses the existing `alert_message` table and adds only:
+`20260527_21b`
+
+The migrations reuse the existing `alert_message` table and add only:
 
 - `related_type`
 - `related_id`
+- `related_review_id`
 
-Both columns are nullable for compatibility with older alert rows. Indexes are
-added for lookup and idempotency checks.
+All columns are nullable for compatibility with older alert rows. Indexes are
+added for lookup and idempotency checks. `related_review_id` is the idempotency
+anchor for stage-21B notifications; `related_type` and `related_id` remain the
+business object reference used by alert browsing and audit views.
 
 ### 14.8 Related Type and Related ID Rule
 
@@ -749,6 +760,11 @@ added for lookup and idempotency checks.
 
 This supports `wait_without_active_advice` reviews that do not have any
 strategy advice row.
+
+Idempotency does not use `related_id` as the primary key. Multiple lifecycle
+reviews can legitimately point at the same `strategy_advice`, especially
+`continue_active_advice` brief notifications. Each review is therefore
+deduplicated by `review_id`.
 
 ### 14.9 Notification Rendering
 
@@ -815,8 +831,13 @@ By default, the same review is successfully sent only once.
 
 - a `strategy_advice_event` already exists with
   `related_review_id = review_id` and `event_type = notification_sent`
-- or an `alert_message` already exists for the same related object with a
+- or an `alert_message` already exists for the same `related_review_id` with a
   successful status such as `submitted_to_hermes`, `accepted`, or `success`
+
+It does not skip a new lifecycle review merely because the same
+`strategy_advice` already had an earlier notification. The alert-level fallback
+also uses `related_review_id`, so two different `review_id` values that share
+one `result_advice_id` can both send their own brief/full notifications.
 
 If a previous attempt wrote `notification_failed`, a later attempt can retry and
 will write a new notification event. Existing failed rows are not overwritten.

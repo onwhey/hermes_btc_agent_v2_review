@@ -70,21 +70,14 @@ class StrategyAdviceNotificationRepository:
         )
         return db_session.execute(stmt).scalar_one_or_none() is not None
 
-    def has_successful_alert_message(
-        self,
-        db_session: Any,
-        *,
-        related_type: str,
-        related_id: str,
-    ) -> bool:
-        """Return whether a successful alert already exists for the relation."""
+    def has_successful_alert_message(self, db_session: Any, *, review_id: str) -> bool:
+        """Return whether a successful alert already exists for this review."""
 
         _require_sqlalchemy()
         stmt = (
             select(AlertMessage.id)
             .where(AlertMessage.alert_type == "strategy_advice")
-            .where(AlertMessage.related_type == related_type)
-            .where(AlertMessage.related_id == related_id)
+            .where(AlertMessage.related_review_id == review_id)
             .where(AlertMessage.status.in_(tuple(SUCCESSFUL_ALERT_STATUSES)))
             .limit(1)
         )
@@ -109,6 +102,7 @@ class StrategyAdviceNotificationRepository:
         message: str,
         related_type: str,
         related_id: str,
+        related_review_id: str,
         initial_status: str,
         channel_response: dict[str, Any] | None = None,
     ) -> AlertMessage:
@@ -126,6 +120,7 @@ class StrategyAdviceNotificationRepository:
             trace_id=sanitize_text(event.trace_id),
             related_type=sanitize_text(related_type),
             related_id=sanitize_text(related_id),
+            related_review_id=sanitize_text(related_review_id),
             channel_response=sanitize_mapping(channel_response or {}),
             error_message=None,
             retry_count=0,

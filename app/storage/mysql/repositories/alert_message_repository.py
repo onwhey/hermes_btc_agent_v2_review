@@ -36,6 +36,7 @@ class AlertMessageRepository:
         *,
         related_type: str | None = None,
         related_id: str | None = None,
+        related_review_id: str | None = None,
         initial_status: str | None = None,
     ) -> AlertMessage:
         """创建 pending 报警记录。
@@ -61,6 +62,7 @@ class AlertMessageRepository:
             trace_id=sanitize_text(event.trace_id),
             related_type=sanitize_text(related_type) if related_type else None,
             related_id=sanitize_text(related_id) if related_id else None,
+            related_review_id=sanitize_text(related_review_id) if related_review_id else None,
             channel_response=None,
             error_message=None,
             retry_count=0,

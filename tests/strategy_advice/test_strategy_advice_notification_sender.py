@@ -43,7 +43,7 @@ class FakeNotificationRepository:
     def __init__(self) -> None:
         self.reviews: dict[str, Any] = {}
         self.sent_event_reviews: set[str] = set()
-        self.successful_alerts: set[tuple[str, str]] = set()
+        self.successful_alert_reviews: set[str] = set()
         self.alert_messages: list[Any] = []
         self.events: list[Any] = []
 
@@ -55,9 +55,9 @@ class FakeNotificationRepository:
         del db_session
         return review_id in self.sent_event_reviews
 
-    def has_successful_alert_message(self, db_session: Any, *, related_type: str, related_id: str) -> bool:
+    def has_successful_alert_message(self, db_session: Any, *, review_id: str) -> bool:
         del db_session
-        return (related_type, related_id) in self.successful_alerts
+        return review_id in self.successful_alert_reviews
 
     def count_notification_delivery_events(self, db_session: Any, *, review_id: str) -> int:
         del db_session
@@ -71,6 +71,7 @@ class FakeNotificationRepository:
         message: str,
         related_type: str,
         related_id: str,
+        related_review_id: str,
         initial_status: str,
         channel_response: dict[str, Any] | None = None,
     ) -> Any:
@@ -83,6 +84,7 @@ class FakeNotificationRepository:
             message=message,
             related_type=related_type,
             related_id=related_id,
+            related_review_id=related_review_id,
             status=initial_status,
             channel_response=channel_response or {},
             error_message=None,
@@ -257,7 +259,7 @@ def test_successful_notification_event_makes_later_attempt_skipped() -> None:
 
 def test_successful_alert_message_makes_later_attempt_skipped() -> None:
     repo = _repo_with_review(_review("ADVR-alert-idem", result_advice_id="ADV-alert-idem"))
-    repo.successful_alerts.add(("strategy_advice", "ADV-alert-idem"))
+    repo.successful_alert_reviews.add("ADVR-alert-idem")
     result, _session = _run(
         repo,
         FakeHermesClient(AlertSendResult(status=AlertSendStatus.SUBMITTED_TO_HERMES)),
@@ -267,8 +269,32 @@ def test_successful_alert_message_makes_later_attempt_skipped() -> None:
     )
 
     assert result.status == StrategyAdviceNotificationStatus.SKIPPED
-    assert result.error_message == "successful alert_message already exists"
+    assert result.error_message == "successful alert_message already exists for review_id"
     assert repo.alert_messages == []
+
+
+def test_different_reviews_for_same_advice_are_not_deduplicated_by_advice_id() -> None:
+    repo = FakeNotificationRepository()
+    repo.reviews["ADVR-same-advice-1"] = _review("ADVR-same-advice-1", result_advice_id="ADV-shared")
+    repo.reviews["ADVR-same-advice-2"] = _review("ADVR-same-advice-2", result_advice_id="ADV-shared")
+    client = FakeHermesClient(AlertSendResult(status=AlertSendStatus.SUBMITTED_TO_HERMES, attempted_real_send=True))
+
+    first_result, _first_session = _run(repo, client, "ADVR-same-advice-1", confirm=True, send_real=True)
+    second_result, _second_session = _run(repo, client, "ADVR-same-advice-2", confirm=True, send_real=True)
+
+    assert first_result.status == StrategyAdviceNotificationStatus.SUCCESS
+    assert second_result.status == StrategyAdviceNotificationStatus.SUCCESS
+    assert second_result.related_type == "strategy_advice"
+    assert second_result.related_id == "ADV-shared"
+    assert len(client.calls) == 2
+    assert [alert.related_review_id for alert in repo.alert_messages] == [
+        "ADVR-same-advice-1",
+        "ADVR-same-advice-2",
+    ]
+    assert [event.related_review_id for event in repo.events] == [
+        "ADVR-same-advice-1",
+        "ADVR-same-advice-2",
+    ]
 
 
 def test_brief_notification_is_short_but_contains_model_status_and_boundary() -> None:

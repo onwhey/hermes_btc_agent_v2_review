@@ -127,13 +127,12 @@ class StrategyAdviceNotificationSender:
                 )
             if self._repository.has_successful_alert_message(
                 db_session,
-                related_type=rendered.related_type,
-                related_id=rendered.related_id,
+                review_id=request.review_id,
             ):
                 return _skipped_result(
                     request=request,
                     rendered=rendered,
-                    reason="successful alert_message already exists",
+                    reason="successful alert_message already exists for review_id",
                     event_type=AdviceEventType.NOTIFICATION_SKIPPED,
                 )
         except Exception as exc:  # noqa: BLE001 - idempotency lookup failure is explicit.
@@ -185,6 +184,7 @@ class StrategyAdviceNotificationSender:
                 message=rendered.message,
                 related_type=rendered.related_type,
                 related_id=rendered.related_id,
+                related_review_id=request.review_id,
                 initial_status=AlertSendStatus.SKIPPED.value,
                 channel_response={"reason": "confirm_write_without_send_real_alert"},
             )
@@ -218,6 +218,7 @@ class StrategyAdviceNotificationSender:
             message=rendered.message,
             related_type=rendered.related_type,
             related_id=rendered.related_id,
+            related_review_id=request.review_id,
             initial_status=AlertSendStatus.PENDING.value,
         )
         send_result = self._hermes_client.send_alert_message(
@@ -358,6 +359,8 @@ def _event_payload(
 ) -> dict[str, Any]:
     return {
         "alert_message_id": _alert_message_id(alert_message),
+        "review_id": request.review_id,
+        "advice_id": _event_advice_id(rendered),
         "related_type": rendered.related_type,
         "related_id": rendered.related_id,
         "notification_level": rendered.notification_level,
