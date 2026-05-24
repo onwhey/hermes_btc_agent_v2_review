@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover - dependencies are managed by pyproject.
     func = select = None  # type: ignore[assignment]
 
 SUCCESSFUL_ALERT_STATUSES = frozenset({"submitted_to_hermes", "accepted", "success"})
+PREPARED_ALERT_STATUSES = frozenset({"skipped"})
 NOTIFICATION_DELIVERY_EVENT_TYPES = frozenset(
     {
         AdviceEventType.NOTIFICATION_PREPARED.value,
@@ -82,6 +83,39 @@ class StrategyAdviceNotificationRepository:
             .limit(1)
         )
         return db_session.execute(stmt).scalar_one_or_none() is not None
+
+    def has_prepared_notification_event(self, db_session: Any, *, review_id: str) -> bool:
+        """Return whether a send-disabled prepared event already exists."""
+
+        _require_sqlalchemy()
+        stmt = (
+            select(StrategyAdviceEvent.event_id)
+            .where(StrategyAdviceEvent.related_review_id == review_id)
+            .where(StrategyAdviceEvent.event_type == AdviceEventType.NOTIFICATION_PREPARED.value)
+            .limit(1)
+        )
+        return db_session.execute(stmt).scalar_one_or_none() is not None
+
+    def has_skipped_alert_message(self, db_session: Any, *, review_id: str) -> bool:
+        """Return whether a send-disabled skipped alert already exists."""
+
+        _require_sqlalchemy()
+        stmt = (
+            select(AlertMessage.id)
+            .where(AlertMessage.alert_type == "strategy_advice")
+            .where(AlertMessage.related_review_id == review_id)
+            .where(AlertMessage.status.in_(tuple(PREPARED_ALERT_STATUSES)))
+            .limit(1)
+        )
+        return db_session.execute(stmt).scalar_one_or_none() is not None
+
+    def has_prepared_notification_artifact(self, db_session: Any, *, review_id: str) -> bool:
+        """Return whether send-disabled preparation has already been recorded."""
+
+        return self.has_prepared_notification_event(
+            db_session,
+            review_id=review_id,
+        ) or self.has_skipped_alert_message(db_session, review_id=review_id)
 
     def count_notification_delivery_events(self, db_session: Any, *, review_id: str) -> int:
         """Return existing 21B notification event count for stable event ids."""
@@ -197,6 +231,7 @@ def _flush_if_possible(db_session: Any) -> None:
 
 __all__ = [
     "NOTIFICATION_DELIVERY_EVENT_TYPES",
+    "PREPARED_ALERT_STATUSES",
     "SUCCESSFUL_ALERT_STATUSES",
     "StrategyAdviceNotificationRepository",
     "create_default_strategy_advice_notification_repository",

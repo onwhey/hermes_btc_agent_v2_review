@@ -842,6 +842,24 @@ one `result_advice_id` can both send their own brief/full notifications.
 If a previous attempt wrote `notification_failed`, a later attempt can retry and
 will write a new notification event. Existing failed rows are not overwritten.
 
+When real Hermes sending is disabled (`send_real_alert=false`, including 21C
+with `STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED=false`), 21B also checks the
+same `review_id` for already prepared artifacts:
+
+- `strategy_advice_event.related_review_id = review_id` with
+  `event_type = notification_prepared`
+- or `alert_message.related_review_id = review_id` with `status = skipped`
+
+If either exists, 21B returns `notification_already_prepared` and writes no new
+`alert_message` and no new `notification_prepared` event. This prevents
+repeated scheduler runs from accumulating skipped notification rows.
+
+`skipped` and `notification_prepared` are not treated as successful delivery.
+If real Hermes sending is enabled later and the same `review_id` has no
+`notification_sent` event and no successful alert status, 21B may create a new
+real-send `alert_message` attempt. It does not update the historical skipped
+row; that row remains an audit record that sending was disabled at that time.
+
 `--force-resend` is not implemented in 21B.
 
 ### 14.12 Exceptions
@@ -912,6 +930,12 @@ Coverage includes:
 - Hermes failure writes `notification_failed` and does not alter advice/review
 - successful sent event idempotency
 - successful alert-message idempotency
+- send-disabled repeated runs write only one skipped alert and one
+  `notification_prepared` event per `review_id`
+- send-enabled recovery after skipped/prepared rows creates a new send attempt
+  without updating the historical skipped row
+- multiple historical skipped rows for the same `review_id` do not cause
+  multiple Hermes sends
 - brief content remains short but includes model status and boundary
 - boundary flags remain false
 - scheduler trigger is accepted only as a service-level call from 21C; the 21B
@@ -1048,6 +1072,9 @@ checks whether 21B notification still needs recovery.
 - `strategy_advice_event.related_review_id = review_id` with
   `event_type = notification_sent`
 - or successful `alert_message.related_review_id = review_id`
+- when notification sending is disabled, existing `notification_prepared` or
+  skipped `alert_message` rows for the same `review_id` are treated as
+  already prepared, so 21C recovery does not append duplicate skipped rows
 
 Advice id is not used to suppress a later lifecycle-review notification.
 

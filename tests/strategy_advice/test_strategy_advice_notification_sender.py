@@ -59,6 +59,28 @@ class FakeNotificationRepository:
         del db_session
         return review_id in self.successful_alert_reviews
 
+    def has_prepared_notification_event(self, db_session: Any, *, review_id: str) -> bool:
+        del db_session
+        return any(
+            event.related_review_id == review_id
+            and event.event_type == AdviceEventType.NOTIFICATION_PREPARED.value
+            for event in self.events
+        )
+
+    def has_skipped_alert_message(self, db_session: Any, *, review_id: str) -> bool:
+        del db_session
+        return any(
+            alert.related_review_id == review_id
+            and alert.status == AlertSendStatus.SKIPPED.value
+            for alert in self.alert_messages
+        )
+
+    def has_prepared_notification_artifact(self, db_session: Any, *, review_id: str) -> bool:
+        return self.has_prepared_notification_event(
+            db_session,
+            review_id=review_id,
+        ) or self.has_skipped_alert_message(db_session, review_id=review_id)
+
     def count_notification_delivery_events(self, db_session: Any, *, review_id: str) -> int:
         del db_session
         return sum(1 for event in self.events if event.related_review_id == review_id)
@@ -217,6 +239,64 @@ def test_confirm_write_without_send_real_alert_prepares_alert_and_event_only() -
     assert repo.events[0].event_type == AdviceEventType.NOTIFICATION_PREPARED.value
     assert client.calls == []
     assert session.commit_count == 1
+
+
+def test_send_disabled_repeated_run_writes_prepared_only_once() -> None:
+    repo = _repo_with_review(_review("ADVR-prepared-once", result_advice_id="ADV-prepared-once"))
+    client = FakeHermesClient(AlertSendResult(status=AlertSendStatus.SUBMITTED_TO_HERMES))
+
+    first, first_session = _run(repo, client, "ADVR-prepared-once", confirm=True)
+    second, second_session = _run(repo, client, "ADVR-prepared-once", confirm=True)
+
+    assert first.status == StrategyAdviceNotificationStatus.SUCCESS
+    assert second.status == StrategyAdviceNotificationStatus.SKIPPED
+    assert second.error_code == "notification_already_prepared"
+    assert len(repo.alert_messages) == 1
+    assert repo.alert_messages[0].status == AlertSendStatus.SKIPPED.value
+    assert len(repo.events) == 1
+    assert repo.events[0].event_type == AdviceEventType.NOTIFICATION_PREPARED.value
+    assert client.calls == []
+    assert first_session.commit_count == 1
+    assert second_session.commit_count == 0
+
+
+def test_send_enabled_after_skipped_prepared_sends_new_alert_without_updating_skipped() -> None:
+    repo = _repo_with_review(_review("ADVR-prepared-then-send", result_advice_id="ADV-prepared-then-send"))
+    client = FakeHermesClient(AlertSendResult(status=AlertSendStatus.SUBMITTED_TO_HERMES, attempted_real_send=True))
+
+    prepared, _session = _run(repo, client, "ADVR-prepared-then-send", confirm=True)
+    sent, _session = _run(repo, client, "ADVR-prepared-then-send", confirm=True, send_real=True)
+
+    assert prepared.status == StrategyAdviceNotificationStatus.SUCCESS
+    assert sent.status == StrategyAdviceNotificationStatus.SUCCESS
+    assert len(repo.alert_messages) == 2
+    assert repo.alert_messages[0].status == AlertSendStatus.SKIPPED.value
+    assert repo.alert_messages[1].status == AlertSendStatus.SUBMITTED_TO_HERMES.value
+    assert [event.event_type for event in repo.events] == [
+        AdviceEventType.NOTIFICATION_PREPARED.value,
+        AdviceEventType.NOTIFICATION_SENT.value,
+    ]
+    assert len(client.calls) == 1
+
+
+def test_multiple_historical_skipped_rows_send_enabled_sends_once_by_review_id() -> None:
+    repo = _repo_with_review(_review("ADVR-many-skipped", result_advice_id="ADV-many-skipped"))
+    repo.alert_messages.append(SimpleNamespace(id=1, related_review_id="ADVR-many-skipped", status="skipped"))
+    repo.alert_messages.append(SimpleNamespace(id=2, related_review_id="ADVR-many-skipped", status="skipped"))
+    client = FakeHermesClient(AlertSendResult(status=AlertSendStatus.SUBMITTED_TO_HERMES, attempted_real_send=True))
+
+    first, _session = _run(repo, client, "ADVR-many-skipped", confirm=True, send_real=True)
+    second, _session = _run(repo, client, "ADVR-many-skipped", confirm=True, send_real=True)
+
+    assert first.status == StrategyAdviceNotificationStatus.SUCCESS
+    assert second.status == StrategyAdviceNotificationStatus.SKIPPED
+    assert second.error_message == "notification_sent event already exists"
+    assert len(client.calls) == 1
+    assert [alert.status for alert in repo.alert_messages] == [
+        "skipped",
+        "skipped",
+        AlertSendStatus.SUBMITTED_TO_HERMES.value,
+    ]
 
 
 def test_confirm_write_send_real_alert_calls_hermes_and_writes_sent_event() -> None:

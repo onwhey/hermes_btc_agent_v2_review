@@ -3,20 +3,15 @@
 Call chain:
 scripts/send_strategy_advice_notification.py::main
     -> app/strategy_advice/notification_sender.py::send_strategy_advice_notification
-    -> app/strategy_advice/notification_repository.py::get_lifecycle_review_by_id
-    -> app/strategy_advice/notification_renderer.py::render_strategy_advice_notification
-    -> app/strategy_advice/notification_repository.py::create_alert_message
-    -> app/alerting/hermes_client.py::HermesClient.send_alert_message
-       (only with --send-real-alert)
-    -> app/strategy_advice/notification_repository.py::create_notification_event
+    -> notification_repository.py::get_lifecycle_review_by_id
+    -> notification_renderer.py::render_strategy_advice_notification
+    -> notification_repository.py::create_alert_message / create_notification_event
+    -> app/alerting/hermes_client.py::HermesClient.send_alert_message (real send only)
 
-This file belongs to `app/strategy_advice`. It reads 21A notification payloads,
-renders Chinese Hermes content, writes existing alert_message records when
-confirmed, and calls the existing Hermes client only when explicitly allowed.
-
-It does not call stage 19, does not call model providers, does not regenerate
-strategy advice, does not connect scheduler jobs, does not read private trading
-state, does not modify formal Kline tables, and does not perform trading.
+This file belongs to `app/strategy_advice`. It reads 21A payloads, renders
+Chinese Hermes content, writes existing alert_message rows when confirmed, and
+calls the Hermes client only when explicitly allowed. It does not call stage 19,
+model providers, scheduler jobs, private trading state, Kline writes, or trading.
 """
 
 from __future__ import annotations
@@ -51,12 +46,9 @@ ALLOWED_STRATEGY_ADVICE_NOTIFICATION_TRIGGER_SOURCES = frozenset({TRIGGER_SOURCE
 class StrategyAdviceNotificationSender:
     """Coordinate one 21B strategy-advice notification attempt.
 
-    Parameters: repository, settings, and Hermes client are injectable for tests.
-    Return value: service instance.
-    Failure scenarios: invalid request, missing lifecycle review, malformed
-    notification payload, database errors, and Hermes submission failures are
-    converted into structured results.
-    External effects: dry-run reads only; confirm-write writes alert/event rows;
+    Dependencies are injectable for tests. Invalid requests, missing reviews,
+    malformed payloads, DB failures, and Hermes failures become structured
+    results. Dry-run reads only; confirm-write writes alert/event rows;
     send-real-alert may call Hermes through the existing client.
     """
 
@@ -134,6 +126,17 @@ class StrategyAdviceNotificationSender:
                     rendered=rendered,
                     reason="successful alert_message already exists for review_id",
                     event_type=AdviceEventType.NOTIFICATION_SKIPPED,
+                )
+            if not request.send_real_alert and self._repository.has_prepared_notification_artifact(
+                db_session,
+                review_id=request.review_id,
+            ):
+                return _skipped_result(
+                    request=request,
+                    rendered=rendered,
+                    reason="notification already prepared for review_id while real send is disabled",
+                    event_type=AdviceEventType.NOTIFICATION_PREPARED,
+                    error_code="notification_already_prepared",
                 )
         except Exception as exc:  # noqa: BLE001 - idempotency lookup failure is explicit.
             _rollback_if_possible(db_session)
@@ -400,6 +403,7 @@ def _skipped_result(
     rendered: RenderedStrategyAdviceNotification,
     reason: str,
     event_type: AdviceEventType | None,
+    error_code: str = "notification_skipped",
 ) -> StrategyAdviceNotificationResult:
     return _base_result(
         status=StrategyAdviceNotificationStatus.SKIPPED,
@@ -410,7 +414,7 @@ def _skipped_result(
         alert_status="skipped",
         event_type=event_type.value if event_type else None,
         hermes_status="not_attempted",
-        error_code="notification_skipped",
+        error_code=error_code,
         error_message=reason,
     )
 
@@ -525,9 +529,7 @@ def _message_preview(message: str) -> str:
 
 
 def _event_advice_id(rendered: RenderedStrategyAdviceNotification) -> str | None:
-    if rendered.related_type == "strategy_advice":
-        return rendered.related_id
-    return None
+    return rendered.related_id if rendered.related_type == "strategy_advice" else None
 
 
 def _alert_message_id(alert_message: Any) -> int | None:
@@ -536,14 +538,12 @@ def _alert_message_id(alert_message: Any) -> int | None:
 
 
 def _commit_if_possible(db_session: Any) -> None:
-    commit = getattr(db_session, "commit", None)
-    if callable(commit):
+    if callable(commit := getattr(db_session, "commit", None)):
         commit()
 
 
 def _rollback_if_possible(db_session: Any) -> None:
-    rollback = getattr(db_session, "rollback", None)
-    if callable(rollback):
+    if callable(rollback := getattr(db_session, "rollback", None)):
         rollback()
 
 
