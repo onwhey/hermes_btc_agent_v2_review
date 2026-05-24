@@ -37,7 +37,7 @@ class StrategyAdviceNotificationRequest:
     """Input for a stage-21B notification send attempt.
 
     Parameters: `review_id` identifies the 21A lifecycle review; `trigger_source`
-    is CLI-only in 21B; `send_real_alert` must be explicit to call Hermes.
+    may be CLI or scheduler through 21C; `send_real_alert` must be explicit to call Hermes.
     External effects: none in this value object.
     """
 

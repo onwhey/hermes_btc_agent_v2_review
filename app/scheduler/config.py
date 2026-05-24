@@ -72,6 +72,8 @@ class SchedulerRuntimeConfig:
     model_review_scheduler_enabled: bool = False
     model_review_max_runs_per_4h: int = 2
     model_review_step_running_timeout_seconds: int = 300
+    strategy_advice_scheduler_enabled: bool = False
+    strategy_advice_notification_send_enabled: bool = False
 
 
 def build_scheduler_runtime_config(
@@ -147,6 +149,8 @@ def build_scheduler_runtime_config(
         model_review_scheduler_enabled=active_settings.model_review_scheduler_enabled,
         model_review_max_runs_per_4h=active_settings.model_review_max_runs_per_4h,
         model_review_step_running_timeout_seconds=active_settings.model_review_step_running_timeout_seconds,
+        strategy_advice_scheduler_enabled=active_settings.strategy_advice_scheduler_enabled,
+        strategy_advice_notification_send_enabled=active_settings.strategy_advice_notification_send_enabled,
     )
     validate_scheduler_runtime_config(config)
     return config

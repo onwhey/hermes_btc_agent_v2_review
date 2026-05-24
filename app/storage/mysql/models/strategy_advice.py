@@ -115,6 +115,10 @@ if mapped_column is not None:
         __tablename__ = "strategy_advice_lifecycle_review"
         __table_args__ = (
             UniqueConstraint("review_id", name="uq_strategy_advice_lifecycle_review_id"),
+            UniqueConstraint(
+                "source_review_aggregation_run_id",
+                name="uq_strategy_advice_lifecycle_source_review",
+            ),
             Index("idx_strategy_advice_lifecycle_symbol", "symbol", "base_interval", "higher_interval"),
             Index("idx_strategy_advice_lifecycle_reviewed", "reviewed_advice_id"),
             Index("idx_strategy_advice_lifecycle_result", "result_advice_id"),
@@ -237,6 +241,35 @@ if mapped_column is not None:
         created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
         updated_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
+
+    class StrategyAdviceSchedulerEventLog(Base):
+        """ORM mapping for one stage-21C scheduler task audit event."""
+
+        __tablename__ = "strategy_advice_scheduler_event_log"
+        __table_args__ = (
+            UniqueConstraint("event_id", name="uq_strategy_advice_scheduler_event_id"),
+            Index("idx_strategy_advice_scheduler_job_created", "job_name", "created_at_utc"),
+            Index("idx_strategy_advice_scheduler_mrag", "review_aggregation_run_id"),
+            Index("idx_strategy_advice_scheduler_status", "status", "created_at_utc"),
+            Index("idx_strategy_advice_scheduler_trace", "trace_id"),
+        )
+
+        id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+        event_id: Mapped[str] = mapped_column(String(160), nullable=False)
+        job_name: Mapped[str] = mapped_column(String(96), nullable=False)
+        symbol: Mapped[str | None] = mapped_column(String(32), nullable=True)
+        base_interval: Mapped[str | None] = mapped_column(String(16), nullable=True)
+        higher_interval: Mapped[str | None] = mapped_column(String(16), nullable=True)
+        review_aggregation_run_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+        trigger_source: Mapped[str] = mapped_column(String(32), nullable=False)
+        status: Mapped[str] = mapped_column(String(32), nullable=False)
+        reason: Mapped[str] = mapped_column(Text, nullable=False)
+        trace_id: Mapped[str] = mapped_column(String(128), nullable=False)
+        started_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+        finished_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+        details_json: Mapped[str] = mapped_column(Text, nullable=False)
+        created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
 else:
 
     @dataclass
@@ -354,9 +387,31 @@ else:
         updated_at_utc: datetime | None = None
 
 
+    @dataclass
+    class StrategyAdviceSchedulerEventLog:  # type: ignore[no-redef]
+        """Fallback value object used only when SQLAlchemy is unavailable."""
+
+        id: int | None = None
+        event_id: str = ""
+        job_name: str = ""
+        symbol: str | None = None
+        base_interval: str | None = None
+        higher_interval: str | None = None
+        review_aggregation_run_id: str | None = None
+        trigger_source: str = ""
+        status: str = ""
+        reason: str = ""
+        trace_id: str = ""
+        started_at_utc: datetime | None = None
+        finished_at_utc: datetime | None = None
+        details_json: str = "{}"
+        created_at_utc: datetime | None = None
+
+
 __all__ = [
     "StrategyAdvice",
     "StrategyAdviceEvent",
     "StrategyAdviceLifecycleReview",
+    "StrategyAdviceSchedulerEventLog",
     "StrategyAdviceTradeSetup",
 ]

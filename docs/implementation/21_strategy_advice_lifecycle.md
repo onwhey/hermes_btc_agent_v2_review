@@ -914,7 +914,8 @@ Coverage includes:
 - successful alert-message idempotency
 - brief content remains short but includes model status and boundary
 - boundary flags remain false
-- scheduler trigger rejected
+- scheduler trigger is accepted only as a service-level call from 21C; the 21B
+  CLI remains manual `trigger_source=cli`
 
 Existing alerting test:
 
@@ -935,6 +936,237 @@ and in-memory repository.
 - modify stage-20 model review aggregation, reuse, expiration, chain, or step
   logic
 - connect scheduler
+- read account/private trading state
+- place orders
+- generate position size or leverage
+- modify Kline, snapshot, strategy signal, material pack, or stage-20 rows
+
+## 17. 21C Strategy Advice Scheduler Chain
+
+21C connects the scheduler chain after stage 20. It does not make a new advice
+decision engine. It calls the existing 21A service and existing 21B notification
+sender.
+
+### 17.1 Entry Points
+
+Scheduler entry:
+
+`app/scheduler/runner.py::_run_strategy_advice_after_model_review_if_needed`
+
+calls:
+
+`app/scheduler/jobs/strategy_advice_scheduler_job.py::run_strategy_advice_scheduler_after_model_review_job`
+
+which calls:
+
+`app/strategy_advice/scheduler_service.py::run_strategy_advice_scheduler`
+
+Manual validation entry:
+
+    python -m scripts.run_strategy_advice_scheduler \
+      --review-aggregation-run-id MRAG-xxx \
+      --trigger-source cli \
+      --dry-run
+
+    python -m scripts.run_strategy_advice_scheduler \
+      --symbol BTCUSDT \
+      --base-interval 4h \
+      --higher-interval 1d \
+      --trigger-source cli \
+      --confirm-write
+
+The CLI accepts only `trigger_source=cli`. Scheduler automation calls the job
+directly with `trigger_source=scheduler`.
+
+### 17.2 Config
+
+21C reads:
+
+- `STRATEGY_ADVICE_SCHEDULER_ENABLED`
+- `STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED`
+
+Rules:
+
+- when `STRATEGY_ADVICE_SCHEDULER_ENABLED=false`, scheduler runner does not
+  trigger 21C
+- when scheduler is enabled and notification send is false, 21C may generate
+  lifecycle rows and prepared alert rows, but does not send Hermes
+- when both are true, 21C may pass `send_real_alert=true` to the existing 21B
+  sender
+
+The CLI does not have a flag that bypasses
+`STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED`.
+
+### 17.3 Core Data Flow
+
+    4h collector success
+        -> stage 17 scheduler hook
+        -> stage 18 aggregation hook
+        -> stage 20 model-review worker hook
+        -> stage 21C scheduler hook
+        -> stage 21A strategy advice lifecycle service
+        -> stage 21B notification sender
+
+Scheduler runner still does not call stage 19 directly. 21C also does not call
+stage 19, DeepSeek, GPT, Claude, or any model provider.
+
+### 17.4 MRAG Processing
+
+21C processes only `model_review_aggregation_run` rows. It does not scan
+`analysis_material_pack` and does not generate advice from material packs.
+
+For one `symbol/base_interval/higher_interval` scope:
+
+- the newest unprocessed MRAG may enter 21A and then 21B
+- older unprocessed MRAG rows are marked with
+  `lifecycle_action = skip_stale_review_aggregation`
+- stale MRAG rows do not create `strategy_advice`
+- stale MRAG rows do not create `strategy_advice_trade_setup`
+- stale MRAG rows do not send Hermes
+- stale MRAG rows do not affect active advice
+
+20 status handling:
+
+- `success` and `blocked` are processable by 21A
+- `failed` and `skipped` are scheduler-skipped and do not create formal advice
+
+### 17.5 Idempotency
+
+21A idempotency is based on:
+
+`strategy_advice_lifecycle_review.source_review_aggregation_run_id`
+
+21C adds a unique constraint:
+
+`uq_strategy_advice_lifecycle_source_review`
+
+If a lifecycle review already exists for an MRAG, 21C does not rerun 21A. It
+checks whether 21B notification still needs recovery.
+
+21B idempotency remains review-based:
+
+- `strategy_advice_event.related_review_id = review_id` with
+  `event_type = notification_sent`
+- or successful `alert_message.related_review_id = review_id`
+
+Advice id is not used to suppress a later lifecycle-review notification.
+
+### 17.6 Notification Recovery and Retry
+
+If 21A succeeded but 21B did not successfully send or prepare the required
+notification, 21C runs only 21B.
+
+Hermes retry rules:
+
+- retry only notification sending
+- do not rerun 21A
+- do not recreate lifecycle reviews, advice, or trade setups
+- wait 5 minutes after the latest `notification_failed`
+- stop after 3 `notification_failed` events
+- Hermes failure never changes advice status
+
+### 17.7 Redis Lock
+
+21C uses Redis temporary locks plus database idempotency.
+
+Lock key:
+
+`strategy_advice_21c:{symbol}:{base_interval}:{higher_interval}:{review_aggregation_run_id}`
+
+Example:
+
+`strategy_advice_21c:BTCUSDT:4h:1d:MRAG-xxx`
+
+TTL:
+
+`600` seconds.
+
+If the lock is unavailable, 21C returns `lock_skipped` and does not process the
+MRAG. The database unique constraint remains the final duplicate-write guard.
+
+### 17.8 Scheduler Audit Log
+
+21C adds table:
+
+`strategy_advice_scheduler_event_log`
+
+It records job name, MRAG id, trigger source, status, reason, trace id, start
+and finish time, and compact details. It is not a lifecycle decision table and
+is not used to judge strategy quality.
+
+### 17.9 External Interfaces and Boundaries
+
+Database reads:
+
+- `model_review_aggregation_run`
+- `strategy_advice_lifecycle_review`
+- `strategy_advice_event`
+- `alert_message`
+
+Database writes:
+
+- `strategy_advice_lifecycle_review`
+- `strategy_advice_event`
+- `strategy_advice`
+- `strategy_advice_trade_setup`
+- `alert_message`
+- `strategy_advice_scheduler_event_log`
+
+Redis:
+
+21C reads/writes only the temporary lock key described above.
+
+Hermes:
+
+21C does not send Hermes directly. It delegates to 21B. Real send is possible
+only when `STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED=true`.
+
+Models:
+
+21C does not call stage 19 and does not call any model provider.
+
+Trading:
+
+21C does not read accounts, does not place orders, does not generate position
+size or leverage, and does not perform automatic trading.
+
+### 17.10 21C Tests
+
+Primary tests:
+
+- `tests/strategy_advice/test_strategy_advice_scheduler_service.py`
+- `tests/scheduler/test_model_review_chain_worker_hook.py`
+
+Coverage includes:
+
+- scheduler disabled skips 21A/21B
+- notification send disabled prepares only
+- notification send enabled passes the real-send flag to 21B with mocked Hermes
+- latest MRAG enters 21A/21B
+- existing lifecycle review recovers only 21B
+- old MRAG writes `skip_stale_review_aggregation`
+- stale MRAG does not notify
+- 21B failure recovery does not rerun 21A
+- 5-minute and 3-attempt Hermes retry rules
+- review-id notification idempotency
+- Redis lock skip
+- scheduler runner invokes 21C only when enabled
+
+Default pytest does not request real Binance, real MySQL, real Redis, real
+Hermes, stage 19, or any model provider.
+
+## 18. Explicit Non-Goals in 21C
+
+21C does not:
+
+- call stage 19
+- call DeepSeek, GPT, Claude, or other model providers
+- scan unprocessed `analysis_material_pack`
+- generate advice directly from material packs
+- reimplement stage-20 model review reuse, expiration, chain, or step logic
+- reimplement 21A lifecycle decisions
+- reimplement 21B notification rendering or Hermes sending
+- auto trade
 - read account/private trading state
 - place orders
 - generate position size or leverage

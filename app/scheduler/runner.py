@@ -9,12 +9,13 @@ scripts/run_scheduler.py::main
     -> app/strategy/signal_service.py::StrategySignalService.run_strategy_signals
     -> app/scheduler/jobs/strategy_aggregation_job.py::run_strategy_aggregation_after_signal_job
     -> app/strategy/aggregation/service.py::run_strategy_aggregation
+    -> app/scheduler/jobs/strategy_advice_scheduler_job.py::run_strategy_advice_scheduler_after_model_review_job
     -> app/scheduler/jobs/daily_kline_integrity_check.py::run_daily_kline_integrity_check_job
 
 This file belongs to `app/scheduler`. It polls UTC time, separates Redis
 running locks from completed markers, and calls thin scheduler jobs for phases
 09, 11, 14, the stage-17 strategy-signal hook, and the optional stage-18
-aggregation hook. It does not
+aggregation hook, and the optional stage-21C advice scheduler hook. It does not
 call strategy scripts, request Binance directly, read/write `bitcoin_price`,
 implement collector business checks, call DeepSeek, generate final advice, or
 perform trading.
@@ -58,6 +59,7 @@ JobCallable = Callable[[], Any]
 StrategySignalAfterCollectCallable = Callable[..., Any]
 StrategyAggregationAfterSignalCallable = Callable[..., Any]
 ModelReviewChainWorkerAfterAggregationCallable = Callable[..., Any]
+StrategyAdviceAfterModelReviewCallable = Callable[..., Any]
 AlertSender = Callable[..., Any]
 
 
@@ -112,6 +114,7 @@ class SchedulerRunner:
         model_review_chain_worker_after_aggregation_job: (
             ModelReviewChainWorkerAfterAggregationCallable | None
         ) = None,
+        strategy_advice_after_model_review_job: StrategyAdviceAfterModelReviewCallable | None = None,
         alert_sender: AlertSender | None = None,
         sleep_fn: Callable[[float], None] = time_module.sleep,
     ) -> None:
@@ -129,6 +132,9 @@ class SchedulerRunner:
         self.model_review_chain_worker_after_aggregation_job = (
             model_review_chain_worker_after_aggregation_job
             or _default_model_review_chain_worker_after_aggregation_job
+        )
+        self.strategy_advice_after_model_review_job = (
+            strategy_advice_after_model_review_job or _default_strategy_advice_after_model_review_job
         )
         self.alert_sender = alert_sender or _default_alert_sender
         self.sleep_fn = sleep_fn
@@ -497,13 +503,60 @@ class SchedulerRunner:
                 settings=self.settings,
                 config=self.config,
             )
-            return _model_review_chain_worker_result_details(worker_result)
+            details = _model_review_chain_worker_result_details(worker_result)
+            advice_details = self._run_strategy_advice_after_model_review_if_needed(
+                due_job,
+                aggregation_result=aggregation_result,
+                worker_result=worker_result,
+                trace_id=trace_id,
+                current_time_utc=current_time_utc,
+            )
+            if advice_details:
+                details["strategy_advice_scheduler"] = advice_details
+            return details
         except Exception as exc:  # noqa: BLE001 - 20C hook must not rewrite upstream results.
             LOGGER.exception("model review chain worker post-aggregation hook failed job=%s", due_job.name)
             self._send_scheduler_system_alert(
                 trace_id=trace_id,
                 job_name=due_job.name,
                 summary="Model review chain worker post-aggregation hook failed.",
+                error=exc,
+                details={"slot": due_job.slot_id, "slot_time_utc": due_job.slot_time_utc.isoformat()},
+            )
+            return {
+                "status": "failed",
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc),
+            }
+
+    def _run_strategy_advice_after_model_review_if_needed(
+        self,
+        due_job: DueSchedulerJob,
+        *,
+        aggregation_result: Any,
+        worker_result: Any,
+        trace_id: str,
+        current_time_utc: datetime,
+    ) -> dict[str, object]:
+        """Run 21C after 20C worker, never 21A/21B directly from runner."""
+
+        if not self.config.strategy_advice_scheduler_enabled:
+            return {"status": "disabled", "reason": "STRATEGY_ADVICE_SCHEDULER_ENABLED=false"}
+        try:
+            result = self.strategy_advice_after_model_review_job(
+                aggregation_result=aggregation_result,
+                worker_result=worker_result,
+                current_time_utc=current_time_utc,
+                settings=self.settings,
+                config=self.config,
+            )
+            return _strategy_advice_scheduler_result_details(result)
+        except Exception as exc:  # noqa: BLE001 - 21C hook must not rewrite upstream results.
+            LOGGER.exception("strategy advice scheduler post-model-review hook failed job=%s", due_job.name)
+            self._send_scheduler_system_alert(
+                trace_id=trace_id,
+                job_name=due_job.name,
+                summary="Strategy advice scheduler post-model-review hook failed.",
                 error=exc,
                 details={"slot": due_job.slot_id, "slot_time_utc": due_job.slot_time_utc.isoformat()},
             )
@@ -750,6 +803,14 @@ def _default_model_review_chain_worker_after_aggregation_job(*args: Any, **kwarg
     )
 
     return run_model_review_chain_worker_after_aggregation_job(*args, **kwargs)
+
+
+def _default_strategy_advice_after_model_review_job(*args: Any, **kwargs: Any) -> Any:
+    from app.scheduler.jobs.strategy_advice_scheduler_job import (
+        run_strategy_advice_scheduler_after_model_review_job,
+    )
+
+    return run_strategy_advice_scheduler_after_model_review_job(*args, **kwargs)
 
 
 def _default_alert_sender(*args: Any, **kwargs: Any) -> Any:
@@ -1018,6 +1079,24 @@ def _model_review_chain_worker_result_details(result: Any) -> dict[str, object]:
         "is_trading_signal": getattr(result, "is_trading_signal", False),
         "is_executable": getattr(result, "is_executable", False),
         "auto_trading_allowed": getattr(result, "auto_trading_allowed", False),
+    }
+
+
+def _strategy_advice_scheduler_result_details(result: Any) -> dict[str, object]:
+    status = getattr(result, "status", "")
+    return {
+        "status": str(getattr(status, "value", status)),
+        "exit_code": getattr(result, "exit_code", None),
+        "review_aggregation_run_id": getattr(result, "review_aggregation_run_id", None),
+        "lifecycle_review_id": getattr(result, "lifecycle_review_id", None),
+        "processed_mrag_count": getattr(result, "processed_mrag_count", 0),
+        "stale_skipped_count": getattr(result, "stale_skipped_count", 0),
+        "notification_attempted": getattr(result, "notification_attempted", False),
+        "notification_status": getattr(result, "notification_status", None),
+        "send_real_alert": getattr(result, "send_real_alert", False),
+        "summary_text": getattr(result, "summary_text", ""),
+        "error_code": getattr(result, "error_code", None),
+        "error_message": getattr(result, "error_message", None),
     }
 
 

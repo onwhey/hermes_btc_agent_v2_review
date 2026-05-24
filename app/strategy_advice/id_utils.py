@@ -38,6 +38,13 @@ def build_strategy_advice_event_id(*, review_id: str, event_type: str, sequence_
     return f"ADVE-{digest}"
 
 
+def build_strategy_advice_scheduler_event_id(*, trace_id: str, sequence_no: int) -> str:
+    """Build one compact scheduler audit event id for stage 21C."""
+
+    digest = uuid5(NAMESPACE_URL, f"stage21c-scheduler-event:{trace_id}:{sequence_no}").hex[:24].upper()
+    return f"ADVS-{digest}"
+
+
 def build_strategy_advice_setup_id(*, advice_id: str, setup_rank: int) -> str:
     """Build one compact setup id for an advice/setup pair."""
 
@@ -61,5 +68,6 @@ __all__ = [
     "build_strategy_advice_event_id",
     "build_strategy_advice_id",
     "build_strategy_advice_review_id",
+    "build_strategy_advice_scheduler_event_id",
     "build_strategy_advice_setup_id",
 ]

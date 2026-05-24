@@ -361,7 +361,7 @@ def test_service_does_not_call_model_send_hermes_or_scheduler() -> None:
     assert result.notification_payload_json["boundaries"]["stage21a_sends_hermes"] is False
 
 
-def test_scheduler_trigger_source_is_rejected() -> None:
+def test_scheduler_trigger_source_is_allowed_for_21c_entry() -> None:
     repo = _repo_with_aggregation(_aggregation("MRAG-scheduler", summary="create_new_advice conditional_trade bullish"))
     service = StrategyAdviceService(repository=repo)
 
@@ -375,8 +375,8 @@ def test_scheduler_trigger_source_is_rejected() -> None:
         ),
     )
 
-    assert result.status == StrategyAdviceServiceStatus.FAILED
-    assert result.error_code == "invalid_request"
+    assert result.status == StrategyAdviceServiceStatus.SUCCESS
+    assert result.error_code is None
     assert repo.created_advice == []
 
 

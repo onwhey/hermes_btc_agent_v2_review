@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.time_utils import now_utc
-from app.market_data.kline_constants import TRIGGER_SOURCE_CLI
+from app.market_data.kline_constants import TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER
 from app.strategy_advice.id_utils import build_strategy_advice_id, build_strategy_advice_review_id
 from app.strategy_advice.lifecycle import (
     AdviceCandidate,
@@ -62,7 +62,7 @@ from app.strategy_advice.schema import (
 )
 from app.strategy_advice.trade_setup import build_trade_setup_payloads
 
-ALLOWED_STRATEGY_ADVICE_TRIGGER_SOURCES = frozenset({TRIGGER_SOURCE_CLI})
+ALLOWED_STRATEGY_ADVICE_TRIGGER_SOURCES = frozenset({TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER})
 
 
 class StrategyAdviceService:

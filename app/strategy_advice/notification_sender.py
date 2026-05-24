@@ -26,7 +26,7 @@ from typing import Any
 from app.alerting.hermes_client import HermesClient
 from app.alerting.types import AlertEvent, AlertSendStatus, AlertSeverity, AlertType
 from app.core.config import AppSettings, get_settings
-from app.market_data.kline_constants import TRIGGER_SOURCE_CLI
+from app.market_data.kline_constants import TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER
 from app.strategy_advice.notification_renderer import render_strategy_advice_notification
 from app.strategy_advice.notification_repository import (
     StrategyAdviceNotificationRepository,
@@ -45,7 +45,7 @@ from app.strategy_advice.notification_schema import (
 )
 from app.strategy_advice.schema import AdviceEventType
 
-ALLOWED_STRATEGY_ADVICE_NOTIFICATION_TRIGGER_SOURCES = frozenset({TRIGGER_SOURCE_CLI})
+ALLOWED_STRATEGY_ADVICE_NOTIFICATION_TRIGGER_SOURCES = frozenset({TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER})
 
 
 class StrategyAdviceNotificationSender:
@@ -288,7 +288,7 @@ def _validate_notification_request(
     if not request.review_id.strip():
         problems.append("review_id is required")
     if request.trigger_source not in ALLOWED_STRATEGY_ADVICE_NOTIFICATION_TRIGGER_SOURCES:
-        problems.append("trigger_source supports only cli in stage 21B")
+        problems.append("trigger_source supports only cli or scheduler in stage 21B")
     if request.dry_run and request.confirm_write:
         problems.append("dry_run and confirm_write cannot both be true")
     if not request.dry_run and not request.confirm_write:

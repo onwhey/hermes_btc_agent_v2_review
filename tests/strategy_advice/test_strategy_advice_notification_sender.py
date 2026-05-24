@@ -324,7 +324,7 @@ def test_boundary_flags_remain_false_in_result_and_event_payload() -> None:
     assert payload["auto_trading_allowed"] is False
 
 
-def test_scheduler_trigger_is_rejected() -> None:
+def test_scheduler_trigger_is_allowed_for_21c_entry() -> None:
     repo = _repo_with_review(_review("ADVR-scheduler"))
     service = StrategyAdviceNotificationSender(
         repository=repo,
@@ -340,8 +340,8 @@ def test_scheduler_trigger_is_rejected() -> None:
         ),
     )
 
-    assert result.status == StrategyAdviceNotificationStatus.FAILED
-    assert result.error_code == "invalid_request"
+    assert result.status == StrategyAdviceNotificationStatus.SUCCESS
+    assert result.error_code is None
 
 
 def _run(

@@ -92,6 +92,7 @@ class LifecycleAction(str, Enum):
     EXPIRE_ACTIVE_ADVICE = "expire_active_advice"
     WAIT_WITHOUT_ACTIVE_ADVICE = "wait_without_active_advice"
     STOP_TRADING = "stop_trading"
+    SKIP_STALE_REVIEW_AGGREGATION = "skip_stale_review_aggregation"
 
 
 class AdviceEventType(str, Enum):
@@ -111,6 +112,7 @@ class AdviceEventType(str, Enum):
     NOTIFICATION_SENT = "notification_sent"
     NOTIFICATION_FAILED = "notification_failed"
     NOTIFICATION_SKIPPED = "notification_skipped"
+    STALE_REVIEW_AGGREGATION_SKIPPED = "stale_review_aggregation_skipped"
 
 
 @dataclass(frozen=True)
@@ -118,7 +120,7 @@ class StrategyAdviceRequest:
     """Input for one stage-21A advice lifecycle attempt.
 
     Parameters: `review_aggregation_run_id` identifies the stage-20 aggregation
-    row; `trigger_source` is CLI-only in 21A; dry-run is the safe default.
+    row; `trigger_source` may be CLI or scheduler through 21C; dry-run is the safe default.
     Return value: `StrategyAdviceResult` from the service.
     Failure scenarios: invalid parameters, missing stage-20 row, and database
     persistence failures are converted into structured results by the service.

@@ -165,6 +165,96 @@ def test_scheduler_triggers_20c_worker_after_stage18_success_without_direct_stag
     assert worker_details["auto_trading_allowed"] is False
 
 
+def test_scheduler_triggers_21c_after_20c_when_enabled() -> None:
+    advice_calls: list[Any] = []
+
+    def collect_job() -> IncrementalKlineCollectResult:
+        return IncrementalKlineCollectResult(
+            status=KlineCollectStatus.SUCCESS,
+            exit_code=EXIT_SUCCESS,
+            trace_id="collect-trace",
+            message="ok",
+            event_log_id=501,
+        )
+
+    def stage17_hook(**_kwargs: Any) -> StrategySignalSchedulerResult:
+        return StrategySignalSchedulerResult(
+            status=StrategySignalSchedulerStatus.SUCCESS,
+            event_id="SSS-test",
+            run_id="SSR-test",
+            snapshot_id="MCS-test",
+            trace_id="trace-17",
+            message="stage17 ok",
+            target_base_open_time_ms=1,
+        )
+
+    def stage18_hook(**_kwargs: Any) -> StrategyAggregationResult:
+        return StrategyAggregationResult(
+            status=StrategyAggregationStatus.SUCCESS,
+            exit_code=0,
+            aggregation_run_id="SAR-test",
+            material_pack_id="AMP-test",
+            strategy_signal_run_id="SSR-test",
+            snapshot_id="MCS-test",
+            trace_id="trace-18",
+            analysis_hypothesis_direction=AnalysisHypothesisDirection.LONG,
+            message="stage18 ok",
+        )
+
+    def worker_hook(**_kwargs: Any) -> ModelReviewChainWorkerResult:
+        return ModelReviewChainWorkerResult(
+            status="success",
+            exit_code=0,
+            trace_id="trace-20",
+            material_pack_id="AMP-test",
+            details={"review_aggregation_run_id": "MRAG-test"},
+        )
+
+    def advice_hook(**kwargs: Any) -> Any:
+        advice_calls.append(kwargs)
+        return type(
+            "AdviceSchedulerResult",
+            (),
+            {
+                "status": "success",
+                "exit_code": 0,
+                "review_aggregation_run_id": "MRAG-test",
+                "lifecycle_review_id": "ADVR-test",
+                "processed_mrag_count": 1,
+                "stale_skipped_count": 0,
+                "notification_attempted": True,
+                "notification_status": "success",
+                "send_real_alert": False,
+                "summary_text": "ok",
+                "error_code": None,
+                "error_message": None,
+            },
+        )()
+
+    runner = SchedulerRunner(
+        config=runtime_config(strategy_advice_scheduler_enabled=True),
+        slot_store=FakeSlotStore(),
+        settings=AppSettings(
+            model_review_auto_run_enabled=True,
+            model_review_scheduler_enabled=True,
+            strategy_advice_scheduler_enabled=True,
+        ),
+        kline_4h_job=collect_job,
+        strategy_signal_after_collect_job=stage17_hook,
+        strategy_aggregation_after_signal_job=stage18_hook,
+        model_review_chain_worker_after_aggregation_job=worker_hook,
+        strategy_advice_after_model_review_job=advice_hook,
+    )
+
+    records = runner.run_once(current_time_utc=utc_at(22, 8, 6))
+
+    assert len(advice_calls) == 1
+    assert advice_calls[0]["worker_result"].details["review_aggregation_run_id"] == "MRAG-test"
+    advice_details = records[0].details["strategy_aggregation"]["model_review_chain_worker"]["strategy_advice_scheduler"]
+    assert advice_details["status"] == "success"
+    assert advice_details["review_aggregation_run_id"] == "MRAG-test"
+
+
 def test_scheduler_does_not_trigger_20c_worker_when_config_disabled() -> None:
     worker_calls: list[Any] = []
 
