@@ -105,9 +105,13 @@ Hermes app 层入口：
 
 创建 intent 不按文本去重；用户确认时按 `intent_id` 控制，不允许重复写 22A 表。
 
-字段长度控制：
+字段类型控制：
 
-`raw_text`、`normalized_text`、JSON 快照字段均使用有界 `String` 字段，不使用无限膨胀大字段。
+`raw_text`、`normalized_text`、`parsed_payload_json`、`missing_fields_json`、`dry_run_snapshot_json`、
+`parsed_reason`、`parsed_note`、`validation_error_message` 使用 `Text` 类字段，不参与普通索引，
+避免 MySQL utf8mb4 下行内 `VARCHAR` 过大导致建表失败。
+
+service 层仍会对写入内容做保守截断，避免把无限膨胀上下文写入数据库。
 
 ### 1.7 配置
 

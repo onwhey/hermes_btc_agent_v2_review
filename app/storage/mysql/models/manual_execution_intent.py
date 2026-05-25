@@ -19,10 +19,10 @@ from typing import Any
 from app.storage.mysql.base import Base
 
 try:
-    from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Index, Numeric, String, UniqueConstraint
+    from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Index, Numeric, String, Text, UniqueConstraint
     from sqlalchemy.orm import Mapped, mapped_column
 except ImportError:  # pragma: no cover - dependencies are managed by pyproject.
-    BigInteger = Boolean = CheckConstraint = DateTime = Index = Numeric = String = UniqueConstraint = None  # type: ignore[assignment]
+    BigInteger = Boolean = CheckConstraint = DateTime = Index = Numeric = String = Text = UniqueConstraint = None  # type: ignore[assignment]
     Mapped = Any  # type: ignore[assignment]
     mapped_column = None  # type: ignore[assignment]
 
@@ -53,8 +53,8 @@ if mapped_column is not None:
         source_channel: Mapped[str] = mapped_column(String(32), nullable=False)
         source_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
         source_user_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
-        raw_text: Mapped[str] = mapped_column(String(4000), nullable=False)
-        normalized_text: Mapped[str] = mapped_column(String(4000), nullable=False)
+        raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+        normalized_text: Mapped[str] = mapped_column(Text, nullable=False)
         parsed_action: Mapped[str | None] = mapped_column(String(32), nullable=True)
         parsed_symbol: Mapped[str | None] = mapped_column(String(32), nullable=True)
         parsed_side: Mapped[str | None] = mapped_column(String(16), nullable=True)
@@ -63,14 +63,14 @@ if mapped_column is not None:
         parsed_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
         parsed_notional_usdt: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
         parsed_margin_usdt: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
-        parsed_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
-        parsed_note: Mapped[str | None] = mapped_column(String(2000), nullable=True)
-        parsed_payload_json: Mapped[str] = mapped_column(String(4000), nullable=False)
+        parsed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+        parsed_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+        parsed_payload_json: Mapped[str] = mapped_column(Text, nullable=False)
         validation_status: Mapped[str] = mapped_column(String(32), nullable=False)
         validation_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
-        validation_error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
-        missing_fields_json: Mapped[str] = mapped_column(String(1000), nullable=False)
-        dry_run_snapshot_json: Mapped[str] = mapped_column(String(4000), nullable=False)
+        validation_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+        missing_fields_json: Mapped[str] = mapped_column(Text, nullable=False)
+        dry_run_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
         executed_manual_position_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
         executed_execution_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
         expires_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
