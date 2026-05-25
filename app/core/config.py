@@ -123,6 +123,8 @@ from app.core.constants import (
     DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SUCCESS,
     DEFAULT_STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED,
     DEFAULT_STRATEGY_ADVICE_SCHEDULER_ENABLED,
+    DEFAULT_MANUAL_EXECUTION_FEE_RATE,
+    DEFAULT_MANUAL_EXECUTION_RECEIPT_SEND_ENABLED,
     DEFAULT_STRATEGY_SIGNAL_BASE_INTERVAL,
     DEFAULT_STRATEGY_SIGNAL_HERMES_ENABLED,
     DEFAULT_STRATEGY_SIGNAL_HERMES_NOTIFY_BLOCKED,
@@ -262,6 +264,8 @@ class AppSettings:
     strategy_aggregation_hermes_notify_skipped: bool = DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED
     strategy_advice_scheduler_enabled: bool = DEFAULT_STRATEGY_ADVICE_SCHEDULER_ENABLED
     strategy_advice_notification_send_enabled: bool = DEFAULT_STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED
+    manual_execution_fee_rate: str = DEFAULT_MANUAL_EXECUTION_FEE_RATE
+    manual_execution_receipt_send_enabled: bool = DEFAULT_MANUAL_EXECUTION_RECEIPT_SEND_ENABLED
     model_review_enabled: bool = DEFAULT_MODEL_REVIEW_ENABLED
     model_review_dry_run: bool = DEFAULT_MODEL_REVIEW_DRY_RUN
     model_review_provider: str = DEFAULT_MODEL_REVIEW_PROVIDER
@@ -1121,6 +1125,20 @@ def load_settings(
             ),
             "STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED",
             DEFAULT_STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED,
+        ),
+        manual_execution_fee_rate=_get_config_value(
+            merged_values,
+            "MANUAL_EXECUTION_FEE_RATE",
+            DEFAULT_MANUAL_EXECUTION_FEE_RATE,
+        ),
+        manual_execution_receipt_send_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "MANUAL_EXECUTION_RECEIPT_SEND_ENABLED",
+                str(DEFAULT_MANUAL_EXECUTION_RECEIPT_SEND_ENABLED).lower(),
+            ),
+            "MANUAL_EXECUTION_RECEIPT_SEND_ENABLED",
+            DEFAULT_MANUAL_EXECUTION_RECEIPT_SEND_ENABLED,
         ),
         model_review_enabled=_parse_optional_bool_config(
             _get_config_value(
