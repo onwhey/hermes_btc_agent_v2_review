@@ -42,6 +42,7 @@ from app.manual_execution.constants import (
     ALLOWED_EXECUTION_ACTIONS,
     ALLOWED_MANUAL_POSITION_STATUSES,
     ALLOWED_MANUAL_SIDES,
+    ALLOWED_MANUAL_TRIGGER_SOURCES,
     MANUAL_TRIGGER_SOURCE_CLI,
     POSITION_STATUS_OPEN,
     RESOLUTION_AUTO_SINGLE_OPEN_POSITION,
@@ -250,8 +251,8 @@ class ManualExecutionService:
             raise ValidationError("symbol is required")
         if request.side.strip() not in ALLOWED_MANUAL_SIDES:
             raise ValidationError("side must be long or short")
-        if request.trigger_source.strip() != MANUAL_TRIGGER_SOURCE_CLI:
-            raise ValidationError("record_manual_execution only supports trigger_source=cli in stage 22A")
+        if request.trigger_source.strip() not in ALLOWED_MANUAL_TRIGGER_SOURCES:
+            raise ValidationError("record_manual_execution only supports manual trigger_source=cli or hermes")
         if request.dry_run and request.confirm_write:
             raise ValidationError("dry_run and confirm_write cannot both be true")
         if not request.dry_run and not request.confirm_write:

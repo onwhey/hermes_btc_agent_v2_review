@@ -66,6 +66,7 @@ class AlertType(str, Enum):
     STRATEGY_ADVICE = "strategy_advice"
     MANUAL_EXECUTION_RECEIPT = "manual_execution_receipt"
     MANUAL_EXECUTION_ERROR = "manual_execution_error"
+    MANUAL_EXECUTION_INTENT = "manual_execution_intent"
     MANUAL_TEST_ALERT = "manual_test_alert"
 
 

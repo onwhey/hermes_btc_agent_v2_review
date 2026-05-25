@@ -11,5 +11,6 @@ strategy signal run/result tables, stage-17 scheduler events, and stage-18
 strategy aggregation/material-pack tables, plus stage-19 model review-gate
 attempt/result tables, stage-20A model review aggregation output tables,
 stage-20B model review chain state tables, stage-21 strategy advice
-lifecycle/scheduler tables, and stage-22A manual execution feedback tables.
+lifecycle/scheduler tables, stage-22A manual execution feedback tables, and
+stage-22B manual execution confirmation-intent tables.
 """

@@ -27,6 +27,7 @@ from app.storage.mysql.models import market_context_snapshot as _market_context_
 from app.storage.mysql.models import market_kline_1d as _market_kline_1d_model  # noqa: F401
 from app.storage.mysql.models import market_kline_4h as _market_kline_4h_model  # noqa: F401
 from app.storage.mysql.models import manual_execution as _manual_execution_model  # noqa: F401
+from app.storage.mysql.models import manual_execution_intent as _manual_execution_intent_model  # noqa: F401
 from app.storage.mysql.models import model_analysis as _model_analysis_model  # noqa: F401
 from app.storage.mysql.models import model_review_aggregation as _model_review_aggregation_model  # noqa: F401
 from app.storage.mysql.models import model_review_chain as _model_review_chain_model  # noqa: F401

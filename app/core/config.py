@@ -124,6 +124,9 @@ from app.core.constants import (
     DEFAULT_STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED,
     DEFAULT_STRATEGY_ADVICE_SCHEDULER_ENABLED,
     DEFAULT_MANUAL_EXECUTION_FEE_RATE,
+    DEFAULT_MANUAL_EXECUTION_HERMES_ENTRY_ENABLED,
+    DEFAULT_MANUAL_EXECUTION_HERMES_REPLY_SEND_ENABLED,
+    DEFAULT_MANUAL_EXECUTION_INTENT_EXPIRE_MINUTES,
     DEFAULT_MANUAL_EXECUTION_RECEIPT_SEND_ENABLED,
     DEFAULT_STRATEGY_SIGNAL_BASE_INTERVAL,
     DEFAULT_STRATEGY_SIGNAL_HERMES_ENABLED,
@@ -266,6 +269,9 @@ class AppSettings:
     strategy_advice_notification_send_enabled: bool = DEFAULT_STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED
     manual_execution_fee_rate: str = DEFAULT_MANUAL_EXECUTION_FEE_RATE
     manual_execution_receipt_send_enabled: bool = DEFAULT_MANUAL_EXECUTION_RECEIPT_SEND_ENABLED
+    manual_execution_hermes_entry_enabled: bool = DEFAULT_MANUAL_EXECUTION_HERMES_ENTRY_ENABLED
+    manual_execution_hermes_reply_send_enabled: bool = DEFAULT_MANUAL_EXECUTION_HERMES_REPLY_SEND_ENABLED
+    manual_execution_intent_expire_minutes: int = DEFAULT_MANUAL_EXECUTION_INTENT_EXPIRE_MINUTES
     model_review_enabled: bool = DEFAULT_MODEL_REVIEW_ENABLED
     model_review_dry_run: bool = DEFAULT_MODEL_REVIEW_DRY_RUN
     model_review_provider: str = DEFAULT_MODEL_REVIEW_PROVIDER
@@ -1139,6 +1145,33 @@ def load_settings(
             ),
             "MANUAL_EXECUTION_RECEIPT_SEND_ENABLED",
             DEFAULT_MANUAL_EXECUTION_RECEIPT_SEND_ENABLED,
+        ),
+        manual_execution_hermes_entry_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "MANUAL_EXECUTION_HERMES_ENTRY_ENABLED",
+                str(DEFAULT_MANUAL_EXECUTION_HERMES_ENTRY_ENABLED).lower(),
+            ),
+            "MANUAL_EXECUTION_HERMES_ENTRY_ENABLED",
+            DEFAULT_MANUAL_EXECUTION_HERMES_ENTRY_ENABLED,
+        ),
+        manual_execution_hermes_reply_send_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "MANUAL_EXECUTION_HERMES_REPLY_SEND_ENABLED",
+                str(DEFAULT_MANUAL_EXECUTION_HERMES_REPLY_SEND_ENABLED).lower(),
+            ),
+            "MANUAL_EXECUTION_HERMES_REPLY_SEND_ENABLED",
+            DEFAULT_MANUAL_EXECUTION_HERMES_REPLY_SEND_ENABLED,
+        ),
+        manual_execution_intent_expire_minutes=_parse_int_config(
+            _get_config_value(
+                merged_values,
+                "MANUAL_EXECUTION_INTENT_EXPIRE_MINUTES",
+                str(DEFAULT_MANUAL_EXECUTION_INTENT_EXPIRE_MINUTES),
+            ),
+            "MANUAL_EXECUTION_INTENT_EXPIRE_MINUTES",
+            DEFAULT_MANUAL_EXECUTION_INTENT_EXPIRE_MINUTES,
         ),
         model_review_enabled=_parse_optional_bool_config(
             _get_config_value(
