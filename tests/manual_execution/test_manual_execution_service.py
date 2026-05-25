@@ -14,12 +14,14 @@ from typing import Any
 
 from app.alerting.types import AlertSendResult, AlertSendStatus
 from app.core.config import AppSettings
+from app.manual_execution.calculations import state_from_row
+from app.manual_execution.payloads import summary_from_row
+from app.manual_execution.receipt import render_manual_execution_close_receipt
 from app.manual_execution.schema import (
     ManualExecutionRequest,
     ManualExecutionServiceStatus,
     ManualPositionListRequest,
 )
-from app.manual_execution.payloads import summary_from_row
 from app.manual_execution.service import ManualExecutionService
 
 
@@ -318,6 +320,30 @@ def test_summary_from_row_accepts_naive_utc_datetime_from_mysql() -> None:
     summary = summary_from_row(row)
 
     assert summary.opened_at_utc == "2026-05-25 01:02:03 UTC"
+
+
+def test_close_receipt_accepts_naive_utc_opened_and_closed_times_from_mysql() -> None:
+    row = _summary_row(
+        opened_at_utc=datetime(2026, 5, 25, 1, 2, 3),
+        closed_at_utc=datetime(2026, 5, 25, 3, 4, 5),
+    )
+    row.status = "closed"
+    row.close_price = Decimal("62000")
+
+    receipt = render_manual_execution_close_receipt(
+        position_state=state_from_row(row),
+        execution_records=(
+            SimpleNamespace(
+                execution_action="close_position",
+                price=Decimal("62000"),
+                notional_usdt=Decimal("310"),
+                advice_id="ADV-1",
+            ),
+        ),
+    )
+
+    assert "2026-05-25 01:02:03 UTC" in receipt
+    assert "2026-05-25 03:04:05 UTC" in receipt
 
 
 def test_multiple_open_positions_require_manual_position_id() -> None:

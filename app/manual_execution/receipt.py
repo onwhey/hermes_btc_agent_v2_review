@@ -15,7 +15,7 @@ from typing import Iterable
 
 from app.alerting.templates import WECHAT_VISIBLE_BODY_DETAIL_KEY
 from app.alerting.types import AlertEvent, AlertSeverity, AlertType
-from app.core.time_utils import format_datetime_with_timezone, utc_aware_to_prc_aware
+from app.core.time_utils import ensure_utc_aware, format_datetime_with_timezone, utc_aware_to_prc_aware
 from app.manual_execution.calculations import ManualPositionState, decimal_to_text
 
 
@@ -26,14 +26,16 @@ def render_manual_execution_close_receipt(
 ) -> str:
     """Render the stage-22A close receipt without calling external services."""
 
-    opened_prc = format_datetime_with_timezone(utc_aware_to_prc_aware(position_state.opened_at_utc))
-    opened_utc = format_datetime_with_timezone(position_state.opened_at_utc)
+    opened_at_utc = _require_utc_aware_time(position_state.opened_at_utc, "opened_at_utc")
+    opened_prc = format_datetime_with_timezone(utc_aware_to_prc_aware(opened_at_utc))
+    opened_utc = format_datetime_with_timezone(opened_at_utc)
     closed_line = ""
     if position_state.closed_at_utc is not None:
+        closed_at_utc = _require_utc_aware_time(position_state.closed_at_utc, "closed_at_utc")
         closed_line = (
             "关闭时间："
-            f"{format_datetime_with_timezone(utc_aware_to_prc_aware(position_state.closed_at_utc))} / "
-            f"{format_datetime_with_timezone(position_state.closed_at_utc)}\n"
+            f"{format_datetime_with_timezone(utc_aware_to_prc_aware(closed_at_utc))} / "
+            f"{format_datetime_with_timezone(closed_at_utc)}\n"
         )
     chain_lines: list[str] = []
     advice_ids: list[str] = []
@@ -67,6 +69,15 @@ def render_manual_execution_close_receipt(
         f"操作链概要：\n{chain_text}\n"
         "边界声明：本回执只记录用户主动反馈的人工执行事实，不读取交易所账户，不同步真实仓位，不自动交易。"
     )
+
+
+def _require_utc_aware_time(value: object, field_name: str):
+    """Normalize a MySQL-read UTC datetime before user-facing receipt display."""
+
+    aware_value = ensure_utc_aware(value)  # type: ignore[arg-type]
+    if aware_value is None:
+        raise ValueError(f"{field_name} is required for manual execution receipt")
+    return aware_value
 
 
 def build_manual_execution_receipt_event(
@@ -125,4 +136,3 @@ def build_manual_execution_error_event(
         source="app.manual_execution.service",
         trace_id=trace_id,
     )
-
