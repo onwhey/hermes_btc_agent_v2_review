@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.time_utils import format_datetime_with_timezone
+from datetime import datetime
+
+from app.core.time_utils import ensure_utc_aware, format_datetime_with_timezone
 from app.manual_execution.calculations import ManualExecutionMath, ManualPositionState, position_snapshot, state_from_row
 from app.manual_execution.constants import REVIEW_STATUS_NOT_REVIEWED
 from app.manual_execution.schema import (
@@ -115,7 +117,15 @@ def summary_from_row(row: Any) -> ManualPositionSummary:
         current_cost_basis_usdt=snapshot["current_cost_basis_usdt"],
         margin_basis_usdt=snapshot["margin_basis_usdt"],
         effective_leverage=snapshot["effective_leverage"],
-        opened_at_utc=format_datetime_with_timezone(state.opened_at_utc),
+        opened_at_utc=_format_optional_utc_datetime(state.opened_at_utc),
         opened_by_advice_id=state.opened_by_advice_id,
     )
 
+
+def _format_optional_utc_datetime(value: datetime | None) -> str:
+    """Format a UTC datetime read from MySQL without assuming tzinfo exists."""
+
+    aware_value = ensure_utc_aware(value)
+    if aware_value is None:
+        return ""
+    return format_datetime_with_timezone(aware_value)

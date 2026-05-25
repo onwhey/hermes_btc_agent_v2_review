@@ -7,6 +7,7 @@ automatic trading.
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -18,6 +19,7 @@ from app.manual_execution.schema import (
     ManualExecutionServiceStatus,
     ManualPositionListRequest,
 )
+from app.manual_execution.payloads import summary_from_row
 from app.manual_execution.service import ManualExecutionService
 
 
@@ -310,6 +312,14 @@ def test_check_manual_positions_lists_open_rows() -> None:
     assert result.positions[0].manual_position_id == opened.manual_position_id
 
 
+def test_summary_from_row_accepts_naive_utc_datetime_from_mysql() -> None:
+    row = _summary_row(opened_at_utc=datetime(2026, 5, 25, 1, 2, 3), closed_at_utc=None)
+
+    summary = summary_from_row(row)
+
+    assert summary.opened_at_utc == "2026-05-25 01:02:03 UTC"
+
+
 def test_multiple_open_positions_require_manual_position_id() -> None:
     repo, _, _ = _run(_open_request(confirm=True))
     _run(_open_request(confirm=True), repo=repo)
@@ -459,3 +469,37 @@ def _row_from_payload(payload: Any) -> Any:
     values["auto_trading_allowed"] = False
     return SimpleNamespace(**values)
 
+
+def _summary_row(*, opened_at_utc: Any, closed_at_utc: Any = None) -> Any:
+    return SimpleNamespace(
+        manual_position_id="MP-NAIVE",
+        symbol="BTCUSDT",
+        side="long",
+        status="open",
+        opened_at_utc=opened_at_utc,
+        closed_at_utc=closed_at_utc,
+        opened_by_advice_id="ADV-1",
+        latest_related_advice_id="ADV-1",
+        closed_by_advice_id=None,
+        initial_entry_price=Decimal("60000"),
+        avg_entry_price=Decimal("60000"),
+        close_price=None,
+        current_quantity_base_asset=Decimal("0.005"),
+        current_cost_basis_usdt=Decimal("300"),
+        margin_basis_usdt=Decimal("100"),
+        effective_leverage=Decimal("3"),
+        total_open_notional_usdt=Decimal("300"),
+        total_close_notional_usdt=Decimal("0"),
+        total_fee_usdt=Decimal("0.06"),
+        gross_realized_pnl_usdt=Decimal("0"),
+        net_realized_pnl_usdt=Decimal("-0.06"),
+        net_pnl_ratio_on_margin=Decimal("-0.0006"),
+        open_reason=None,
+        open_decision_context=None,
+        review_status="not_reviewed",
+        trigger_source="cli",
+        created_by="cli",
+        trace_id="TRACE-1",
+        created_at_utc=opened_at_utc,
+        updated_at_utc=opened_at_utc,
+    )

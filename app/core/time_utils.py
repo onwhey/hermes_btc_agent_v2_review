@@ -94,6 +94,26 @@ def utc_aware_to_prc_aware(value: datetime) -> datetime:
     return value.astimezone(UTC).astimezone(PRC_TIME_ZONE)
 
 
+def ensure_utc_aware(value: datetime | None) -> datetime | None:
+    """Return a UTC aware datetime while preserving None safely.
+
+    Parameters: `value` is a UTC datetime read from code or database; MySQL may
+    return UTC columns as naive datetime objects.
+    Return value: `None`, or a datetime with `tzinfo=UTC`.
+    Failure scenarios: non-datetime values fail naturally when callers pass an
+    invalid object.
+    External services: none. Data impact: no MySQL, Redis, Hermes, DeepSeek, or
+    trading execution. This helper only labels naive UTC values as UTC; it does
+    not perform PRC display conversion or business-time ordering.
+    """
+
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def timestamp_ms_to_utc_datetime(timestamp_ms: int) -> datetime:
     """将毫秒时间戳转换为 UTC aware datetime。
 
