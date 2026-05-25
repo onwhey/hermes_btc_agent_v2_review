@@ -85,6 +85,8 @@ from app.storage.mysql.repositories.alert_message_repository import (
 )
 
 AlertSender = Callable[..., AlertSendResult]
+RECEIPT_FAILURE_ERROR_CODE = "manual_execution_receipt_failed"
+RECEIPT_FAILURE_MESSAGE = "数据库已写入，但 Hermes 回执失败"
 
 
 class ManualExecutionService:
@@ -361,14 +363,33 @@ class ManualExecutionService:
         receipt_status: str | None = None
         receipt_failed = False
         receipt_message = ""
+        result_status = ManualExecutionServiceStatus.SUCCESS
+        error_code: str | None = None
+        error_message: str | None = None
         if math.position_after.status != POSITION_STATUS_OPEN:
-            receipt_message, receipt_status, receipt_failed = self._send_close_receipt(
-                db_session=db_session,
-                request=request,
-                position_state=math.position_after,
-            )
+            try:
+                receipt_message, receipt_status, receipt_failed = self._send_close_receipt(
+                    db_session=db_session,
+                    request=request,
+                    position_state=math.position_after,
+                )
+            except Exception as exc:  # noqa: BLE001 - receipt failure must not undo committed manual execution rows.
+                receipt_status = "receipt_failed"
+                receipt_failed = True
+                result_status = ManualExecutionServiceStatus.PARTIAL_SUCCESS
+                error_code = RECEIPT_FAILURE_ERROR_CODE
+                error_message = f"{RECEIPT_FAILURE_MESSAGE}: {exc}"
+                self._logger.error(
+                    "manual execution receipt failed after committed database write: trace_id=%s error=%s",
+                    request.trace_id,
+                    exc,
+                )
+            if receipt_failed:
+                result_status = ManualExecutionServiceStatus.PARTIAL_SUCCESS
+                error_code = RECEIPT_FAILURE_ERROR_CODE
+                error_message = error_message or RECEIPT_FAILURE_MESSAGE
         return ManualExecutionResult(
-            status=ManualExecutionServiceStatus.SUCCESS,
+            status=result_status,
             exit_code=success_exit_code(dry_run=False),
             action=request.action,
             trace_id=request.trace_id,
@@ -379,6 +400,8 @@ class ManualExecutionService:
             receipt_required=math.position_after.status != POSITION_STATUS_OPEN,
             receipt_status=receipt_status,
             receipt_failed=receipt_failed,
+            error_code=error_code,
+            error_message=error_message,
             warnings=math.warnings,
             position_snapshot=position_snapshot(math.position_after),
             execution_snapshot=execution_snapshot(math),

@@ -18,6 +18,7 @@ from app.manual_execution.calculations import state_from_row
 from app.manual_execution.payloads import summary_from_row
 from app.manual_execution.receipt import render_manual_execution_close_receipt
 from app.manual_execution.schema import (
+    format_manual_execution_result_lines,
     ManualExecutionRequest,
     ManualExecutionServiceStatus,
     ManualPositionListRequest,
@@ -290,14 +291,47 @@ def test_dry_run_does_not_write_database() -> None:
 
 def test_receipt_failure_does_not_rollback_manual_execution_rows() -> None:
     alert_sender = FakeAlertSender(status=AlertSendStatus.SUBMIT_FAILED)
-    repo, session, opened = _run(_open_request(confirm=True), alert_sender=alert_sender)
+    repo, _, opened = _run(_open_request(confirm=True), alert_sender=alert_sender)
 
-    result = _record(repo, _close_request(opened.manual_position_id, confirm=True), alert_sender=alert_sender)
+    close_session, result = _record_with_session(
+        repo,
+        _close_request(opened.manual_position_id, confirm=True),
+        alert_sender=alert_sender,
+    )
 
+    assert result.status == ManualExecutionServiceStatus.PARTIAL_SUCCESS
     assert result.database_written is True
     assert result.receipt_failed is True
+    assert result.error_code == "manual_execution_receipt_failed"
+    assert "数据库已写入，但 Hermes 回执失败" in (result.error_message or "")
     assert repo.positions[opened.manual_position_id].status == "closed"
-    assert session.rollback_count == 0
+    assert repo.executions[-1].execution_action == "close_position"
+    assert close_session.rollback_count == 0
+
+
+def test_receipt_construction_failure_after_close_write_reports_partial_success(monkeypatch) -> None:
+    def raise_receipt_error(**kwargs: Any) -> str:
+        del kwargs
+        raise ValueError("receipt render failed")
+
+    monkeypatch.setattr(
+        "app.manual_execution.service.render_manual_execution_close_receipt",
+        raise_receipt_error,
+    )
+    repo, _, opened = _run(_open_request(confirm=True))
+
+    close_session, result = _record_with_session(repo, _close_request(opened.manual_position_id, confirm=True))
+    cli_lines = format_manual_execution_result_lines(result)
+
+    assert result.status == ManualExecutionServiceStatus.PARTIAL_SUCCESS
+    assert result.database_written is True
+    assert result.receipt_failed is True
+    assert result.error_code == "manual_execution_receipt_failed"
+    assert repo.positions[opened.manual_position_id].status == "closed"
+    assert repo.executions[-1].execution_action == "close_position"
+    assert close_session.rollback_count == 0
+    assert "database_written=true" in cli_lines
+    assert "database_written=false" not in cli_lines
 
 
 def test_check_manual_positions_lists_open_rows() -> None:
@@ -384,8 +418,19 @@ def _record(
     *,
     alert_sender: FakeAlertSender | None = None,
 ) -> Any:
+    _, result = _record_with_session(repo, request, alert_sender=alert_sender)
+    return result
+
+
+def _record_with_session(
+    repo: FakeManualExecutionRepository,
+    request: ManualExecutionRequest,
+    *,
+    alert_sender: FakeAlertSender | None = None,
+) -> tuple[FakeSession, Any]:
     session = FakeSession()
-    return _service(repo, alert_sender=alert_sender).record_manual_execution(db_session=session, request=request)
+    result = _service(repo, alert_sender=alert_sender).record_manual_execution(db_session=session, request=request)
+    return session, result
 
 
 def _service(repo: FakeManualExecutionRepository, alert_sender: FakeAlertSender | None = None) -> ManualExecutionService:

@@ -26,6 +26,7 @@ class ManualExecutionServiceStatus(str, Enum):
     """Service outcome for one manual execution feedback request."""
 
     SUCCESS = "success"
+    PARTIAL_SUCCESS = "partial_success"
     DRY_RUN = "dry_run"
     BLOCKED = "blocked"
     FAILED = "failed"
