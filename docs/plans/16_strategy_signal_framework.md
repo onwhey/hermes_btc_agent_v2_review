@@ -17,12 +17,14 @@
 ↓
 逐个运行策略
 ↓
-生成每个策略自己的 StrategySignal 策略信号
+生成每个策略自己的 StrategyResult / StrategySignal 策略信号
 ↓
 写入 strategy_signal_run / strategy_signal_result
 ```
 
 本阶段只生成 **独立策略信号**，不生成最终交易建议。
+
+23A 后，16 阶段语义补充为：策略按 `strategy_role` 输出角色化证据，不要求每个策略都给出完整交易结构。`StrategyResult` 可以适配为历史 `StrategySignal`，但 16 阶段仍只负责独立运行、隔离失败和结果落库。
 
 本阶段不是：
 
@@ -64,7 +66,7 @@ StrategyEvaluationInput
 ↓
 StrategyRunner
 ↓
-StrategySignal
+StrategyResult / StrategySignal
 ```
 
 错误关系：
@@ -619,11 +621,29 @@ evaluated_at_utc
 
 它不是最终建议。
 
+23A 后，策略可以先输出 `StrategyResult` 三段结构，再适配为兼容第 16/17 阶段的 `StrategySignal`：
+
+```text
+common_result
+strategy_model_material_json
+strategy_payload_json
+```
+
+其中：
+
+1. `common_result` 只放跨策略、跨角色可复用字段。
+2. `strategy_model_material_json` 只放后续模型层材料。
+3. `strategy_payload_json` 只放具体策略私有扩展字段。
+4. 公共字段按 `strategy_role` 定义，不按 `strategy_name` 扩展。
+
+因此，16 阶段不要求每个策略输出方向、入场、止损、目标和完整交易动作。策略只需在自己的角色范围内输出合法证据。
+
 建议字段：
 
 ```text
 strategy_name
 strategy_version
+strategy_role
 strategy_status
 direction_bias
 risk_level
@@ -734,7 +754,7 @@ class BaseStrategy:
     strategy_name: str
     strategy_version: str
 
-    def evaluate(self, input_data: StrategyEvaluationInput) -> StrategySignal:
+    def evaluate(self, input_data: StrategyEvaluationInput) -> StrategyResult | StrategySignal:
         ...
 ```
 
@@ -742,13 +762,14 @@ class BaseStrategy:
 
 1. 每个策略必须有稳定 `strategy_name`。
 2. 每个策略必须有明确 `strategy_version`。
-3. 每个策略只能输出自己的独立信号。
+3. 每个策略只能输出自己的独立、角色化信号。
 4. 策略不得写数据库。
 5. 策略不得发送 Hermes。
 6. 策略不得调用大模型。
 7. 策略不得请求 Binance。
 8. 策略不得读取账户或持仓。
 9. 策略不得生成最终交易建议。
+10. 策略不得为了凑齐完整交易结构而伪造不属于自身角色的字段。
 
 ---
 
@@ -1594,7 +1615,7 @@ Codex 完成后，输出总结必须包含：
 11. 单个策略失败不影响其他策略。
 12. 可以写入一次 strategy_signal_run。
 13. 可以写入多条 strategy_signal_result。
-14. 每个策略输出自己的独立信号。
+14. 每个策略输出自己的独立、角色化信号。
 15. 不生成最终交易建议。
 16. 不调用大模型。
 17. 不发送 Hermes 策略提醒。

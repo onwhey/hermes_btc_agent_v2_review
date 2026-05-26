@@ -8,13 +8,15 @@
 
 本版定位：在原第 18 plans 基础上，强化“策略有效性、判断正确性、后续可验证、后续可复盘”的要求。第 18 不只是把多个策略信号做摘要，而是要把每次候选判断变成可以被后续大模型审查、生命周期层引用、复盘系统评估的结构化证据。
 
+23A 后，本阶段语义补充为“按策略角色汇总证据”。第 18 不是简单横向投票，也不是比较多个策略各自完整交易结论；它应按 `strategy_role` 汇总 `directional`、`support_resistance`、`risk_control`、`filter`、`context` 等角色证据。
+
 ---
 
 ## 2. 阶段目标
 
 第 18 阶段在第 16 独立策略信号已经生成、第 17 策略信号调度已经完成之后，负责完成三件事：
 
-1. **策略聚合**：对多个独立策略信号进行确定性聚合，形成候选方向、风险状态、策略一致性、策略冲突、风控否决结果。
+1. **策略聚合**：对多个独立策略信号进行确定性聚合，按 `strategy_role` 形成方向证据、关键位证据、风险状态、过滤结果、背景证据、策略一致性、策略冲突、证据缺失和风控否决结果。
 2. **候选场景构建**：基于策略信号和市场快照，形成可验证的候选场景，包括成立条件、失效条件、目标观察区、初步风险收益比、主要证据、反方证据。
 3. **数学材料包构建**：基于 `MarketContextSnapshot` 对应的 K线窗口，计算 swing、ATR、振幅、支撑压力、结构状态、问题清单，并写入 `analysis_material_pack`，供第 19 大模型分析层使用。
 
@@ -70,6 +72,23 @@ MarketContextSnapshot 对应的 4h / 1d K线窗口或快照引用范围
 ---
 
 ## 4. 核心原则
+
+### 4.0 角色证据优先
+
+第 18 阶段默认消费 `common_result` 中的角色化公共字段，并形成下列摘要方向：
+
+```text
+directional_summary
+support_resistance_summary
+risk_control_summary
+filter_summary
+context_summary
+evidence_missing_summary
+```
+
+聚合层不得硬依赖某个具体策略的 `strategy_payload_json`。如果未来确需读取私有 payload，必须通过独立 adapter 做可选解析；adapter 缺失、失败或具体策略关闭时，只能降级为 `evidence_missing` / `wait`，不得导致主链路失败。
+
+横向对比保留为复盘评估、抽检和策略质量对照用途，不作为实时主决策逻辑。
 
 ### 4.1 候选方向不是最终建议
 
@@ -397,7 +416,7 @@ updated_at_utc
 
 ### 7.1 有效策略识别
 
-根据 `strategy_signal_result.strategy_status` 区分：
+根据 `strategy_signal_result.strategy_status` 和 `strategy_role` 区分：
 
 ```text
 success：有效策略信号
@@ -408,39 +427,44 @@ not_implemented：策略未实现
 
 `not_implemented` 不应导致聚合失败。当前阶段江恩策略可能仍为占位策略，因此 `partial_success` 是可接受状态。
 
-### 7.2 方向归类
+聚合层应把未实现、关闭或缺少 adapter 的证据记录为 `evidence_missing`，而不是猜测该策略观点。
 
-聚合层读取策略结果中的：
+### 7.2 角色归类
+
+聚合层默认读取策略结果中的公共字段：
 
 ```text
-direction_bias
-signal_strength
-risk_level
+strategy_role
+common_result
 strategy_status
-reason_json
-evidence_json
+reason_codes
+reason_text
 ```
 
-第一版可以按简单规则归类：
+第一版可以按角色归类：
 
 ```text
-bullish / long_bias：支持多头
-bearish / short_bias：支持空头
-neutral / range / wait：支持等待或中性
-risk_only：只提示风险，不直接参与多空投票
-not_implemented：不参与方向投票，但计入未实现策略
-failed / invalid：不参与方向投票，但计入质量问题
+directional：提供方向候选、成立条件、失效条件、风险边界
+support_resistance：提供支撑、压力、触发、失效、目标观察、参考价位
+risk_control：提供风险等级、风险标记、风险类型、否决原因
+filter：提供 pass / reject / unknown
+context：提供背景证据和上下文摘要
+placeholder：只表示未实现，计入 evidence_missing
+failed / invalid：不参与主判断，但计入质量问题
 ```
+
+横向多空数量统计只能作为辅助审计信息，不作为实时主决策逻辑。
 
 ### 7.3 候选方向规则
 
-基础规则：
+基础规则应从角色证据组装，而不是简单投票：
 
 ```text
-多头有效策略数量 > 空头有效策略数量，且风控未否决：candidate_direction = long
-空头有效策略数量 > 多头有效策略数量，且风控未否决：candidate_direction = short
-多空接近或有效策略不足：candidate_direction = wait / mixed
-风控极高或风险策略否决：candidate_direction = wait 或 stop_trading
+directional 存在明确方向候选，且 risk_control 未否决，且 filter 未拒绝：可形成 candidate_direction
+support_resistance 缺少关键触发或失效证据：candidate_direction 应降级为 wait / mixed
+risk_control 风险极高或明确否决：candidate_direction = wait 或 stop_trading
+filter = reject：candidate_direction = wait 或 stop_trading
+关键证据不足：candidate_direction = wait / mixed，并记录 evidence_missing
 ```
 
 候选方向置信度建议：

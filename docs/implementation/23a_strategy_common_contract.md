@@ -64,6 +64,16 @@ strategy_payload_json
 
 公共层只理解 `common_result`。`strategy_model_material_json` 和 `strategy_payload_json` 只做 JSON、大小和 hash 校验，不解释具体策略私有字段。
 
+23A 的 `StrategyRole` 设计用于支持“策略角色协作 / 策略接力”：
+
+1. 策略层按 `directional`、`support_resistance`、`risk_control`、`filter`、`context`、`placeholder` 输出角色化证据。
+2. `common_result` 不得包含具体策略私有字段，只能包含跨策略、跨角色可复用字段。
+3. `strategy_payload_json` 是策略私有扩展区，例如江恩、斐波那契、支撑压力检测细节等只能放在这里。
+4. `strategy_model_material_json` 只用于后续模型层材料，不作为公共聚合字段。
+5. 聚合层默认不解析私有 payload，只消费 `common_result`。
+6. 未来如果确需让某个私有 payload 进入聚合，必须通过独立可选 adapter；adapter 缺失、失败或策略关闭时应降级为 `evidence_missing` / `wait`。
+7. 新增策略不应要求修改公共 schema。
+
 `app/strategy/common/result_validator.py`
 
 校验：
