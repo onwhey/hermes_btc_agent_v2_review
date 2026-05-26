@@ -383,22 +383,35 @@ strategy_payload_json
 2. `strategy_model_material_json` 只放后续模型层材料，不作为公共聚合字段。
 3. `strategy_payload_json` 只放具体策略私有扩展字段。
 
-`common_result` 至少应包含：
+以下字段属于 `StrategyResult` 顶层元信息或落库元信息，不属于 `common_result`：
 
-1. 策略名称。
-2. 策略版本。
-3. 策略参数版本。
-4. `strategy_role`。
-5. 交易对。
-6. 主周期。
+1. `strategy_name`。
+2. `strategy_version`。
+3. `strategy_role`。
+4. `strategy_status`。
+5. `symbol`。
+6. `interval` / 主周期。
 7. 使用的数据范围。
-8. 策略运行状态。
-9. 角色化公共字段。
-10. 判断理由。
-11. 关键证据。
-12. 风险或缺失说明。
-13. 运行时间。
-14. 输入数据快照引用。
+8. 运行时间。
+9. snapshot 引用。
+10. 策略参数版本。
+
+`common_result` 只保存角色化公共证据，例如：
+
+1. `market_bias`。
+2. `risk_level`。
+3. `signal_strength`。
+4. `confidence_score`。
+5. `reason_codes`。
+6. `reason_text`。
+7. `key_levels`。
+8. `scenario_candidates`。
+9. `risk_flags`。
+10. `evidence_items`。
+11. `observation_window`。
+12. `filter_status`。
+13. `context_summary`。
+14. `not_trading_advice`。
 
 角色化公共字段只能按 `strategy_role` 定义，不得按 `strategy_name` 扩展。具体策略私有字段，例如 `gann_angle`、`gann_time_window`、`fibonacci_618`、`support_detection_method`、`liquidity_sweep_detail` 等，只能进入 `strategy_payload_json`。
 
