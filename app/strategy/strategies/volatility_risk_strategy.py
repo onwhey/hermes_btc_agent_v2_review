@@ -13,6 +13,13 @@ from decimal import Decimal
 from typing import Any, Mapping
 
 from app.strategy.base import BaseStrategy
+from app.strategy.common.result_contract import (
+    StrategyCommonResult,
+    StrategyEvidenceItem,
+    StrategyResult,
+    StrategyRiskFlag,
+    StrategyRole,
+)
 from app.strategy.types import (
     DirectionBias,
     RiskLevel,
@@ -35,13 +42,13 @@ class VolatilityRiskStrategy(BaseStrategy):
         self.high_volatility_percentile = Decimal(str(active_config.get("high_volatility_percentile", "0.80")))
         self.extreme_volatility_percentile = Decimal(str(active_config.get("extreme_volatility_percentile", "0.95")))
 
-    def evaluate(self, input_data: StrategyEvaluationInput) -> StrategySignal:
+    def evaluate(self, input_data: StrategyEvaluationInput) -> StrategyResult:
         """Evaluate recent volatility risk without producing an action instruction."""
 
         rows = tuple(input_data.base_klines)
         debug_info = _build_debug_info(self, input_data)
         if len(rows) < self.min_required_base_klines:
-            return StrategySignal(
+            return _build_result_from_signal(StrategySignal(
                 strategy_name=self.strategy_name,
                 strategy_version=self.strategy_version,
                 strategy_status=StrategySignalStatus.INVALID,
@@ -56,7 +63,7 @@ class VolatilityRiskStrategy(BaseStrategy):
                 metrics={"actual_base_count": len(rows), "required_base_count": self.min_required_base_klines},
                 debug_info=debug_info,
                 trace_id=input_data.trace_id,
-            )
+            ), input_data=input_data)
 
         recent_rows = rows[-self.lookback_period :]
         ranges = tuple(_range_ratio(row) for row in recent_rows)
@@ -85,7 +92,7 @@ class VolatilityRiskStrategy(BaseStrategy):
             reason_codes.append("latest_range_above_average")
             reason_text = "最新基础周期波动高于近期平均水平，风险需要关注。"
 
-        return StrategySignal(
+        return _build_result_from_signal(StrategySignal(
             strategy_name=self.strategy_name,
             strategy_version=self.strategy_version,
             strategy_status=StrategySignalStatus.SUCCESS,
@@ -102,7 +109,7 @@ class VolatilityRiskStrategy(BaseStrategy):
             },
             debug_info=debug_info,
             trace_id=input_data.trace_id,
-        )
+        ), input_data=input_data)
 
 
 def _decimal_attr(row: Any, field_name: str) -> Decimal:
@@ -138,6 +145,65 @@ def _build_debug_info(strategy: VolatilityRiskStrategy, input_data: StrategyEval
             "extreme_volatility_percentile": str(strategy.extreme_volatility_percentile),
         },
     }
+
+
+def _build_result_from_signal(signal: StrategySignal, *, input_data: StrategyEvaluationInput) -> StrategyResult:
+    """Wrap the simple volatility signal in the stage-23A result contract."""
+
+    common_result = StrategyCommonResult(
+        market_bias=signal.direction_bias.value,
+        risk_level=signal.risk_level.value,
+        signal_strength=str(signal.signal_strength),
+        confidence_score=str(signal.signal_strength),
+        reason_codes=tuple(signal.reason_codes),
+        reason_text=signal.reason_text,
+        risk_flags=_risk_flags_from_signal(signal),
+        evidence_items=_evidence_items_from_signal(signal),
+        observation_window={
+            "base_interval_value": input_data.base_interval_value,
+            "base_start_open_time_ms": input_data.base_start_open_time_ms,
+            "base_end_open_time_ms": input_data.base_end_open_time_ms,
+        },
+        not_trading_advice=True,
+    )
+    return StrategyResult(
+        strategy_name=signal.strategy_name,
+        strategy_version=signal.strategy_version,
+        strategy_role=StrategyRole.RISK_CONTROL.value,
+        strategy_status=signal.strategy_status.value,
+        common_result=common_result,
+        strategy_model_material_json={"metric_keys": tuple(signal.metrics.keys())},
+        strategy_payload_json={"metrics": dict(signal.metrics), "debug": dict(signal.debug_info)},
+        trace_id=signal.trace_id,
+    )
+
+
+def _risk_flags_from_signal(signal: StrategySignal) -> tuple[StrategyRiskFlag, ...]:
+    if signal.strategy_status != StrategySignalStatus.SUCCESS:
+        return ()
+    return (
+        StrategyRiskFlag(
+            risk_type="volatility_observation",
+            risk_level=signal.risk_level.value,
+            triggered=signal.risk_level in {RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.EXTREME},
+            reason=signal.reason_text,
+            source=signal.strategy_name,
+        ),
+    )
+
+
+def _evidence_items_from_signal(signal: StrategySignal) -> tuple[StrategyEvidenceItem, ...]:
+    if not signal.reason_text:
+        return ()
+    return (
+        StrategyEvidenceItem(
+            evidence_type="volatility_risk_observation",
+            direction=signal.direction_bias.value,
+            strength=str(signal.signal_strength),
+            description=signal.reason_text,
+            source=signal.strategy_name,
+        ),
+    )
 
 
 __all__ = ["VolatilityRiskStrategy"]

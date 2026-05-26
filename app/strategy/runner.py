@@ -9,6 +9,7 @@ models, read account/position state, generate final advice, or trade.
 from __future__ import annotations
 
 from app.strategy.base import BaseStrategy
+from app.strategy.common.result_adapter import adapt_strategy_output_to_signal
 from app.strategy.registry import create_default_strategy_registry
 from app.strategy.types import (
     DirectionBias,
@@ -72,7 +73,7 @@ class StrategyRunner:
     @staticmethod
     def _evaluate_strategy(strategy: BaseStrategy, input_data: StrategyEvaluationInput) -> StrategySignal:
         try:
-            signal = strategy.evaluate(input_data)
+            output = strategy.evaluate(input_data)
         except Exception as exc:  # noqa: BLE001 - runner isolates strategy failures.
             return StrategySignal(
                 strategy_name=strategy.strategy_name or strategy.__class__.__name__,
@@ -87,9 +88,14 @@ class StrategyRunner:
                 debug_info={"strategy_boundary": "failure_isolated"},
                 trace_id=input_data.trace_id,
                 error_message=str(exc),
+                validation_status="failed",
             )
-        return signal
+        return adapt_strategy_output_to_signal(
+            output,
+            fallback_strategy_name=strategy.strategy_name or strategy.__class__.__name__,
+            fallback_strategy_version=strategy.strategy_version or "unknown",
+            trace_id=input_data.trace_id,
+        )
 
 
 __all__ = ["StrategyRunner"]
-

@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from app.strategy.base import BaseStrategy
+from app.strategy.common.result_contract import StrategyCommonResult, StrategyResult, StrategyRole
 from app.strategy.types import (
     DirectionBias,
     RiskLevel,
@@ -30,10 +31,10 @@ class GannPlaceholderStrategy(BaseStrategy):
     def __init__(self, config: Mapping[str, Any] | None = None) -> None:
         self._strategy_config = dict(config or {})
 
-    def evaluate(self, input_data: StrategyEvaluationInput) -> StrategySignal:
+    def evaluate(self, input_data: StrategyEvaluationInput) -> StrategyResult:
         """Return `not_implemented` without pretending to perform Gann analysis."""
 
-        return StrategySignal(
+        return _build_result_from_signal(StrategySignal(
             strategy_name=self.strategy_name,
             strategy_version=self.strategy_version,
             strategy_status=StrategySignalStatus.NOT_IMPLEMENTED,
@@ -52,7 +53,30 @@ class GannPlaceholderStrategy(BaseStrategy):
                 "strategy_config": self._strategy_config,
             },
             trace_id=input_data.trace_id,
-        )
+        ))
+
+
+def _build_result_from_signal(signal: StrategySignal) -> StrategyResult:
+    """Wrap the placeholder signal in the stage-23A result contract."""
+
+    return StrategyResult(
+        strategy_name=signal.strategy_name,
+        strategy_version=signal.strategy_version,
+        strategy_role=StrategyRole.PLACEHOLDER.value,
+        strategy_status=signal.strategy_status.value,
+        common_result=StrategyCommonResult(
+            market_bias=signal.direction_bias.value,
+            risk_level=signal.risk_level.value,
+            signal_strength=str(signal.signal_strength),
+            confidence_score=str(signal.signal_strength),
+            reason_codes=tuple(signal.reason_codes),
+            reason_text=signal.reason_text,
+            not_trading_advice=True,
+        ),
+        strategy_model_material_json={},
+        strategy_payload_json={"debug": dict(signal.debug_info)},
+        trace_id=signal.trace_id,
+    )
 
 
 __all__ = ["GannPlaceholderStrategy"]

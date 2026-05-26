@@ -13,6 +13,13 @@ from decimal import Decimal
 from typing import Any, Mapping
 
 from app.strategy.base import BaseStrategy
+from app.strategy.common.result_contract import (
+    StrategyCommonResult,
+    StrategyEvidenceItem,
+    StrategyResult,
+    StrategyRole,
+    StrategyScenarioCandidate,
+)
 from app.strategy.types import (
     DirectionBias,
     RiskLevel,
@@ -34,13 +41,13 @@ class TrendStructureStrategy(BaseStrategy):
         self.ma_mid_period = int(active_config.get("ma_mid_period", 60))
         self.min_required_base_klines = int(active_config.get("min_required_base_klines", 120))
 
-    def evaluate(self, input_data: StrategyEvaluationInput) -> StrategySignal:
+    def evaluate(self, input_data: StrategyEvaluationInput) -> StrategyResult:
         """Evaluate trend structure without producing a trade instruction."""
 
         rows = tuple(input_data.base_klines)
         debug_info = _build_debug_info(self, input_data)
         if len(rows) < self.min_required_base_klines:
-            return StrategySignal(
+            return _build_result_from_signal(StrategySignal(
                 strategy_name=self.strategy_name,
                 strategy_version=self.strategy_version,
                 strategy_status=StrategySignalStatus.INVALID,
@@ -55,7 +62,7 @@ class TrendStructureStrategy(BaseStrategy):
                 metrics={"actual_base_count": len(rows), "required_base_count": self.min_required_base_klines},
                 debug_info=debug_info,
                 trace_id=input_data.trace_id,
-            )
+            ), input_data=input_data)
 
         closes = [_decimal_attr(row, "close_price") for row in rows]
         lows = [_decimal_attr(row, "low_price") for row in rows]
@@ -124,7 +131,7 @@ class TrendStructureStrategy(BaseStrategy):
             status = StrategySignalStatus.SUCCESS
             reason_text = "最近收盘价位于中期均线下方，且高点结构未继续上移，趋势结构偏空。"
 
-        return StrategySignal(
+        return _build_result_from_signal(StrategySignal(
             strategy_name=self.strategy_name,
             strategy_version=self.strategy_version,
             strategy_status=status,
@@ -142,7 +149,7 @@ class TrendStructureStrategy(BaseStrategy):
             },
             debug_info=debug_info,
             trace_id=input_data.trace_id,
-        )
+        ), input_data=input_data)
 
 
 def _decimal_attr(row: Any, field_name: str) -> Decimal:
@@ -175,6 +182,76 @@ def _build_debug_info(strategy: TrendStructureStrategy, input_data: StrategyEval
             "min_required_base_klines": strategy.min_required_base_klines,
         },
     }
+
+
+def _build_result_from_signal(signal: StrategySignal, *, input_data: StrategyEvaluationInput) -> StrategyResult:
+    """Wrap the simple trend signal in the stage-23A result contract."""
+
+    common_result = StrategyCommonResult(
+        market_bias=signal.direction_bias.value,
+        risk_level=signal.risk_level.value,
+        signal_strength=str(signal.signal_strength),
+        confidence_score=str(signal.signal_strength),
+        reason_codes=tuple(signal.reason_codes),
+        reason_text=signal.reason_text,
+        scenario_candidates=_scenario_candidates_from_signal(signal),
+        evidence_items=_evidence_items_from_signal(signal),
+        observation_window={
+            "base_interval_value": input_data.base_interval_value,
+            "base_start_open_time_ms": input_data.base_start_open_time_ms,
+            "base_end_open_time_ms": input_data.base_end_open_time_ms,
+        },
+        not_trading_advice=True,
+    )
+    return StrategyResult(
+        strategy_name=signal.strategy_name,
+        strategy_version=signal.strategy_version,
+        strategy_role=StrategyRole.DIRECTIONAL.value,
+        strategy_status=signal.strategy_status.value,
+        common_result=common_result,
+        strategy_model_material_json={"metric_keys": tuple(signal.metrics.keys())},
+        strategy_payload_json={"metrics": dict(signal.metrics), "debug": dict(signal.debug_info)},
+        trace_id=signal.trace_id,
+    )
+
+
+def _scenario_candidates_from_signal(signal: StrategySignal) -> tuple[StrategyScenarioCandidate, ...]:
+    if signal.strategy_status != StrategySignalStatus.SUCCESS:
+        return ()
+    if signal.direction_bias == DirectionBias.NOT_APPLICABLE:
+        return ()
+    scenario_type = "observation_only"
+    if signal.direction_bias == DirectionBias.BULLISH_BIAS:
+        scenario_type = "long_candidate"
+    elif signal.direction_bias == DirectionBias.BEARISH_BIAS:
+        scenario_type = "short_candidate"
+    return (
+        StrategyScenarioCandidate(
+            scenario_type=scenario_type,
+            direction_bias=signal.direction_bias.value,
+            activation_condition="Observe whether base-period closes keep confirming the mid moving-average structure.",
+            invalidation_condition="Observation weakens if base-period closes stop confirming the same structure.",
+            target_observation_zone="Recent base-period swing area and moving-average relation.",
+            risk_boundary="Use the recent base-period range only as an observation boundary.",
+            observation_period_bars=3,
+            supporting_evidence=tuple(signal.reason_codes),
+            opposing_evidence=(),
+        ),
+    )
+
+
+def _evidence_items_from_signal(signal: StrategySignal) -> tuple[StrategyEvidenceItem, ...]:
+    if not signal.reason_text:
+        return ()
+    return (
+        StrategyEvidenceItem(
+            evidence_type="trend_structure_observation",
+            direction=signal.direction_bias.value,
+            strength=str(signal.signal_strength),
+            description=signal.reason_text,
+            source=signal.strategy_name,
+        ),
+    )
 
 
 __all__ = ["TrendStructureStrategy"]

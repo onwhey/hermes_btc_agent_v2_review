@@ -9,14 +9,20 @@ perform trading.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from app.strategy.types import StrategyEvaluationInput, StrategySignal
+
+if TYPE_CHECKING:
+    from app.strategy.common.result_contract import StrategyResult
 
 
 class BaseStrategy:
     """Common interface for one independent strategy.
 
     Parameters: subclasses receive one `StrategyEvaluationInput` in `evaluate`.
-    Return value: one `StrategySignal`.
+    Return value: one 23A `StrategyResult`, or a legacy `StrategySignal` during
+    compatibility migration.
     Failure scenarios: subclasses may raise; `StrategyRunner` captures failures
     so one strategy cannot stop the whole batch.
     External service access: forbidden for stage-16 strategies.
@@ -27,11 +33,10 @@ class BaseStrategy:
     strategy_name: str = ""
     strategy_version: str = ""
 
-    def evaluate(self, input_data: StrategyEvaluationInput) -> StrategySignal:
+    def evaluate(self, input_data: StrategyEvaluationInput) -> "StrategyResult | StrategySignal":
         """Evaluate one strategy against the provided snapshot-derived input."""
 
         raise NotImplementedError
 
 
 __all__ = ["BaseStrategy"]
-

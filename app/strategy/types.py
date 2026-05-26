@@ -128,6 +128,15 @@ class StrategySignal:
     debug_info: Mapping[str, Any] = field(default_factory=dict)
     trace_id: str = ""
     error_message: str | None = None
+    contract_version: str | None = None
+    strategy_role: str | None = None
+    common_payload_json: Mapping[str, Any] | None = None
+    strategy_model_material_json: Mapping[str, Any] | None = None
+    strategy_payload_json: Mapping[str, Any] | None = None
+    extension_payload_json: Mapping[str, Any] | None = None
+    common_payload_hash: str | None = None
+    validation_status: str | None = None
+    validation_errors_json: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)

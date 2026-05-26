@@ -18,6 +18,9 @@ import app.strategy.signal_service as signal_service_module
 import app.strategy.snapshot_resolver as snapshot_resolver_module
 from app.market_context.snapshot_types import MarketContextSnapshotResult, MarketContextSnapshotStatus
 from app.strategy.base import BaseStrategy
+from app.strategy.common.result_adapter import adapt_strategy_result_to_signal
+from app.strategy.common.result_contract import StrategyResult
+from app.strategy.common.result_validator import validate_strategy_result
 from app.strategy.input_builder import StrategyInputBuilder
 from app.strategy.registry import StrategyRegistry
 from app.strategy.result_repository import StrategySignalResultRepository
@@ -552,7 +555,7 @@ def test_strategy_runner_isolates_one_strategy_failure() -> None:
 def test_initial_strategies_emit_independent_signals_without_trade_fields() -> None:
     input_data = build_strategy_input()
 
-    signals = (
+    results = (
         TrendStructureStrategy(
             {"ma_short_period": 18, "ma_mid_period": 54, "min_required_base_klines": 120}
         ).evaluate(input_data),
@@ -566,30 +569,33 @@ def test_initial_strategies_emit_independent_signals_without_trade_fields() -> N
         ).evaluate(input_data),
         GannPlaceholderStrategy({"placeholder_note": "stage_16_only"}).evaluate(input_data),
     )
+    signals = tuple(adapt_strategy_result_to_signal(result) for result in results)
 
+    assert all(isinstance(result, StrategyResult) for result in results)
+    assert all(validate_strategy_result(result).passed for result in results)
     assert signals[0].strategy_status in {StrategySignalStatus.SUCCESS, StrategySignalStatus.NO_SIGNAL}
     assert signals[1].strategy_status == StrategySignalStatus.SUCCESS
     assert signals[2].strategy_status == StrategySignalStatus.NOT_IMPLEMENTED
-    assert signals[0].debug_info["strategy_config"] == {
+    assert results[0].strategy_payload_json["debug"]["strategy_config"] == {
         "ma_short_period": 18,
         "ma_mid_period": 54,
         "min_required_base_klines": 120,
     }
-    assert signals[0].debug_info["snapshot_id"] == input_data.snapshot_id
-    assert signals[0].debug_info["higher_interval_value"] == "1d"
-    assert signals[1].debug_info["strategy_config"] == {
+    assert results[0].strategy_payload_json["debug"]["snapshot_id"] == input_data.snapshot_id
+    assert results[0].strategy_payload_json["debug"]["higher_interval_value"] == "1d"
+    assert results[1].strategy_payload_json["debug"]["strategy_config"] == {
         "lookback_period": 28,
         "min_required_base_klines": 120,
         "high_volatility_percentile": "0.75",
         "extreme_volatility_percentile": "0.92",
     }
-    assert signals[1].debug_info["snapshot_id"] == input_data.snapshot_id
-    assert signals[2].debug_info["strategy_boundary"] == "independent_signal_only"
-    assert signals[2].debug_info["implementation_status"] == "placeholder"
-    assert signals[2].debug_info["strategy_config"] == {"placeholder_note": "stage_16_only"}
+    assert results[1].strategy_payload_json["debug"]["snapshot_id"] == input_data.snapshot_id
+    assert results[2].strategy_payload_json["debug"]["strategy_boundary"] == "independent_signal_only"
+    assert results[2].strategy_payload_json["debug"]["implementation_status"] == "placeholder"
+    assert results[2].strategy_payload_json["debug"]["strategy_config"] == {"placeholder_note": "stage_16_only"}
     assert all(signal.reason_text for signal in signals)
     assert all(any(ord(char) > 127 for char in signal.reason_text) for signal in signals)
-    serialized = json.dumps([signal.__dict__ for signal in signals], ensure_ascii=False, default=str)
+    serialized = json.dumps([result.to_jsonable() for result in results], ensure_ascii=False, default=str)
     forbidden = (
         "open_position",
         "close_position",

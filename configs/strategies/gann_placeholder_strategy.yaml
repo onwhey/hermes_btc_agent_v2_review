@@ -1,5 +1,7 @@
 strategy_name: gann_placeholder
 strategy_version: placeholder_v1
+contract_version: strategy_result_contract_v1
+strategy_role: placeholder
 enabled: true
 base_interval_value: 4h
 higher_interval_value: 1d

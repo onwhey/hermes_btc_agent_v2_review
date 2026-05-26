@@ -110,6 +110,15 @@ if mapped_column is not None:
         metrics_json: Mapped[str] = mapped_column(Text, nullable=False)
         debug_json: Mapped[str] = mapped_column(Text, nullable=False)
         error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+        contract_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+        strategy_role: Mapped[str | None] = mapped_column(String(64), nullable=True)
+        common_payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+        strategy_model_material_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+        strategy_payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+        extension_payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+        common_payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+        validation_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+        validation_errors_json: Mapped[str | None] = mapped_column(Text, nullable=True)
         trace_id: Mapped[str] = mapped_column(String(128), nullable=False)
         created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
         updated_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -163,6 +172,15 @@ else:
         metrics_json: str = "{}"
         debug_json: str = "{}"
         error_message: str | None = None
+        contract_version: str | None = None
+        strategy_role: str | None = None
+        common_payload_json: str | None = None
+        strategy_model_material_json: str | None = None
+        strategy_payload_json: str | None = None
+        extension_payload_json: str | None = None
+        common_payload_hash: str | None = None
+        validation_status: str | None = None
+        validation_errors_json: str | None = None
         trace_id: str = ""
         created_at_utc: datetime | None = None
         updated_at_utc: datetime | None = None
