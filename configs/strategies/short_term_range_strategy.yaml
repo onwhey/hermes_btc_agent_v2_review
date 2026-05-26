@@ -1,0 +1,25 @@
+strategy_name: short_term_range
+strategy_version: 23B-1
+contract_version: strategy_result_contract_v1
+strategy_role: context
+provides:
+  - short_term_range
+  - range_position
+  - range_quality
+enabled: true
+base_interval: 4h
+higher_interval: 1d
+base_interval_value: 4h
+higher_interval_value: 1d
+lookback_bars:
+  base: 48
+  higher: 0
+minimum_required_bars:
+  base: 36
+  higher: 0
+thresholds:
+  edge_zone_ratio: "0.15"
+  middle_band_ratio: "0.10"
+  wide_range_pct: "8.0"
+  narrow_range_pct: "1.2"
+  noisy_crossing_min: 8

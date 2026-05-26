@@ -14,6 +14,8 @@ from typing import Any, Mapping
 
 from app.strategy.base import BaseStrategy
 from app.strategy.strategies.gann_placeholder_strategy import GannPlaceholderStrategy
+from app.strategy.strategies.market_direction_regime_strategy import MarketDirectionRegimeStrategy
+from app.strategy.strategies.short_term_range_strategy import ShortTermRangeStrategy
 from app.strategy.strategies.trend_structure_strategy import TrendStructureStrategy
 from app.strategy.strategies.volatility_risk_strategy import VolatilityRiskStrategy
 from app.strategy.types import StrategyConfigError
@@ -83,6 +85,8 @@ def create_default_strategy_registry() -> StrategyRegistry:
 def _default_strategy_classes() -> dict[str, type[BaseStrategy]]:
     return {
         TrendStructureStrategy.strategy_name: TrendStructureStrategy,
+        MarketDirectionRegimeStrategy.strategy_name: MarketDirectionRegimeStrategy,
+        ShortTermRangeStrategy.strategy_name: ShortTermRangeStrategy,
         VolatilityRiskStrategy.strategy_name: VolatilityRiskStrategy,
         GannPlaceholderStrategy.strategy_name: GannPlaceholderStrategy,
     }
@@ -97,45 +101,93 @@ def _validate_strategy(strategy: BaseStrategy, *, expected_name: str) -> None:
         )
     if not strategy.strategy_version:
         raise StrategyConfigError(f"strategy {expected_name} must define strategy_version")
+    strategy_role = getattr(strategy, "strategy_role", None)
+    if strategy_role is not None and not str(strategy_role).strip():
+        raise StrategyConfigError(f"strategy {expected_name} must define strategy_role")
+    provides = getattr(strategy, "provides", None)
+    if provides is not None and not tuple(provides):
+        raise StrategyConfigError(f"strategy {expected_name} must define provides")
 
 
 def _read_simple_yaml(path: Path) -> dict[str, Any]:
-    """Read the small YAML subset used by stage-16 strategy configs.
+    """Read the small YAML subset used by strategy configs.
 
-    The parser intentionally supports only `key: value` scalars and a top-level
-    `key:` followed by `- item` list. This avoids adding a dependency while
-    keeping configs readable and non-sensitive.
+    The parser intentionally supports only top-level scalars, top-level lists,
+    and one-level nested mappings. This keeps 23B `provides`, `lookback_bars`,
+    `minimum_required_bars`, and `thresholds` readable without adding a YAML
+    dependency.
     """
 
     if not path.exists():
         raise StrategyConfigError(f"strategy config file not found: {path}")
 
     result: dict[str, Any] = {}
-    active_list_key: str | None = None
+    active_key: str | None = None
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.split("#", 1)[0].rstrip()
         if not line.strip():
             continue
+        indent = len(line) - len(line.lstrip(" "))
         stripped = line.strip()
-        if stripped.startswith("- "):
-            if active_list_key is None:
-                raise StrategyConfigError(f"list item without key in {path}")
-            result.setdefault(active_list_key, []).append(_parse_scalar(stripped[2:].strip()))
+        if indent == 0:
+            active_key = _parse_top_level_line(path, raw_line, stripped, result)
             continue
-        active_list_key = None
-        if ":" not in stripped:
-            raise StrategyConfigError(f"invalid config line in {path}: {raw_line}")
-        key, value = stripped.split(":", 1)
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            raise StrategyConfigError(f"empty config key in {path}")
-        if value == "":
-            result[key] = []
-            active_list_key = key
-        else:
-            result[key] = _parse_scalar(value)
+        if active_key is None:
+            raise StrategyConfigError(f"nested config line without parent key in {path}: {raw_line}")
+        _parse_nested_line(path, raw_line, stripped, result, active_key)
     return result
+
+
+def _parse_top_level_line(
+    path: Path,
+    raw_line: str,
+    stripped: str,
+    result: dict[str, Any],
+) -> str:
+    if stripped.startswith("- "):
+        raise StrategyConfigError(f"top-level list item without key in {path}: {raw_line}")
+    if ":" not in stripped:
+        raise StrategyConfigError(f"invalid config line in {path}: {raw_line}")
+    key, value = stripped.split(":", 1)
+    key = key.strip()
+    value = value.strip()
+    if not key:
+        raise StrategyConfigError(f"empty config key in {path}")
+    if value == "":
+        result[key] = []
+    else:
+        result[key] = _parse_scalar(value)
+    return key
+
+
+def _parse_nested_line(
+    path: Path,
+    raw_line: str,
+    stripped: str,
+    result: dict[str, Any],
+    active_key: str,
+) -> None:
+    parent = result.setdefault(active_key, [])
+    if stripped.startswith("- "):
+        if not isinstance(parent, list):
+            raise StrategyConfigError(f"list item under mapping in {path}: {raw_line}")
+        parent.append(_parse_scalar(stripped[2:].strip()))
+        return
+    if ":" not in stripped:
+        raise StrategyConfigError(f"invalid nested config line in {path}: {raw_line}")
+    if isinstance(parent, list):
+        if parent:
+            raise StrategyConfigError(f"cannot mix list and mapping values in {path}: {active_key}")
+        result[active_key] = {}
+        parent = result[active_key]
+    if not isinstance(parent, dict):
+        raise StrategyConfigError(f"nested mapping under scalar key in {path}: {active_key}")
+    key, value = stripped.split(":", 1)
+    key = key.strip()
+    value = value.strip()
+    if not key:
+        raise StrategyConfigError(f"empty nested config key in {path}")
+    parent[key] = _parse_scalar(value) if value else {}
 
 
 def _parse_scalar(value: str) -> Any:
@@ -157,4 +209,3 @@ __all__ = [
     "StrategyRegistry",
     "create_default_strategy_registry",
 ]
-

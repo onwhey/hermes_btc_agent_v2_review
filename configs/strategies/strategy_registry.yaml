@@ -1,5 +1,7 @@
 enabled_strategies:
   - trend_structure
+  - market_direction_regime
+  - short_term_range
   - volatility_risk
   - gann_placeholder
 

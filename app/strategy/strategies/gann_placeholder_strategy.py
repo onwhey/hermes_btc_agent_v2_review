@@ -30,6 +30,9 @@ class GannPlaceholderStrategy(BaseStrategy):
 
     def __init__(self, config: Mapping[str, Any] | None = None) -> None:
         self._strategy_config = dict(config or {})
+        self.strategy_version = str(self._strategy_config.get("strategy_version", self.strategy_version))
+        self.strategy_role = str(self._strategy_config.get("strategy_role", StrategyRole.PLACEHOLDER.value))
+        self.provides = tuple(str(item) for item in self._strategy_config.get("provides", ("placeholder",)))
 
     def evaluate(self, input_data: StrategyEvaluationInput) -> StrategyResult:
         """Return `not_implemented` without pretending to perform Gann analysis."""

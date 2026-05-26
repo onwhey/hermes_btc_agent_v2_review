@@ -37,6 +37,9 @@ class TrendStructureStrategy(BaseStrategy):
 
     def __init__(self, config: Mapping[str, Any] | None = None) -> None:
         active_config = dict(config or {})
+        self.strategy_version = str(active_config.get("strategy_version", self.strategy_version))
+        self.strategy_role = str(active_config.get("strategy_role", StrategyRole.DIRECTIONAL.value))
+        self.provides = tuple(str(item) for item in active_config.get("provides", ("trend_structure", "direction_bias")))
         self.ma_short_period = int(active_config.get("ma_short_period", 20))
         self.ma_mid_period = int(active_config.get("ma_mid_period", 60))
         self.min_required_base_klines = int(active_config.get("min_required_base_klines", 120))

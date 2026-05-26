@@ -2,7 +2,12 @@ strategy_name: volatility_risk
 strategy_version: v1
 contract_version: strategy_result_contract_v1
 strategy_role: risk_control
+provides:
+  - volatility_risk
+  - risk_level
 enabled: true
+base_interval: 4h
+higher_interval: 1d
 base_interval_value: 4h
 higher_interval_value: 1d
 lookback_period: 30

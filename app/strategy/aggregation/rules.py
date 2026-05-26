@@ -227,14 +227,12 @@ def _strategy_result_item(row: Any) -> Mapping[str, Any]:
 def _strategy_result_item_from_common_payload(row: Any, common_payload: Mapping[str, Any]) -> Mapping[str, Any]:
     legacy_metrics = _json_loads(getattr(row, "metrics_json", "{}"), default={})
     strategy_payload = _json_loads(getattr(row, "strategy_payload_json", "{}"), default={})
+    strategy_role = getattr(row, "strategy_role", None)
     return {
         "strategy_name": str(getattr(row, "strategy_name", "")),
         "strategy_version": str(getattr(row, "strategy_version", "")),
         "strategy_status": str(getattr(row, "strategy_status", "")),
-        "direction_bias": _common_market_bias_for_stage18(
-            common_payload.get("market_bias"),
-            fallback=getattr(row, "direction_bias", ""),
-        ),
+        "direction_bias": _common_market_bias_for_stage18(common_payload, row),
         "risk_level": str(common_payload.get("risk_level") or getattr(row, "risk_level", "")),
         "signal_strength": _safe_strength(common_payload.get("signal_strength", getattr(row, "signal_strength", 0))),
         "reason_codes": _list_or_empty(common_payload.get("reason_codes")),
@@ -245,7 +243,7 @@ def _strategy_result_item_from_common_payload(row: Any, common_payload: Mapping[
             "strategy_private_payload_summary": _private_payload_summary(strategy_payload),
         },
         "contract_version": getattr(row, "contract_version", None),
-        "strategy_role": getattr(row, "strategy_role", None),
+        "strategy_role": strategy_role,
         "common_payload_hash": getattr(row, "common_payload_hash", None),
     }
 
@@ -258,8 +256,11 @@ def _safe_strength(value: Any) -> float:
     return min(1.0, max(0.0, parsed))
 
 
-def _common_market_bias_for_stage18(value: Any, *, fallback: Any) -> str:
-    normalized = str(value or fallback or "")
+def _common_market_bias_for_stage18(common_payload: Mapping[str, Any], row: Any) -> str:
+    strategy_role = str(getattr(row, "strategy_role", "") or "")
+    if strategy_role and strategy_role != "directional":
+        return "not_applicable"
+    normalized = str(common_payload.get("market_bias") or getattr(row, "direction_bias", "") or "")
     if normalized == "wait":
         return "neutral"
     return normalized

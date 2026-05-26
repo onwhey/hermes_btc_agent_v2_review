@@ -37,6 +37,9 @@ class VolatilityRiskStrategy(BaseStrategy):
 
     def __init__(self, config: Mapping[str, Any] | None = None) -> None:
         active_config = dict(config or {})
+        self.strategy_version = str(active_config.get("strategy_version", self.strategy_version))
+        self.strategy_role = str(active_config.get("strategy_role", StrategyRole.RISK_CONTROL.value))
+        self.provides = tuple(str(item) for item in active_config.get("provides", ("volatility_risk", "risk_level")))
         self.lookback_period = int(active_config.get("lookback_period", 30))
         self.min_required_base_klines = int(active_config.get("min_required_base_klines", self.lookback_period))
         self.high_volatility_percentile = Decimal(str(active_config.get("high_volatility_percentile", "0.80")))
