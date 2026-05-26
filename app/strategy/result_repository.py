@@ -97,7 +97,6 @@ class StrategySignalResultRepository:
                 common_payload_json=_json_dumps(signal.common_payload_json or {}),
                 strategy_model_material_json=_json_dumps(signal.strategy_model_material_json or {}),
                 strategy_payload_json=_json_dumps(signal.strategy_payload_json or {}),
-                extension_payload_json=_json_dumps(signal.extension_payload_json or {}),
                 common_payload_hash=signal.common_payload_hash,
                 validation_status=signal.validation_status,
                 validation_errors_json=_json_dumps(tuple(signal.validation_errors_json or ())),

@@ -227,8 +227,6 @@ def _strategy_result_item(row: Any) -> Mapping[str, Any]:
 def _strategy_result_item_from_common_payload(row: Any, common_payload: Mapping[str, Any]) -> Mapping[str, Any]:
     legacy_metrics = _json_loads(getattr(row, "metrics_json", "{}"), default={})
     strategy_payload = _json_loads(getattr(row, "strategy_payload_json", "{}"), default={})
-    if not strategy_payload:
-        strategy_payload = _json_loads(getattr(row, "extension_payload_json", "{}"), default={})
     return {
         "strategy_name": str(getattr(row, "strategy_name", "")),
         "strategy_version": str(getattr(row, "strategy_version", "")),

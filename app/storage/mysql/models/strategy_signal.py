@@ -115,7 +115,6 @@ if mapped_column is not None:
         common_payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
         strategy_model_material_json: Mapped[str | None] = mapped_column(Text, nullable=True)
         strategy_payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-        extension_payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
         common_payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
         validation_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
         validation_errors_json: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -177,7 +176,6 @@ else:
         common_payload_json: str | None = None
         strategy_model_material_json: str | None = None
         strategy_payload_json: str | None = None
-        extension_payload_json: str | None = None
         common_payload_hash: str | None = None
         validation_status: str | None = None
         validation_errors_json: str | None = None

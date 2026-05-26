@@ -160,7 +160,6 @@ strategy_role
 common_payload_json
 strategy_model_material_json
 strategy_payload_json
-extension_payload_json
 common_payload_hash
 validation_status
 validation_errors_json
@@ -218,7 +217,6 @@ strategy_role
 common_payload_json
 strategy_model_material_json
 strategy_payload_json
-extension_payload_json
 common_payload_hash
 validation_status
 validation_errors_json
@@ -253,7 +251,7 @@ app/strategy/aggregation/rules.py
     -> direction_bias / risk_level / signal_strength / reason_codes_json / reason_text / metrics_json
 ```
 
-`strategy_payload_json` / `extension_payload_json` 只进入 `strategy_private_payload_summary`，仅保留是否存在、顶层 key 和不参与公共聚合的标记，不解释具体策略私有字段。
+`strategy_payload_json` 只进入 `strategy_private_payload_summary`，仅保留是否存在、顶层 key 和不参与公共聚合的标记，不解释具体策略私有字段。
 
 第 18 阶段不重新运行策略，不重新生成 snapshot，不调用大模型，不生成最终建议。
 

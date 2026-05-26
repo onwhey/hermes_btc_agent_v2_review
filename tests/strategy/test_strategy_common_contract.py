@@ -289,7 +289,6 @@ def test_stage23a_migration_adds_only_nullable_strategy_result_contract_fields()
         "common_payload_json",
         "strategy_model_material_json",
         "strategy_payload_json",
-        "extension_payload_json",
         "common_payload_hash",
         "validation_status",
         "validation_errors_json",

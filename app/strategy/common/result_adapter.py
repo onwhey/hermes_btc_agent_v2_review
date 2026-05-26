@@ -110,7 +110,6 @@ def adapt_strategy_result_to_signal(
         common_payload_json=common_payload,
         strategy_model_material_json=model_material,
         strategy_payload_json=strategy_payload,
-        extension_payload_json=strategy_payload,
         common_payload_hash=active_validation.common_payload_hash,
         validation_status=VALIDATION_STATUS_PASSED,
         validation_errors_json=(),
@@ -165,7 +164,6 @@ def adapt_legacy_signal_to_contract_signal(signal: StrategySignal) -> StrategySi
         common_payload_json=common_payload,
         strategy_model_material_json={},
         strategy_payload_json={},
-        extension_payload_json={},
         common_payload_hash=payload_sha256(common_payload),
         validation_status=VALIDATION_STATUS_LEGACY_COMPATIBLE,
         validation_errors_json=(),
@@ -194,7 +192,6 @@ def _invalid_signal_from_result(
         common_payload_json={},
         strategy_model_material_json={},
         strategy_payload_json={},
-        extension_payload_json={},
         validation_status=VALIDATION_STATUS_FAILED,
         validation_errors_json=validation.errors_json(),
     )
