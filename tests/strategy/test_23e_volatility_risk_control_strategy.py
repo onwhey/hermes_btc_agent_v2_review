@@ -210,6 +210,9 @@ def risk_strategy(**overrides: Any) -> VolatilityRiskControlStrategy:
         "consumes": (
             "common_result.primary_regime",
             "common_result.regime_phase",
+            "common_result.trend_strength",
+            "common_result.decision_implication",
+            "common_result.market_environment_context",
             "common_result.key_levels",
             "common_result.trigger_state",
             "common_result.filter_decision",
@@ -231,6 +234,7 @@ def risk_strategy(**overrides: Any) -> VolatilityRiskControlStrategy:
         },
         "risk_policy_mapping": {
             "primary_regime.uptrend": "trend_following_favorable",
+            "primary_regime.downtrend": "trend_following_favorable",
             "primary_regime.range": "range_caution",
             "primary_regime.volatile": "volatile_defensive",
             "default": "default_conservative",
@@ -239,6 +243,7 @@ def risk_strategy(**overrides: Any) -> VolatilityRiskControlStrategy:
             "default_conservative.default_decision": "wait",
             "default_conservative.max_chase_risk": "low",
             "trend_following_favorable.default_decision": "allow_with_caution",
+            "trend_following_favorable.countertrend_action": "block_current_candidate",
             "trend_following_favorable.max_chase_risk": "medium",
             "trend_following_favorable.excessive_chase_action": "wait",
             "range_caution.default_decision": "wait",
@@ -307,24 +312,47 @@ def trigger_summary(**overrides: Any) -> dict[str, Any]:
     return summary
 
 
-def market_result(trace_id: str, *, primary_regime: str, regime_phase: str) -> StrategyResult:
+def market_result(
+    trace_id: str,
+    *,
+    primary_regime: str,
+    regime_phase: str,
+    reason_primary_regime: str | None = None,
+    reason_regime_phase: str | None = None,
+    include_public_fields: bool = True,
+) -> StrategyResult:
+    market_bias = "bullish_bias" if primary_regime == "uptrend" else "bearish_bias" if primary_regime == "downtrend" else "neutral"
+    common_kwargs: dict[str, Any] = {}
+    if include_public_fields:
+        common_kwargs = {
+            "primary_regime": primary_regime,
+            "regime_phase": regime_phase,
+            "trend_strength": "0.70",
+            "decision_implication": f"public implication for {primary_regime}",
+            "market_environment_context": f"public regime={primary_regime}, phase={regime_phase}",
+        }
     return StrategyResult(
         strategy_name="market_direction_regime",
         strategy_version="23B-test",
         strategy_role="context",
         strategy_status=StrategySignalStatus.SUCCESS.value,
         common_result=StrategyCommonResult(
-            market_bias="bullish_bias" if primary_regime == "uptrend" else "neutral",
+            market_bias=market_bias,
             risk_level="low",
             signal_strength="0.70",
             confidence_score="0.70",
-            reason_codes=("market_regime_classified", f"primary_regime_{primary_regime}", f"regime_phase_{regime_phase}"),
+            reason_codes=(
+                "market_regime_classified",
+                f"primary_regime_{reason_primary_regime or primary_regime}",
+                f"regime_phase_{reason_regime_phase or regime_phase}",
+            ),
             reason_text="Public market context generated.",
             evidence_items=(
                 StrategyEvidenceItem("market_context", "not_applicable", "0.70", "Public market context generated.", "market_direction_regime"),
             ),
             context_summary=f"regime={primary_regime}, phase={regime_phase}",
             not_trading_advice=True,
+            **common_kwargs,
         ),
         strategy_model_material_json={"summary": "market"},
         strategy_payload_json={"primary_regime": "volatile"},
@@ -433,6 +461,48 @@ def test_config_declares_role_provides_requires_and_consumes() -> None:
     assert "risk_gate_decision" in strategy.provides
     assert "role=context, provides=primary_regime" in strategy.requires
     assert "common_result.key_levels" in strategy.consumes
+    assert "common_result.trend_strength" in strategy.consumes
+
+
+def test_23b_common_result_exposes_public_market_state_fields() -> None:
+    result = MarketDirectionRegimeStrategy(
+        {
+            "strategy_version": "23B-test",
+            "strategy_role": "context",
+            "provides": ["primary_regime", "regime_phase", "market_environment_context"],
+            "minimum_required_bars": {"base": 80, "higher": 80},
+        }
+    ).evaluate(strategy_input())
+    common = result.common_result.to_jsonable()
+
+    assert validate_strategy_result(result).passed is True
+    assert common["primary_regime"] == result.strategy_payload_json["primary_regime"]
+    assert common["regime_phase"] == result.strategy_payload_json["regime_phase"]
+    assert common["trend_strength"] == result.strategy_payload_json["trend_strength"]
+    assert common["decision_implication"] == result.strategy_payload_json["decision_implication"]
+    assert common["market_environment_context"]
+
+
+def test_23e_prefers_23b_public_fields_over_reason_code_fallback() -> None:
+    context = EvidenceContext.empty()
+    for result in (
+        market_result(
+            "trace-23e",
+            primary_regime="uptrend",
+            regime_phase="trend_continuation",
+            reason_primary_regime="downtrend",
+            reason_regime_phase="countertrend_rebound",
+        ),
+        key_level_result("trace-23e", (support_level(), resistance_level())),
+        trigger_result("trace-23e", trigger_summary()),
+    ):
+        context = context.with_signal(adapt_strategy_result_to_signal(result))
+
+    result = evaluate(context=context)
+
+    assert result.strategy_payload_json["risk_policy_mapping_details"]["primary_regime"] == "uptrend"
+    assert result.strategy_payload_json["risk_policy_mapping_details"]["regime_phase"] == "trend_continuation"
+    assert result.common_result.to_jsonable()["risk_gate_decision"] in {"allow", "allow_with_caution"}
 
 
 def test_runner_orders_23e_after_public_context_key_levels_and_trigger() -> None:
@@ -501,6 +571,63 @@ def test_unknown_market_context_does_not_default_allow() -> None:
 
     assert common["selected_risk_policy_profile"] == "default_conservative"
     assert common["risk_gate_decision"] != "allow"
+
+
+def test_downtrend_long_candidate_uses_countertrend_action() -> None:
+    result = evaluate(
+        context=context_with_public_evidence(
+            primary_regime="downtrend",
+            regime_phase="trend_continuation",
+            trigger=trigger_summary(
+                trigger_state="breakout_confirmed",
+                filter_decision="passed",
+                tested_level_summary={
+                    "level_id": "R0",
+                    "level_type": "resistance",
+                    "level_group": "nearest_resistance",
+                    "zone_low": "98",
+                    "zone_high": "99",
+                    "zone_mid": "98.5",
+                    "role_flip_status": "none",
+                    "zone_quality": "clear",
+                },
+            ),
+        )
+    )
+    common = result.common_result.to_jsonable()
+
+    assert common["risk_gate_decision"] == "block_current_candidate"
+    assert common["risk_scope"] == "current_candidate"
+    assert "countertrend_candidate_blocked" in common["reason_codes"]
+    assert common["risk_gate_decision"] not in {"allow", "allow_with_caution"}
+
+
+def test_uptrend_breakdown_candidate_is_countertrend_and_not_allowed() -> None:
+    result = evaluate(
+        context=context_with_public_evidence(
+            primary_regime="uptrend",
+            regime_phase="trend_continuation",
+            trigger=trigger_summary(
+                trigger_state="breakdown_confirmed",
+                filter_decision="passed",
+                tested_level_summary={
+                    "level_id": "S0",
+                    "level_type": "support",
+                    "level_group": "nearest_support",
+                    "zone_low": "101",
+                    "zone_high": "102",
+                    "zone_mid": "101.5",
+                    "role_flip_status": "none",
+                    "zone_quality": "clear",
+                },
+            ),
+        )
+    )
+    common = result.common_result.to_jsonable()
+
+    assert common["risk_gate_decision"] == "block_current_candidate"
+    assert "countertrend_candidate_blocked" in common["reason_codes"]
+    assert common["risk_gate_decision"] not in {"allow", "allow_with_caution"}
 
 
 def test_extreme_volatility_blocks_all_candidates() -> None:

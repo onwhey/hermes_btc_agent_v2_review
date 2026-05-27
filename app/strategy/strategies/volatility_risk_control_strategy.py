@@ -38,7 +38,10 @@ class MarketContext:
     found: bool
     primary_regime: str
     regime_phase: str
+    trend_strength: str
+    decision_implication: str
     market_bias: str
+    market_environment_context: str
     context_summary: str
 
 
@@ -230,7 +233,16 @@ class VolatilityRiskControlStrategy(BaseStrategy):
         )
         return self._build_result(
             input_data=input_data,
-            market_context=MarketContext(False, "unknown", "unknown", "unknown", ""),
+            market_context=MarketContext(
+                found=False,
+                primary_regime="unknown",
+                regime_phase="unknown",
+                trend_strength="0",
+                decision_implication="",
+                market_bias="unknown",
+                market_environment_context="",
+                context_summary="",
+            ),
             trigger_context=TriggerContext(False, "unknown", "unknown", {}, "unknown", "unknown"),
             key_levels=(),
             volatility=volatility,
@@ -258,10 +270,7 @@ class VolatilityRiskControlStrategy(BaseStrategy):
         """Assemble the three-part StrategyResult without external writes."""
 
         risk_level = _common_risk_level(gate.global_market_risk, gate.candidate_risk)
-        reason_text = (
-            f"Risk gate decision is {gate.risk_gate_decision} with scope {gate.risk_scope}. "
-            "This is risk-control evidence only, not final advice."
-        )
+        reason_text = _risk_reason_text(gate, market_context)
         common_result = StrategyCommonResult(
             market_bias="not_applicable",
             risk_level=risk_level,
@@ -328,17 +337,30 @@ def _extract_market_context(evidence_context: EvidenceContext) -> MarketContext:
     for output in evidence_context.public_role_outputs.get("context", ()):
         payload = output.common_result
         reason_codes = tuple(str(item) for item in payload.get("reason_codes", ()) if isinstance(item, str))
-        primary_regime = str(payload.get("primary_regime") or _code_suffix(reason_codes, "primary_regime_") or "unknown")
-        regime_phase = str(payload.get("regime_phase") or _code_suffix(reason_codes, "regime_phase_") or "unknown")
-        if primary_regime != "unknown" or "market_regime_classified" in reason_codes:
+        has_public_primary_regime = "primary_regime" in payload
+        has_public_regime_phase = "regime_phase" in payload
+        primary_regime = str(
+            payload.get("primary_regime") or "unknown"
+            if has_public_primary_regime
+            else _code_suffix(reason_codes, "primary_regime_") or "unknown"
+        )
+        regime_phase = str(
+            payload.get("regime_phase") or "unknown"
+            if has_public_regime_phase
+            else _code_suffix(reason_codes, "regime_phase_") or "unknown"
+        )
+        if has_public_primary_regime or primary_regime != "unknown" or "market_regime_classified" in reason_codes:
             return MarketContext(
                 found=True,
                 primary_regime=primary_regime,
                 regime_phase=regime_phase,
+                trend_strength=str(payload.get("trend_strength", "0")),
+                decision_implication=str(payload.get("decision_implication", "")),
                 market_bias=str(payload.get("market_bias", "unknown")),
+                market_environment_context=str(payload.get("market_environment_context", "")),
                 context_summary=str(payload.get("context_summary", "")),
             )
-    return MarketContext(False, "unknown", "unknown", "unknown", "")
+    return MarketContext(False, "unknown", "unknown", "0", "", "unknown", "", "")
 
 
 def _extract_trigger_context(evidence_context: EvidenceContext) -> TriggerContext:
@@ -454,7 +476,16 @@ def _decide_gate(
     global_market_risk = _global_market_risk(volatility, market_context)
     candidate_direction = _candidate_direction(trigger_context)
     candidate_risk = _candidate_risk(trigger_context, volatility, chase_risk, space, candidate_direction)
-    reason_codes = [f"profile_{policy_name}", f"volatility_{volatility.volatility_state}", f"chase_{chase_risk}"]
+    is_countertrend = _is_countertrend_candidate(market_context, candidate_direction)
+    phase_requires_caution = _phase_requires_caution(market_context.regime_phase)
+    reason_codes = [
+        f"profile_{policy_name}",
+        f"volatility_{volatility.volatility_state}",
+        f"chase_{chase_risk}",
+        f"candidate_direction_{candidate_direction}",
+    ]
+    if phase_requires_caution:
+        reason_codes.append("regime_phase_requires_caution")
     if volatility.volatility_state == "extreme_volatility":
         decision = _profile_value(strategy, policy_name, "extreme_action", "block_all_candidates")
         scope = "all_candidates" if decision == "block_all_candidates" else "current_candidate"
@@ -463,6 +494,17 @@ def _decide_gate(
         decision = _profile_value(strategy, policy_name, "false_trigger_action", "block_current_candidate")
         scope = "current_candidate"
         reason_codes.append("trigger_rejected_by_23d")
+    elif is_countertrend:
+        configured_action = _profile_value(strategy, policy_name, "countertrend_action", "")
+        decision = configured_action or "wait"
+        if decision == "block_all_candidates":
+            decision = "block_current_candidate"
+            reason_codes.append("countertrend_block_all_downgraded_to_current")
+        scope = _scope_for_decision(decision, candidate_direction)
+        if decision.startswith("block"):
+            reason_codes.append("countertrend_candidate_blocked")
+        else:
+            reason_codes.append("countertrend_candidate_wait")
     elif _risk_exceeds(chase_risk, _profile_value(strategy, policy_name, "max_chase_risk", "medium")):
         decision = _profile_value(strategy, policy_name, "excessive_chase_action", "wait")
         scope = "current_candidate"
@@ -481,13 +523,19 @@ def _decide_gate(
         reason_codes.append("volume_confirmation_required")
     else:
         decision = _profile_value(strategy, policy_name, "default_decision", "wait")
+        if phase_requires_caution and decision == "allow":
+            decision = "allow_with_caution"
+            reason_codes.append("regime_phase_caution_applied")
         scope = "current_candidate" if decision not in {"unknown", "insufficient_context"} else "unknown"
         reason_codes.append(f"default_decision_{decision}")
     confidence = _confidence(global_market_risk, candidate_risk, decision)
     return GateDecision(decision, scope, global_market_risk, candidate_risk, chase_risk, tuple(reason_codes), confidence, {
         "candidate_direction": candidate_direction,
+        "is_countertrend_candidate": is_countertrend,
         "primary_regime": market_context.primary_regime,
         "regime_phase": market_context.regime_phase,
+        "trend_strength": market_context.trend_strength,
+        "decision_implication": market_context.decision_implication,
     })
 
 
@@ -506,6 +554,42 @@ def _insufficient_context_gate(
         ("insufficient_context",) + missing_context + (f"profile_{policy_name}",),
         Decimal("0.18"),
         {"missing_context": list(missing_context)},
+    )
+
+
+def _risk_reason_text(gate: GateDecision, market_context: MarketContext) -> str:
+    """Build a Chinese public summary for later aggregation and review."""
+
+    direction = str(gate.scoring_details.get("candidate_direction", "unknown"))
+    direction_text = {"long": "多头", "short": "空头"}.get(direction, "未知方向")
+    if "countertrend_candidate_blocked" in gate.reason_codes:
+        return (
+            f"当前候选方向为{direction_text}，与 23B 公开市场背景 "
+            f"{market_context.primary_regime}/{market_context.regime_phase} 相反，风控层阻断当前候选。"
+        )
+    if "countertrend_candidate_wait" in gate.reason_codes:
+        return (
+            f"当前候选方向为{direction_text}，与 23B 公开市场背景 "
+            f"{market_context.primary_regime}/{market_context.regime_phase} 相反；"
+            "当前 profile 未配置明确逆势动作，风控层降级为等待。"
+        )
+    if "insufficient_context" in gate.reason_codes:
+        return "23E 风控所需的公开上下文不足，不能默认放行，当前仅输出保守等待证据。"
+    if "extreme_volatility_gate" in gate.reason_codes:
+        return "当前波动率处于极端状态，风控层阻断或暂停候选推进；这不是最终交易建议。"
+    if "trigger_rejected_by_23d" in gate.reason_codes:
+        return "23D 公开触发证据已被拒绝或识别为假突破风险，23E 风控阻断当前候选。"
+    if "chase_risk_exceeds_profile" in gate.reason_codes:
+        return "当前候选存在追单风险，超过所选风控 profile 的允许阈值，风控层建议等待。"
+    if "long_space_insufficient" in gate.reason_codes:
+        return "当前多头方向净空间不足，23E 风控阻断或降级多头候选。"
+    if "short_space_insufficient" in gate.reason_codes:
+        return "当前空头方向净空间不足，23E 风控阻断或降级空头候选。"
+    if "volume_confirmation_required" in gate.reason_codes:
+        return "当前触发需要更强成交量确认，23E 风控建议等待新的公开证据。"
+    return (
+        f"23E 风控结论为 {gate.risk_gate_decision}，作用范围为 {gate.risk_scope}。"
+        "该结果只作为风控证据，不是最终交易建议。"
     )
 
 
@@ -545,6 +629,8 @@ def _private_payload(
             "policy_source": policy_source,
             "primary_regime": market_context.primary_regime,
             "regime_phase": market_context.regime_phase,
+            "trend_strength": market_context.trend_strength,
+            "decision_implication": market_context.decision_implication,
         },
         "risk_scoring_details": dict(gate.scoring_details),
         "calculation_params": {
@@ -694,11 +780,52 @@ def _candidate_direction(trigger: TriggerContext) -> str:
         return "long"
     if role_flip_status == "support_to_resistance":
         return "short"
+    level_type = str(tested.get("level_type", ""))
     group = str(tested.get("level_group", ""))
-    if "resistance" in group:
+    if state.startswith("pullback"):
+        if level_type == "support" or "support" in group or "lower" in group:
+            return "long"
+        if level_type == "resistance" or "resistance" in group or "upper" in group:
+            return "short"
+    if level_type == "resistance" or "resistance" in group or "upper" in group:
         return "long"
-    if "support" in group:
+    if level_type == "support" or "support" in group or "lower" in group:
         return "short"
+    return "unknown"
+
+
+def _is_countertrend_candidate(market_context: MarketContext, candidate_direction: str) -> bool:
+    if candidate_direction not in {"long", "short"}:
+        return False
+    bullish_context = market_context.primary_regime == "uptrend" or market_context.market_bias == "bullish_bias"
+    bearish_context = market_context.primary_regime == "downtrend" or market_context.market_bias == "bearish_bias"
+    if bullish_context:
+        return candidate_direction == "short"
+    if bearish_context:
+        return candidate_direction == "long"
+    return False
+
+
+def _phase_requires_caution(regime_phase: str) -> bool:
+    phase = regime_phase.lower()
+    return any(token in phase for token in ("pullback", "rebound", "correction", "countertrend"))
+
+
+def _scope_for_decision(decision: str, candidate_direction: str) -> str:
+    if decision == "block_all_candidates":
+        return "all_candidates"
+    if decision == "block_long_candidate":
+        return "long_only"
+    if decision == "block_short_candidate":
+        return "short_only"
+    if decision in {"allow", "allow_with_caution", "wait", "block_current_candidate"}:
+        return "current_candidate"
+    if decision in {"insufficient_context", "unknown"}:
+        return "unknown"
+    if candidate_direction == "long":
+        return "long_only"
+    if candidate_direction == "short":
+        return "short_only"
     return "unknown"
 
 

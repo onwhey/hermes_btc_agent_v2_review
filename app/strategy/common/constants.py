@@ -53,6 +53,34 @@ ALLOWED_MARKET_BIASES = frozenset(
     }
 )
 
+ALLOWED_PRIMARY_REGIMES = frozenset(
+    {
+        "uptrend",
+        "downtrend",
+        "range",
+        "volatile",
+        "mixed",
+        "insufficient_data",
+        "unknown",
+    }
+)
+
+ALLOWED_REGIME_PHASES = frozenset(
+    {
+        "trend_continuation",
+        "pullback_in_uptrend",
+        "countertrend_rebound",
+        "range_mid_rotation",
+        "range_support_rebound",
+        "range_resistance_rejection",
+        "breakout_attempt",
+        "breakdown_attempt",
+        "false_breakout",
+        "transition",
+        "unknown",
+    }
+)
+
 ALLOWED_RISK_LEVELS = frozenset(
     {
         "low",
@@ -159,6 +187,8 @@ __all__ = [
     "ALLOWED_GLOBAL_MARKET_RISKS",
     "ALLOWED_KEY_LEVEL_TYPES",
     "ALLOWED_MARKET_BIASES",
+    "ALLOWED_PRIMARY_REGIMES",
+    "ALLOWED_REGIME_PHASES",
     "ALLOWED_RISK_LEVELS",
     "ALLOWED_RISK_GATE_DECISIONS",
     "ALLOWED_RISK_SCOPES",

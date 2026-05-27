@@ -162,8 +162,11 @@ def test_market_direction_regime_strategy_outputs_context_result_with_private_pa
     common = result.common_result.to_jsonable()
     assert common["not_trading_advice"] is True
     assert common["context_summary"]
-    assert "primary_regime" not in common
-    assert "regime_phase" not in common
+    assert common["primary_regime"] == result.strategy_payload_json["primary_regime"]
+    assert common["regime_phase"] == result.strategy_payload_json["regime_phase"]
+    assert common["trend_strength"] == result.strategy_payload_json["trend_strength"]
+    assert common["decision_implication"] == result.strategy_payload_json["decision_implication"]
+    assert common["market_environment_context"]
 
 
 def test_short_term_range_strategy_outputs_context_result_with_private_range_fields() -> None:
@@ -332,14 +335,12 @@ def test_run_strategy_signals_persists_23b_contract_fields_without_private_leaka
         private_payload = json.loads(row.strategy_payload_json)
         assert common["not_trading_advice"] is True
         assert private_payload
-        for private_key in (
-            "primary_regime",
-            "regime_phase",
-            "recent_range_high",
-            "recent_range_low",
-            "range_position",
-            "range_quality",
-        ):
+        if row.strategy_name == "market_direction_regime":
+            assert common["primary_regime"] == private_payload["primary_regime"]
+            assert common["regime_phase"] == private_payload["regime_phase"]
+            assert common["trend_strength"] == private_payload["trend_strength"]
+            assert common["decision_implication"] == private_payload["decision_implication"]
+        for private_key in ("recent_range_high", "recent_range_low", "range_position", "range_quality"):
             assert private_key not in common
 
 

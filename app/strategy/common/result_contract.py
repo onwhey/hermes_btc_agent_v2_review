@@ -129,6 +129,11 @@ class StrategyCommonResult:
     observation_window: Mapping[str, Any] = field(default_factory=dict)
     not_trading_advice: bool = True
     schema_version: str = STRATEGY_COMMON_RESULT_SCHEMA_VERSION
+    primary_regime: str | None = None
+    regime_phase: str | None = None
+    trend_strength: str | None = None
+    decision_implication: str | None = None
+    market_environment_context: str | None = None
     filter_status: str | None = None
     context_summary: str | None = None
     trigger_state: str | None = None
@@ -162,6 +167,11 @@ class StrategyCommonResult:
                 "evidence_items": [_item_to_jsonable(item) for item in self.evidence_items],
                 "observation_window": dict(self.observation_window),
                 "not_trading_advice": self.not_trading_advice,
+                "primary_regime": self.primary_regime,
+                "regime_phase": self.regime_phase,
+                "trend_strength": self.trend_strength,
+                "decision_implication": self.decision_implication,
+                "market_environment_context": self.market_environment_context,
                 "filter_status": self.filter_status,
                 "context_summary": self.context_summary,
                 "trigger_state": self.trigger_state,

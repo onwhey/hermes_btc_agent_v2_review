@@ -52,9 +52,9 @@ MarketContextSnapshot restore rows
     -> strategy_signal_result
 ```
 
-`common_result` 只写入角色化公共证据：`risk_level`、`signal_strength`、`confidence_score`、`reason_codes`、`reason_text`、`evidence_items`、`context_summary`、`not_trading_advice`。
+`common_result` 写入角色化公共证据：`risk_level`、`signal_strength`、`confidence_score`、`reason_codes`、`reason_text`、`evidence_items`、`context_summary`、`primary_regime`、`regime_phase`、`trend_strength`、`decision_implication`、`market_environment_context`、`not_trading_advice`。这些字段是 23E 可消费的公开市场状态摘要。
 
-`strategy_payload_json` 写入私有字段：`primary_regime`、`regime_phase`、`trend_strength`、`regime_confidence`、`phase_confidence`、`decision_implication`。
+`strategy_payload_json` 继续写入私有计算细节：`regime_confidence`、`phase_confidence`、`higher_close_change_ratio`、`base_recent_change_ratio`、`base_range_width_ratio` 等，不把整段私有 payload 暴露给后续策略。
 
 ### 1.5 异常与不足数据处理
 
@@ -203,7 +203,7 @@ tests/strategy/test_23b_market_direction_and_range.py
 2. `ShortTermRangeStrategy` 输出 `context` 角色 `StrategyResult`。
 3. 两个策略配置声明 `provides`。
 4. 同一个 `strategy_role` 下多个策略可并存。
-5. 私有字段不进入 `common_result`。
+5. 私有计算细节不进入 `common_result`；23E 所需的市场状态摘要字段作为公开证据保留在 `common_result`。
 6. 数据不足时输出 `insufficient_data` 且不抛异常。
 7. 第 16 阶段 service 可落库 23B 字段。
 8. 第 18 阶段读取 23B context 结果不崩溃。

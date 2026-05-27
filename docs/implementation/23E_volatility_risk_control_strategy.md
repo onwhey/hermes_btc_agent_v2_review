@@ -61,7 +61,7 @@ trace_id
 
 ```text
 23B context role common_payload_json
-    -> primary_regime / regime_phase 公开字段；若当前 23B 未直接输出，则从公开 reason_codes 兼容解析
+    -> primary_regime / regime_phase / trend_strength / decision_implication / market_environment_context 公开字段；旧结果缺少结构化字段时才从公开 reason_codes 兼容解析
 
 23C support_resistance role common_payload_json
     -> key_levels
@@ -122,7 +122,7 @@ consumes = [
 ]
 ```
 
-`risk_policy_mapping` 和 `risk_policy_profiles` 由配置驱动。未知或缺失市场状态会进入 `default_conservative`，不会默认 `allow`。
+`risk_policy_mapping` 和 `risk_policy_profiles` 由配置驱动。未知或缺失市场状态会进入 `default_conservative`，不会默认 `allow`。若当前候选方向与 23B 公开市场背景相反，且当前 profile 配置了 `countertrend_action`，23E 会执行该动作；未配置时至少降级为 `wait`。
 
 ## 4. StrategyResult 三段边界
 

@@ -121,6 +121,7 @@ class MarketDirectionRegimeStrategy(BaseStrategy):
         market_bias = _market_bias(primary_regime)
         risk_level = "high" if primary_regime == "volatile" else "medium" if primary_regime in {"mixed", "unknown"} else "low"
         context_summary = _context_summary(primary_regime, regime_phase)
+        decision_implication = _decision_implication(primary_regime, regime_phase)
         reason_text = (
             f"市场大方向识别为 {primary_regime}，当前阶段为 {regime_phase}。"
             "该结果只作为环境证据，不是交易建议。"
@@ -150,6 +151,11 @@ class MarketDirectionRegimeStrategy(BaseStrategy):
                 "higher_start_open_time_ms": input_data.higher_start_open_time_ms,
                 "higher_end_open_time_ms": input_data.higher_end_open_time_ms,
             },
+            primary_regime=primary_regime,
+            regime_phase=regime_phase,
+            trend_strength=_decimal_text(trend_strength),
+            decision_implication=decision_implication,
+            market_environment_context=context_summary,
             context_summary=context_summary,
             not_trading_advice=True,
         )
@@ -170,7 +176,7 @@ class MarketDirectionRegimeStrategy(BaseStrategy):
                 "trend_strength": _decimal_text(trend_strength),
                 "regime_confidence": _decimal_text(confidence),
                 "phase_confidence": _decimal_text(_phase_confidence(regime_phase, confidence)),
-                "decision_implication": _decision_implication(primary_regime, regime_phase),
+                "decision_implication": decision_implication,
                 "higher_close_change_ratio": _decimal_text(higher_change),
                 "base_recent_change_ratio": _decimal_text(base_recent_change),
                 "base_range_width_ratio": _decimal_text(base_range_width),
@@ -206,6 +212,11 @@ class MarketDirectionRegimeStrategy(BaseStrategy):
                 "actual_base_count": actual_base_count,
                 "actual_higher_count": actual_higher_count,
             },
+            primary_regime="insufficient_data",
+            regime_phase="unknown",
+            trend_strength="0",
+            decision_implication="证据不足，只能等待更多已收盘 K线形成后再判断市场环境。",
+            market_environment_context=reason_text,
             not_trading_advice=True,
         )
         return StrategyResult(

@@ -17,6 +17,8 @@ requires:
 consumes:
   - common_result.primary_regime
   - common_result.regime_phase
+  - common_result.trend_strength
+  - common_result.decision_implication
   - common_result.market_environment_context
   - common_result.key_levels
   - common_result.trigger_state

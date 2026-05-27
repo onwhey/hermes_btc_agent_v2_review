@@ -23,6 +23,8 @@ from app.strategy.common.constants import (
     ALLOWED_GLOBAL_MARKET_RISKS,
     ALLOWED_KEY_LEVEL_TYPES,
     ALLOWED_MARKET_BIASES,
+    ALLOWED_PRIMARY_REGIMES,
+    ALLOWED_REGIME_PHASES,
     ALLOWED_RISK_LEVELS,
     ALLOWED_RISK_GATE_DECISIONS,
     ALLOWED_RISK_SCOPES,
@@ -197,6 +199,12 @@ def _validate_common_payload(
         issues.append(_issue("risk_level_invalid", "common_result.risk_level", "unsupported risk level"))
     _validate_unit_interval(payload.get("signal_strength"), "common_result.signal_strength", issues)
     _validate_unit_interval(payload.get("confidence_score"), "common_result.confidence_score", issues)
+    if payload.get("primary_regime") is not None and payload.get("primary_regime") not in ALLOWED_PRIMARY_REGIMES:
+        issues.append(_issue("primary_regime_invalid", "common_result.primary_regime", "unsupported primary regime"))
+    if payload.get("regime_phase") is not None and payload.get("regime_phase") not in ALLOWED_REGIME_PHASES:
+        issues.append(_issue("regime_phase_invalid", "common_result.regime_phase", "unsupported regime phase"))
+    if payload.get("trend_strength") is not None:
+        _validate_unit_interval(payload.get("trend_strength"), "common_result.trend_strength", issues)
     _validate_reason_codes(payload.get("reason_codes"), issues)
     _validate_key_levels(payload.get("key_levels"), issues)
     _validate_scenario_candidates(payload.get("scenario_candidates"), issues)
