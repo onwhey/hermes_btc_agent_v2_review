@@ -111,6 +111,15 @@ app/strategy/aggregation/evidence_repository.py::upsert_aggregation_result
 
 `can_veto / veto_scope` 与 `participation_mode` 独立。只有 `decision_participant + can_veto=true + 明确风险阻断 common_result` 才会产生正式阻断效果。
 
+后续修复规则：
+
+- 23F 会先计算初步 `candidate_bias`，再按 `veto_scope` 判断风控阻断是否匹配当前候选方向。
+- `block_long` 不阻断 short 候选；`block_short` 不阻断 long 候选。
+- `block_current_candidate` 只阻断当前已经形成的 long/short 候选，不等同于 `block_all`。
+- `veto_scope=all_candidates` 或 `effect=block_all` 才允许在 wait / conflict / insufficient_evidence 等非方向候选下产生全局 blocked。
+- `role_coverage_matrix` 的 `provided` 只统计成功、校验有效、governance enabled、且 `common_payload_json` 可解析的策略结果。
+- `common_payload_json` 解析失败不会中断 23F，但会进入 `evidence_missing` 和 `strategy_conflict_summary`，且不得贡献 coverage。
+
 ## 5. 数据写入
 
 新增表：

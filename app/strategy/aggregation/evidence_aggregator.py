@@ -53,6 +53,7 @@ class StrategyEvidenceItem:
     validation_status: str | None
     governance: StrategyGovernance
     common_result: Mapping[str, Any]
+    common_payload_parse_failed: bool
     effect: str
     candidate_direction: str
     reason_codes: tuple[str, ...]
@@ -74,7 +75,7 @@ class StrategyEvidenceItem:
 
     @property
     def can_apply_veto(self) -> bool:
-        """Return whether this item may apply an explicit risk veto."""
+        """Return whether this item is eligible for scoped veto evaluation."""
 
         return (
             self.strategy_status == "success"
@@ -84,6 +85,7 @@ class StrategyEvidenceItem:
             and self.governance.can_veto
             and self.effect in RISK_BLOCK_DECISIONS
             and self.governance.veto_scope != "none"
+            and not self.common_payload_parse_failed
         )
 
     def to_chain_item(self) -> Mapping[str, Any]:
@@ -101,6 +103,7 @@ class StrategyEvidenceItem:
             "veto_scope": self.governance.veto_scope,
             "strategy_status": self.strategy_status,
             "validation_status": self.validation_status,
+            "common_payload_parse_failed": self.common_payload_parse_failed,
             "effect": self.effect,
             "candidate_direction": self.candidate_direction,
             "reason_codes": list(self.reason_codes),
@@ -136,21 +139,45 @@ class StrategyEvidenceAggregator:
         aggregation_config = self._governance_provider.get_aggregation_config()
         evidence_items = tuple(self._normalize_row(row) for row in strategy_signal_results)
         scores = _score_candidate_bias(evidence_items)
-        veto_items = tuple(item for item in evidence_items if item.can_apply_veto)
         coverage = _build_role_coverage_matrix(evidence_items, aggregation_config=aggregation_config)
         missing = tuple(coverage["evidence_missing"])
-        conflicts = _build_conflict_summary(evidence_items=evidence_items, scores=scores, veto_items=veto_items)
-        candidate_bias, readiness, status = _decide_candidate_bias(
+        initial_conflicts = _build_conflict_summary(
+            evidence_items=evidence_items,
+            scores=scores,
+            veto_items=(),
+            veto_scope_mismatches=(),
+        )
+        initial_candidate_bias, initial_readiness, initial_status = _decide_candidate_bias(
+            scores=scores,
+            missing=missing,
+            conflicts=initial_conflicts,
+        )
+        scoped_veto_candidates = tuple(item for item in evidence_items if item.can_apply_veto)
+        veto_items = tuple(
+            item for item in scoped_veto_candidates if _veto_matches_candidate(item, candidate_bias=initial_candidate_bias)
+        )
+        veto_scope_mismatches = tuple(item for item in scoped_veto_candidates if item not in veto_items)
+        conflicts = _build_conflict_summary(
+            evidence_items=evidence_items,
             scores=scores,
             veto_items=veto_items,
-            missing=missing,
-            conflicts=conflicts,
+            veto_scope_mismatches=veto_scope_mismatches,
+        )
+        candidate_bias, readiness, status = _apply_scoped_veto_to_candidate(
+            candidate_bias=initial_candidate_bias,
+            readiness=initial_readiness,
+            status=initial_status,
+            veto_items=veto_items,
         )
         confidence = _candidate_confidence(scores=scores, missing=missing, conflicts=conflicts)
         chain = tuple(item.to_chain_item() for item in evidence_items)
         participation_summary = _build_participation_summary(evidence_items)
         observe_only_summary = _build_observe_only_summary(evidence_items, candidate_bias=candidate_bias)
-        risk_gate_summary = _build_risk_gate_summary(evidence_items=evidence_items, veto_items=veto_items)
+        risk_gate_summary = _build_risk_gate_summary(
+            evidence_items=evidence_items,
+            veto_items=veto_items,
+            veto_scope_mismatches=veto_scope_mismatches,
+        )
         evidence_summary = _build_strategy_evidence_summary(
             evidence_items=evidence_items,
             scores=scores,
@@ -188,7 +215,7 @@ class StrategyEvidenceAggregator:
         )
 
     def _normalize_row(self, row: Any) -> StrategyEvidenceItem:
-        common_result = _load_common_payload(getattr(row, "common_payload_json", None))
+        common_result, common_payload_parse_failed = _load_common_payload(getattr(row, "common_payload_json", None))
         strategy_name = str(getattr(row, "strategy_name", "") or "")
         row_role = str(getattr(row, "strategy_role", "") or "")
         governance = self._governance_provider.get_strategy_governance(
@@ -209,6 +236,7 @@ class StrategyEvidenceAggregator:
             validation_status=_optional_text(getattr(row, "validation_status", None)),
             governance=governance,
             common_result=common_result,
+            common_payload_parse_failed=common_payload_parse_failed,
             effect=effect,
             candidate_direction=candidate_direction,
             reason_codes=tuple(_string_list(common_result.get("reason_codes"))),
@@ -248,32 +276,41 @@ def _build_role_coverage_matrix(
     all_roles = sorted(set(aggregation_config.required_roles) | set(by_role))
     for role in all_roles:
         role_items = tuple(by_role.get(role, ()))
-        successful = tuple(
-            item
-            for item in role_items
-            if item.strategy_status == "success" and item.validation_status not in INVALID_VALIDATION_STATUSES
-        )
-        provided = sorted({provided for item in role_items for provided in item.governance.provides})
+        effective_items = tuple(item for item in role_items if _is_effective_result_for_coverage(item))
+        provided = sorted({provided for item in effective_items for provided in item.governance.provides})
         required_provides = tuple(aggregation_config.required_role_provides.get(role, ()))
         missing_provides = tuple(provide for provide in required_provides if provide not in provided)
+        parse_failed_items = tuple(item for item in role_items if item.common_payload_parse_failed)
         role_rows[role] = {
             "role": role,
             "required": role in aggregation_config.required_roles,
             "strategy_count": len(role_items),
-            "success_count": len(successful),
+            "effective_coverage_count": len(effective_items),
+            "parse_failed_count": len(parse_failed_items),
             "provided": provided,
             "required_provides": list(required_provides),
             "missing_provides": list(missing_provides),
-            "covered": bool(successful) and not missing_provides,
+            "covered": bool(effective_items) and not missing_provides,
             "strategies": [item.strategy_name for item in role_items],
+            "coverage_strategies": [item.strategy_name for item in effective_items],
         }
-        if role in aggregation_config.required_roles and (not successful or missing_provides):
+        for item in parse_failed_items:
+            missing.append(
+                {
+                    "reason": "common_payload_parse_failed",
+                    "role": role,
+                    "strategy_name": item.strategy_name,
+                    "strategy_version": item.strategy_version,
+                    "impact": "coverage_ignored",
+                }
+            )
+        if role in aggregation_config.required_roles and (not effective_items or missing_provides):
             missing.append(
                 {
                     "role": role,
                     "missing_provides": list(missing_provides),
                     "strategy_count": len(role_items),
-                    "success_count": len(successful),
+                    "effective_coverage_count": len(effective_items),
                     "impact": "candidate_bias_degraded",
                 }
             )
@@ -289,8 +326,19 @@ def _build_conflict_summary(
     evidence_items: tuple[StrategyEvidenceItem, ...],
     scores: Mapping[str, Decimal],
     veto_items: tuple[StrategyEvidenceItem, ...],
+    veto_scope_mismatches: tuple[StrategyEvidenceItem, ...],
 ) -> Mapping[str, Any]:
     conflicts: list[Mapping[str, Any]] = []
+    payload_parse_failures = tuple(item for item in evidence_items if item.common_payload_parse_failed)
+    for item in payload_parse_failures:
+        conflicts.append(
+            {
+                "conflict_type": "common_payload_parse_failed",
+                "strategy_name": item.strategy_name,
+                "strategy_version": item.strategy_version,
+                "strategy_role": item.strategy_role,
+            }
+        )
     if scores["long"] > Decimal("0") and scores["short"] > Decimal("0"):
         conflicts.append(
             {
@@ -304,6 +352,20 @@ def _build_conflict_summary(
             {
                 "conflict_type": "trigger_vs_risk_conflict",
                 "risk_veto_strategies": [item.strategy_name for item in veto_items],
+            }
+        )
+    if veto_scope_mismatches:
+        conflicts.append(
+            {
+                "conflict_type": "veto_scope_mismatch",
+                "risk_veto_strategies": [
+                    {
+                        "strategy_name": item.strategy_name,
+                        "effect": item.effect,
+                        "veto_scope": item.governance.veto_scope,
+                    }
+                    for item in veto_scope_mismatches
+                ],
             }
         )
     if any(item.strategy_role == "support_resistance" and item.strategy_status != "success" for item in evidence_items):
@@ -323,12 +385,9 @@ def _build_conflict_summary(
 def _decide_candidate_bias(
     *,
     scores: Mapping[str, Decimal],
-    veto_items: tuple[StrategyEvidenceItem, ...],
     missing: tuple[Mapping[str, Any], ...],
     conflicts: Mapping[str, Any],
 ) -> tuple[CandidateBias, DecisionReadiness, EvidenceAggregationStatus]:
-    if veto_items:
-        return CandidateBias.BLOCKED, DecisionReadiness.BLOCKED_BY_RISK, EvidenceAggregationStatus.PARTIAL_SUCCESS
     if missing:
         return (
             CandidateBias.INSUFFICIENT_EVIDENCE,
@@ -346,6 +405,18 @@ def _decide_candidate_bias(
     if scores["wait"] > Decimal("0"):
         return CandidateBias.WAIT, DecisionReadiness.WAIT_FOR_CONFIRMATION, EvidenceAggregationStatus.SUCCESS
     return CandidateBias.NEUTRAL, DecisionReadiness.NOT_READY, EvidenceAggregationStatus.INSUFFICIENT_EVIDENCE
+
+
+def _apply_scoped_veto_to_candidate(
+    *,
+    candidate_bias: CandidateBias,
+    readiness: DecisionReadiness,
+    status: EvidenceAggregationStatus,
+    veto_items: tuple[StrategyEvidenceItem, ...],
+) -> tuple[CandidateBias, DecisionReadiness, EvidenceAggregationStatus]:
+    if not veto_items:
+        return candidate_bias, readiness, status
+    return CandidateBias.BLOCKED, DecisionReadiness.BLOCKED_BY_RISK, EvidenceAggregationStatus.PARTIAL_SUCCESS
 
 
 def _candidate_confidence(
@@ -432,6 +503,7 @@ def _build_risk_gate_summary(
     *,
     evidence_items: tuple[StrategyEvidenceItem, ...],
     veto_items: tuple[StrategyEvidenceItem, ...],
+    veto_scope_mismatches: tuple[StrategyEvidenceItem, ...],
 ) -> Mapping[str, Any]:
     risk_items = tuple(item for item in evidence_items if item.strategy_role == "risk_control")
     return {
@@ -446,8 +518,53 @@ def _build_risk_gate_summary(
             }
             for item in veto_items
         ],
+        "veto_scope_mismatches": [
+            {
+                "strategy_name": item.strategy_name,
+                "risk_gate_decision": item.common_result.get("risk_gate_decision"),
+                "risk_scope": item.common_result.get("risk_scope") or item.governance.veto_scope,
+                "veto_scope": item.governance.veto_scope,
+                "effect": item.effect,
+                "reason": "veto_scope_does_not_match_candidate_bias",
+            }
+            for item in veto_scope_mismatches
+        ],
         "risk_evidence": [item.to_chain_item() for item in risk_items],
     }
+
+
+def _veto_matches_candidate(item: StrategyEvidenceItem, *, candidate_bias: CandidateBias) -> bool:
+    scope = item.governance.veto_scope
+    effect = item.effect
+    if scope == "none":
+        return False
+    if scope == "all_candidates" or effect == "block_all":
+        return True
+    if candidate_bias not in {CandidateBias.LONG, CandidateBias.SHORT}:
+        return False
+    if scope == "current_candidate":
+        if effect == "block_current_candidate":
+            return True
+        if effect == "block_long":
+            return candidate_bias == CandidateBias.LONG
+        if effect == "block_short":
+            return candidate_bias == CandidateBias.SHORT
+        return False
+    if scope == "long_candidate":
+        return candidate_bias == CandidateBias.LONG and effect in {"block_long", "block_current_candidate"}
+    if scope == "short_candidate":
+        return candidate_bias == CandidateBias.SHORT and effect in {"block_short", "block_current_candidate"}
+    return False
+
+
+def _is_effective_result_for_coverage(item: StrategyEvidenceItem) -> bool:
+    return (
+        item.strategy_status == "success"
+        and item.validation_status not in INVALID_VALIDATION_STATUSES
+        and item.governance.enabled
+        and not item.common_payload_parse_failed
+        and bool(item.common_result)
+    )
 
 
 def _build_model_review_focus(
@@ -560,16 +677,18 @@ def _classify_market_bias(*, market_bias: str, primary_regime: str) -> tuple[str
     return "uncertain", "wait"
 
 
-def _load_common_payload(value: Any) -> Mapping[str, Any]:
+def _load_common_payload(value: Any) -> tuple[Mapping[str, Any], bool]:
     if isinstance(value, Mapping):
-        return dict(value)
+        return dict(value), False
     if not value:
-        return {}
+        return {}, False
     try:
         parsed = json.loads(str(value))
     except json.JSONDecodeError:
-        return {}
-    return dict(parsed) if isinstance(parsed, Mapping) else {}
+        return {}, True
+    if not isinstance(parsed, Mapping):
+        return {}, True
+    return dict(parsed), False
 
 
 def _string_list(value: Any) -> list[str]:

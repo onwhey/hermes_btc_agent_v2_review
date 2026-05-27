@@ -71,6 +71,32 @@ class PoisonPrivatePayloadRow:
         raise AssertionError("23F must not read strategy_payload_json")
 
 
+class RawCommonPayloadRow:
+    def __init__(
+        self,
+        strategy_name: str,
+        *,
+        strategy_role: str,
+        common_payload_json: str,
+        strategy_status: str = "success",
+        validation_status: str | None = "passed",
+    ) -> None:
+        self.id = len(strategy_name)
+        self.run_id = "SSR-23F"
+        self.strategy_name = strategy_name
+        self.strategy_version = "v1"
+        self.strategy_role = strategy_role
+        self.strategy_status = strategy_status
+        self.validation_status = validation_status
+        self.common_payload_json = common_payload_json
+        self.reason_text = ""
+        self.signal_strength = Decimal("0.80")
+
+    @property
+    def strategy_payload_json(self) -> str:
+        raise AssertionError("23F must not read strategy_payload_json")
+
+
 class FakeGovernanceProvider:
     def __init__(
         self,
@@ -375,6 +401,236 @@ def test_can_veto_false_cannot_formally_block_but_can_veto_true_blocks_current_c
     assert veto.decision_readiness == DecisionReadiness.BLOCKED_BY_RISK
     assert veto.risk_gate_summary["formal_veto_applied"] is True
     assert veto.risk_gate_summary["veto_strategies"][0]["strategy_name"] == "risk_gate"
+
+
+def test_veto_scope_short_candidate_does_not_block_long_candidate() -> None:
+    rows = (
+        PoisonPrivatePayloadRow("formal_long", strategy_role="directional", common_payload={"market_bias": "bullish_bias"}),
+        PoisonPrivatePayloadRow(
+            "short_only_risk",
+            strategy_role="risk_control",
+            common_payload={"risk_gate_decision": "block_short", "risk_scope": "short_candidate"},
+        ),
+    )
+    provider = FakeGovernanceProvider(
+        {
+            "formal_long": governance("formal_long", "directional"),
+            "short_only_risk": governance(
+                "short_only_risk",
+                "risk_control",
+                can_veto=True,
+                veto_scope="short_candidate",
+            ),
+        }
+    )
+
+    result = aggregate(rows, provider)
+
+    assert result.candidate_bias == CandidateBias.LONG
+    assert result.risk_gate_summary["formal_veto_applied"] is False
+    assert result.risk_gate_summary["veto_scope_mismatches"][0]["strategy_name"] == "short_only_risk"
+
+
+def test_veto_scope_long_candidate_does_not_block_short_candidate() -> None:
+    rows = (
+        PoisonPrivatePayloadRow("formal_short", strategy_role="directional", common_payload={"market_bias": "bearish_bias"}),
+        PoisonPrivatePayloadRow(
+            "long_only_risk",
+            strategy_role="risk_control",
+            common_payload={"risk_gate_decision": "block_long", "risk_scope": "long_candidate"},
+        ),
+    )
+    provider = FakeGovernanceProvider(
+        {
+            "formal_short": governance("formal_short", "directional"),
+            "long_only_risk": governance(
+                "long_only_risk",
+                "risk_control",
+                can_veto=True,
+                veto_scope="long_candidate",
+            ),
+        }
+    )
+
+    result = aggregate(rows, provider)
+
+    assert result.candidate_bias == CandidateBias.SHORT
+    assert result.risk_gate_summary["formal_veto_applied"] is False
+    assert result.risk_gate_summary["veto_scope_mismatches"][0]["strategy_name"] == "long_only_risk"
+
+
+def test_veto_scope_long_candidate_blocks_long_candidate() -> None:
+    rows = (
+        PoisonPrivatePayloadRow("formal_long", strategy_role="directional", common_payload={"market_bias": "bullish_bias"}),
+        PoisonPrivatePayloadRow(
+            "long_risk",
+            strategy_role="risk_control",
+            common_payload={"risk_gate_decision": "block_long", "risk_scope": "long_candidate"},
+        ),
+    )
+    provider = FakeGovernanceProvider(
+        {
+            "formal_long": governance("formal_long", "directional"),
+            "long_risk": governance("long_risk", "risk_control", can_veto=True, veto_scope="long_candidate"),
+        }
+    )
+
+    result = aggregate(rows, provider)
+
+    assert result.candidate_bias == CandidateBias.BLOCKED
+    assert result.decision_readiness == DecisionReadiness.BLOCKED_BY_RISK
+    assert result.risk_gate_summary["veto_strategies"][0]["strategy_name"] == "long_risk"
+
+
+def test_veto_scope_short_candidate_blocks_short_candidate() -> None:
+    rows = (
+        PoisonPrivatePayloadRow("formal_short", strategy_role="directional", common_payload={"market_bias": "bearish_bias"}),
+        PoisonPrivatePayloadRow(
+            "short_risk",
+            strategy_role="risk_control",
+            common_payload={"risk_gate_decision": "block_short", "risk_scope": "short_candidate"},
+        ),
+    )
+    provider = FakeGovernanceProvider(
+        {
+            "formal_short": governance("formal_short", "directional"),
+            "short_risk": governance("short_risk", "risk_control", can_veto=True, veto_scope="short_candidate"),
+        }
+    )
+
+    result = aggregate(rows, provider)
+
+    assert result.candidate_bias == CandidateBias.BLOCKED
+    assert result.decision_readiness == DecisionReadiness.BLOCKED_BY_RISK
+    assert result.risk_gate_summary["veto_strategies"][0]["strategy_name"] == "short_risk"
+
+
+def test_veto_scope_all_candidates_can_block_without_directional_candidate() -> None:
+    rows = (
+        PoisonPrivatePayloadRow(
+            "global_risk",
+            strategy_role="risk_control",
+            common_payload={"risk_gate_decision": "block_current_candidate", "risk_scope": "all_candidates"},
+        ),
+    )
+    provider = FakeGovernanceProvider(
+        {
+            "global_risk": governance(
+                "global_risk",
+                "risk_control",
+                can_veto=True,
+                veto_scope="all_candidates",
+            ),
+        }
+    )
+
+    result = aggregate(rows, provider)
+
+    assert result.candidate_bias == CandidateBias.BLOCKED
+    assert result.risk_gate_summary["formal_veto_applied"] is True
+
+
+def test_failed_strategy_declared_provides_does_not_cover_required_role() -> None:
+    rows = (
+        PoisonPrivatePayloadRow(
+            "failed_support",
+            strategy_role="support_resistance",
+            common_payload={"key_levels": [{"level_id": "L1"}]},
+            strategy_status="failed",
+        ),
+    )
+    provider = FakeGovernanceProvider(
+        {
+            "failed_support": governance(
+                "failed_support",
+                "support_resistance",
+                provides=("key_levels",),
+            ),
+        },
+        required_roles=("support_resistance",),
+        required_role_provides={"support_resistance": ("key_levels",)},
+    )
+
+    result = aggregate(rows, provider)
+    coverage = result.role_coverage_matrix["roles"]["support_resistance"]
+
+    assert coverage["provided"] == []
+    assert coverage["covered"] is False
+    assert coverage["effective_coverage_count"] == 0
+    assert result.candidate_bias == CandidateBias.INSUFFICIENT_EVIDENCE
+
+
+def test_disabled_or_validation_failed_strategy_declared_provides_does_not_cover_required_role() -> None:
+    rows = (
+        PoisonPrivatePayloadRow(
+            "disabled_support",
+            strategy_role="support_resistance",
+            common_payload={"key_levels": [{"level_id": "L1"}]},
+        ),
+        PoisonPrivatePayloadRow(
+            "invalid_support",
+            strategy_role="support_resistance",
+            common_payload={"key_levels": [{"level_id": "L2"}]},
+            validation_status="failed",
+        ),
+    )
+    provider = FakeGovernanceProvider(
+        {
+            "disabled_support": StrategyGovernance(
+                strategy_name="disabled_support",
+                strategy_role="support_resistance",
+                provides=("key_levels",),
+                enabled=False,
+                participation_mode=ParticipationMode.DECISION_PARTICIPANT.value,
+                decision_weight=Decimal("1.0"),
+            ),
+            "invalid_support": governance(
+                "invalid_support",
+                "support_resistance",
+                provides=("key_levels",),
+            ),
+        },
+        required_roles=("support_resistance",),
+        required_role_provides={"support_resistance": ("key_levels",)},
+    )
+
+    result = aggregate(rows, provider)
+    coverage = result.role_coverage_matrix["roles"]["support_resistance"]
+
+    assert coverage["provided"] == []
+    assert coverage["covered"] is False
+    assert coverage["effective_coverage_count"] == 0
+
+
+def test_common_payload_parse_failure_is_recorded_and_does_not_contribute_coverage() -> None:
+    rows = (
+        RawCommonPayloadRow(
+            "broken_support",
+            strategy_role="support_resistance",
+            common_payload_json="{not valid json",
+        ),
+    )
+    provider = FakeGovernanceProvider(
+        {
+            "broken_support": governance(
+                "broken_support",
+                "support_resistance",
+                provides=("key_levels",),
+            ),
+        },
+        required_roles=("support_resistance",),
+        required_role_provides={"support_resistance": ("key_levels",)},
+    )
+
+    result = aggregate(rows, provider)
+    coverage = result.role_coverage_matrix["roles"]["support_resistance"]
+    conflict_types = {item["conflict_type"] for item in result.strategy_conflict_summary["conflicts"]}
+
+    assert coverage["provided"] == []
+    assert coverage["parse_failed_count"] == 1
+    assert result.candidate_bias == CandidateBias.INSUFFICIENT_EVIDENCE
+    assert "common_payload_parse_failed" in conflict_types
+    assert any(item.get("reason") == "common_payload_parse_failed" for item in result.evidence_missing)
 
 
 def test_missing_context_or_risk_control_outputs_evidence_missing() -> None:
