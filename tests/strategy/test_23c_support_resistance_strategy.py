@@ -16,7 +16,7 @@ from app.strategy.result_repository import StrategySignalResultRepository
 from app.strategy.runner import StrategyRunner
 from app.strategy.signal_service import StrategySignalService
 from app.strategy.strategies.market_direction_regime_strategy import MarketDirectionRegimeStrategy
-from app.strategy.strategies.support_resistance_strategy import SupportResistanceStrategy
+from app.strategy.strategies.support_resistance_strategy import SupportResistanceStrategy, _zone_quality
 from app.strategy.types import (
     StrategyEvaluationInput,
     StrategyRunStatus,
@@ -102,6 +102,23 @@ def wave_rows(count: int, *, interval_value: str = "4h", base: str = "60000") ->
         rows.append(kline_row(index, interval_value=interval_value, close=close))
     rows[6] = kline_row(6, interval_value=interval_value, close=Decimal(base) - Decimal("5200"), wick=Decimal("180"))
     rows[-1] = kline_row(count - 1, interval_value=interval_value, close=Decimal(base) + Decimal("160"), wick=Decimal("70"))
+    return tuple(rows)
+
+
+def role_flip_rows(count: int = 140) -> tuple[Any, ...]:
+    rows: list[Any] = []
+    for index in range(count):
+        close = Decimal("60500") + Decimal((index % 7) - 3) * Decimal("6")
+        rows.append(kline_row(index, interval_value="4h", close=close, wick=Decimal("70")))
+    for index in range(38, 43):
+        close = Decimal("59600") + Decimal(index - 40) * Decimal("10")
+        rows[index] = kline_row(index, interval_value="4h", close=close, wick=Decimal("60"))
+    rows[40] = kline_row(40, interval_value="4h", close=Decimal("59920"), wick=Decimal("80"))
+    for index in range(88, 93):
+        close = Decimal("60380") + Decimal(index - 90) * Decimal("10")
+        rows[index] = kline_row(index, interval_value="4h", close=close, wick=Decimal("80"))
+    rows[90] = kline_row(90, interval_value="4h", close=Decimal("60100"), wick=Decimal("80"))
+    rows[-1] = kline_row(count - 1, interval_value="4h", close=Decimal("60500"), wick=Decimal("70"))
     return tuple(rows)
 
 
@@ -197,8 +214,28 @@ def test_support_resistance_strategy_outputs_role_result_and_key_levels() -> Non
     assert any(item["level_group"] == "major_resistance" for item in key_levels)
     assert any(item["level_group"] == "range_upper_boundary" for item in key_levels)
     assert any(item["level_group"] == "range_lower_boundary" for item in key_levels)
-    assert any(item["level_group"] == "role_flip_candidate" for item in key_levels)
     assert result.common_result.to_jsonable()["not_trading_advice"] is True
+
+
+def test_role_flip_candidate_requires_real_role_flip_zone() -> None:
+    result = support_resistance_strategy().evaluate(strategy_input(base_rows=role_flip_rows()))
+    key_levels = result_key_levels(result)
+    role_flip_candidates = [
+        item
+        for item in key_levels
+        if item["level_group"] == "role_flip_candidate"
+    ]
+
+    assert role_flip_candidates
+    assert all(item["role_flip_status"] != "none" for item in role_flip_candidates)
+    assert any(
+        item["role_flip_status"] in {"resistance_to_support", "support_to_resistance", "unconfirmed"}
+        for item in role_flip_candidates
+    )
+    assert any(
+        {"swing_high", "swing_low"}.issubset(set(detail["source_point_types"]))
+        for detail in result.strategy_payload_json["role_flip_detection_details"]
+    )
 
 
 def test_config_declares_support_resistance_role_and_provides() -> None:
@@ -246,6 +283,23 @@ def test_wide_zone_quality_is_lowered_by_configured_width_threshold() -> None:
     ).evaluate(strategy_input())
 
     assert any(cluster["zone_quality"] == "wide" for cluster in result.strategy_payload_json["merged_level_clusters"])
+
+
+def test_zone_quality_keeps_outlier_and_makes_weak_reachable() -> None:
+    strategy = support_resistance_strategy()
+
+    assert _zone_quality(
+        touch_count=1,
+        reaction_strength=Decimal("0.020"),
+        width_pct=Decimal("0.004"),
+        strategy=strategy,
+    ) == "outlier"
+    assert _zone_quality(
+        touch_count=2,
+        reaction_strength=Decimal("0.001"),
+        width_pct=Decimal("0.004"),
+        strategy=strategy,
+    ) == "weak"
 
 
 def test_isolated_spike_does_not_become_high_strength_key_level() -> None:

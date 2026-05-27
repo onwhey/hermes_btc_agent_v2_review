@@ -395,8 +395,6 @@ def _select_key_levels(
     )[: strategy.output_limits["historical_reference"]]
     selected.extend(("historical_reference", zone) for zone in historical)
     role_flips = [zone for zone in non_outlier if zone.role_flip_status != "none"]
-    if not role_flips and non_outlier:
-        role_flips = [min(non_outlier, key=lambda item: abs(item.zone_mid - current_price))]
     selected.extend(("role_flip_candidate", zone) for zone in role_flips[: strategy.output_limits["role_flip_candidate"]])
     return _deduplicate_grouped_zones(tuple(selected))
 
@@ -440,7 +438,7 @@ def _level_to_common_payload(item: tuple[str, LevelZone], index: int) -> Mapping
         "current_relevance_score": _decimal_text(zone.current_relevance_score),
         "touch_count": zone.touch_count,
         "distance_from_current_price_pct": _decimal_text(zone.distance_from_current_price_pct),
-        "role_flip_status": "unconfirmed" if group == "role_flip_candidate" and zone.role_flip_status == "none" else zone.role_flip_status,
+        "role_flip_status": zone.role_flip_status,
         "zone_quality": zone.zone_quality,
         "reason": _level_reason(group, zone),
     }
@@ -545,10 +543,10 @@ def _zone_quality(
         return "wide"
     if touch_count <= 1:
         return "outlier"
+    if touch_count == 2 and reaction_strength < strategy.outlier_reaction_min_pct:
+        return "weak"
     if width_pct < strategy.cluster_width_pct / Decimal("5"):
         return "narrow"
-    if touch_count < 2:
-        return "weak"
     return "clear"
 
 
