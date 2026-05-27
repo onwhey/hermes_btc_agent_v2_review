@@ -123,6 +123,16 @@ class StrategyCommonResult:
     reason_codes: tuple[str, ...] = ()
     reason_text: str = ""
     key_levels: tuple[StrategyKeyLevel | Mapping[str, Any], ...] = ()
+    support_levels: tuple[Mapping[str, Any], ...] | None = None
+    support_zones: tuple[Mapping[str, Any], ...] | None = None
+    resistance_levels: tuple[Mapping[str, Any], ...] | None = None
+    resistance_zones: tuple[Mapping[str, Any], ...] | None = None
+    nearest_support: Mapping[str, Any] | None = None
+    nearest_resistance: Mapping[str, Any] | None = None
+    current_price: str | None = None
+    level_count: int | None = None
+    support_count: int | None = None
+    resistance_count: int | None = None
     scenario_candidates: tuple[StrategyScenarioCandidate | Mapping[str, Any], ...] = ()
     risk_flags: tuple[StrategyRiskFlag | Mapping[str, Any], ...] = ()
     evidence_items: tuple[StrategyEvidenceItem | Mapping[str, Any], ...] = ()
@@ -162,6 +172,16 @@ class StrategyCommonResult:
                 "reason_codes": list(self.reason_codes),
                 "reason_text": self.reason_text,
                 "key_levels": [_item_to_jsonable(item) for item in self.key_levels],
+                "support_levels": [dict(item) for item in self.support_levels] if self.support_levels else None,
+                "support_zones": [dict(item) for item in self.support_zones] if self.support_zones else None,
+                "resistance_levels": [dict(item) for item in self.resistance_levels] if self.resistance_levels else None,
+                "resistance_zones": [dict(item) for item in self.resistance_zones] if self.resistance_zones else None,
+                "nearest_support": dict(self.nearest_support) if self.nearest_support else None,
+                "nearest_resistance": dict(self.nearest_resistance) if self.nearest_resistance else None,
+                "current_price": self.current_price,
+                "level_count": self.level_count,
+                "support_count": self.support_count,
+                "resistance_count": self.resistance_count,
                 "scenario_candidates": [_item_to_jsonable(item) for item in self.scenario_candidates],
                 "risk_flags": [_item_to_jsonable(item) for item in self.risk_flags],
                 "evidence_items": [_item_to_jsonable(item) for item in self.evidence_items],

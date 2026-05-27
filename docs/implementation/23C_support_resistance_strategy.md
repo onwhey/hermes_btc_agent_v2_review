@@ -327,3 +327,65 @@ python -m scripts.run_strategy_signals --symbol BTCUSDT --base-interval 4h --hig
 19. 不做人工执行反馈。
 20. 不做完整复盘系统。
 21. 不做第 18 阶段深度聚合重构。
+
+## 9. 2026-05-27 payload size guard update
+
+本次修复只收缩 23C `strategy_payload_json`，不新增 migration，不扩大数据库字段。
+
+### 9.1 调整原因
+
+真实运行中 `support_resistance_strategy.strategy_payload_json` 曾超过 32KB validator 限制，导致 23C validation failed，进而让 23D / 23E / 23F 因缺少有效 `key_levels` 降级。
+
+### 9.2 公共输出保持
+
+`common_result` 仍稳定保留：
+
+```text
+key_levels
+support_zones
+resistance_zones
+nearest_support
+nearest_resistance
+current_price
+level_count
+support_count
+resistance_count
+reason_codes
+reason_text
+not_trading_advice = true
+```
+
+23D 仍只通过 `EvidenceContext.key_levels_for_role("support_resistance")` 读取公开 `common_result.key_levels`，不读取 23C 私有 payload。
+
+### 9.3 私有 payload 收缩
+
+`strategy_payload_json` 不再保存全量候选点、全量聚类、逐 K 线 debug 或完整中间计算过程。
+
+保留的私有摘要包括：
+
+```text
+selected_key_levels
+selected_support_levels
+selected_resistance_levels
+cluster_summary
+scoring_summary
+raw_swing_points
+merged_level_clusters
+cluster_scoring_details
+reaction_strength_details
+recency_score_details
+role_flip_detection_details
+zone_width_config
+calculation_params
+excluded_outliers
+selected_level_groups
+truncation_summary
+```
+
+其中旧兼容字段 `raw_swing_points`、`merged_level_clusters`、`cluster_scoring_details` 等只保留 top 摘要，不再保存全量列表。
+
+### 9.4 尺寸保护
+
+`SupportResistanceStrategy.evaluate()` 返回前会构造压缩后的私有 payload，并通过 `_trim_payload_for_size()` 对非关键 debug 摘要做二次截断。
+
+截断只影响私有调试摘要，不删除 `common_result.key_levels`。如果发生截断，`truncation_summary.payload_trimmed=true`，`reason_text` 会说明候选数量较多，完整中间调试信息未写入策略结果。

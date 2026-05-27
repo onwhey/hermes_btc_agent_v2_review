@@ -8,6 +8,11 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.strategy.aggregation.rules import classify_strategy_results
+from app.strategy.aggregation.evidence_aggregator import StrategyEvidenceAggregator
+from app.strategy.aggregation.evidence_config import EvidenceAggregationConfig
+from app.strategy.aggregation.evidence_types import ParticipationMode, StrategyGovernance
+from app.strategy.common.constants import MAX_COMMON_PAYLOAD_BYTES, MAX_STRATEGY_PAYLOAD_BYTES
+from app.strategy.common.payload_tools import payload_size_bytes
 from app.strategy.common.result_adapter import adapt_strategy_result_to_signal
 from app.strategy.common.result_contract import StrategyResult
 from app.strategy.common.result_validator import validate_strategy_result
@@ -15,6 +20,7 @@ from app.strategy.registry import StrategyRegistry
 from app.strategy.result_repository import StrategySignalResultRepository
 from app.strategy.runner import StrategyRunner
 from app.strategy.signal_service import StrategySignalService
+from app.strategy.strategies.breakout_pullback_trigger_strategy import BreakoutPullbackTriggerStrategy
 from app.strategy.strategies.market_direction_regime_strategy import MarketDirectionRegimeStrategy
 from app.strategy.strategies.support_resistance_strategy import SupportResistanceStrategy, _zone_quality
 from app.strategy.types import (
@@ -72,6 +78,30 @@ class FailingStrategy:
         raise RuntimeError("fixture failure")
 
 
+class FakeGovernanceProvider:
+    def __init__(self, governance: dict[str, StrategyGovernance]) -> None:
+        self.governance = governance
+        self.config = EvidenceAggregationConfig(
+            required_roles=("support_resistance",),
+            required_role_provides={"support_resistance": ("key_levels",)},
+            default_governance=StrategyGovernance(
+                strategy_name="default",
+                strategy_role="",
+                participation_mode=ParticipationMode.OBSERVE_ONLY.value,
+                decision_weight=Decimal("0"),
+            ),
+        )
+
+    def get_aggregation_config(self) -> EvidenceAggregationConfig:
+        return self.config
+
+    def get_strategy_governance(self, *, strategy_name: str, strategy_role: str | None = None) -> StrategyGovernance:
+        return self.governance.get(
+            strategy_name,
+            StrategyGovernance(strategy_name=strategy_name, strategy_role=strategy_role or ""),
+        )
+
+
 def kline_row(index: int, *, interval_value: str, close: Decimal, wick: Decimal = Decimal("95")) -> Any:
     interval_ms = 14_400_000 if interval_value == "4h" else 86_400_000
     open_time_ms = 1_700_000_000_000 + index * interval_ms
@@ -102,6 +132,27 @@ def wave_rows(count: int, *, interval_value: str = "4h", base: str = "60000") ->
         rows.append(kline_row(index, interval_value=interval_value, close=close))
     rows[6] = kline_row(6, interval_value=interval_value, close=Decimal(base) - Decimal("5200"), wick=Decimal("180"))
     rows[-1] = kline_row(count - 1, interval_value=interval_value, close=Decimal(base) + Decimal("160"), wick=Decimal("70"))
+    return tuple(rows)
+
+
+def dense_swing_rows(count: int, *, interval_value: str = "4h", base: str = "60000") -> tuple[Any, ...]:
+    pattern = (
+        Decimal("-1200"),
+        Decimal("760"),
+        Decimal("-840"),
+        Decimal("1320"),
+        Decimal("-360"),
+        Decimal("980"),
+        Decimal("-1040"),
+        Decimal("420"),
+    )
+    rows: list[Any] = []
+    for index in range(count):
+        drift = Decimal(index // len(pattern)) * Decimal("5")
+        spread_bucket = Decimal(index % 47) * Decimal("28")
+        close = Decimal(base) + pattern[index % len(pattern)] + spread_bucket + drift
+        rows.append(kline_row(index, interval_value=interval_value, close=close, wick=Decimal("120")))
+    rows[-1] = kline_row(count - 1, interval_value=interval_value, close=Decimal(base) + Decimal("600"), wick=Decimal("90"))
     return tuple(rows)
 
 
@@ -200,6 +251,19 @@ def result_key_levels(result: StrategyResult) -> list[dict[str, Any]]:
     return list(result.common_result.to_jsonable().get("key_levels", []))
 
 
+def aggregation_row_from_signal(signal: Any) -> Any:
+    return SimpleNamespace(
+        strategy_name=signal.strategy_name,
+        strategy_version=signal.strategy_version,
+        strategy_status=signal.strategy_status.value,
+        validation_status=signal.validation_status,
+        strategy_role=signal.strategy_role,
+        common_payload_json=json.dumps(signal.common_payload_json, ensure_ascii=False),
+        reason_text=signal.reason_text,
+        signal_strength=Decimal(str(signal.signal_strength)),
+    )
+
+
 def test_support_resistance_strategy_outputs_role_result_and_key_levels() -> None:
     result = support_resistance_strategy().evaluate(strategy_input())
     key_levels = result_key_levels(result)
@@ -266,6 +330,92 @@ def test_private_swing_and_cluster_details_do_not_enter_common_result() -> None:
     assert "cluster_scoring_details" not in common
     assert "reaction_strength_details" not in common
     assert "recency_score_details" not in common
+
+
+def test_large_23c_candidate_pool_keeps_payload_under_contract_limit() -> None:
+    strategy = support_resistance_strategy(
+        lookback_bars={"base": 520, "higher": 365},
+        minimum_required_bars={"base": 80, "higher": 120},
+        thresholds={
+            "swing_left_bars": 1,
+            "swing_right_bars": 1,
+            "min_swing_move_pct": "0.001",
+            "cluster_width_pct": "0.0015",
+            "max_zone_width_pct": "0.025",
+            "nearest_distance_pct": "0.20",
+            "major_level_min_strength": "0.20",
+            "outlier_reaction_min_pct": "0.004",
+        },
+        output_limits={
+            "nearest_support": 8,
+            "nearest_resistance": 8,
+            "major_support": 10,
+            "major_resistance": 10,
+            "historical_reference": 10,
+            "role_flip_candidate": 10,
+        },
+    )
+
+    result = strategy.evaluate(
+        strategy_input(
+            base_rows=dense_swing_rows(520),
+            higher=dense_swing_rows(365, interval_value="1d", base="59200"),
+        )
+    )
+    common = result.common_result.to_jsonable()
+    payload = result.strategy_payload_json
+    validation = validate_strategy_result(result)
+
+    assert validation.passed is True
+    assert payload_size_bytes(common) <= MAX_COMMON_PAYLOAD_BYTES
+    assert payload_size_bytes(payload) <= MAX_STRATEGY_PAYLOAD_BYTES
+    assert common["key_levels"]
+    assert common["nearest_support"] or common["nearest_resistance"]
+    assert common["current_price"]
+    assert common["level_count"] == len(common["key_levels"])
+    assert payload["truncation_summary"]["payload_trimmed"] is True
+    assert len(payload["raw_swing_points"]) <= 12
+    assert len(payload["merged_level_clusters"]) <= 12
+    assert "all_candidates" not in payload
+    assert "all_clusters_full_detail" not in payload
+    assert "per_kline_debug" not in payload
+
+
+def test_payload_trimming_preserves_top_public_key_levels() -> None:
+    result = support_resistance_strategy(
+        lookback_bars={"base": 520, "higher": 365},
+        thresholds={
+            "swing_left_bars": 1,
+            "swing_right_bars": 1,
+            "min_swing_move_pct": "0.001",
+            "cluster_width_pct": "0.0015",
+            "max_zone_width_pct": "0.025",
+            "nearest_distance_pct": "0.20",
+            "major_level_min_strength": "0.20",
+            "outlier_reaction_min_pct": "0.004",
+        },
+        output_limits={
+            "nearest_support": 8,
+            "nearest_resistance": 8,
+            "major_support": 10,
+            "major_resistance": 10,
+            "historical_reference": 10,
+            "role_flip_candidate": 10,
+        },
+    ).evaluate(
+        strategy_input(
+            base_rows=dense_swing_rows(520),
+            higher=dense_swing_rows(365, interval_value="1d", base="59200"),
+        )
+    )
+    common_key_levels = result.common_result.to_jsonable()["key_levels"]
+    selected_key_levels = result.strategy_payload_json["selected_key_levels"]
+    selected_groups = {(item["level_group"], item["cluster_id"]) for item in selected_key_levels}
+
+    assert any(item["level_group"] == "nearest_support" for item in common_key_levels)
+    assert any(item["level_group"] == "nearest_resistance" for item in common_key_levels)
+    assert selected_groups
+    assert len(selected_key_levels) <= 16
 
 
 def test_wide_zone_quality_is_lowered_by_configured_width_threshold() -> None:
@@ -374,6 +524,68 @@ def test_runner_isolates_support_resistance_neighbor_failure() -> None:
     assert result.signals[0].strategy_name == "support_resistance_strategy"
     assert result.signals[0].strategy_status == StrategySignalStatus.SUCCESS
     assert result.signals[1].strategy_status == StrategySignalStatus.FAILED
+
+
+def test_23d_reads_trimmed_23c_public_key_levels() -> None:
+    runner = StrategyRunner(
+        registry=FakeRegistry(
+            (
+                support_resistance_strategy(),
+                BreakoutPullbackTriggerStrategy(
+                    {
+                        "strategy_version": "23D-test",
+                        "minimum_required_bars": {"base": 30},
+                        "thresholds": {
+                            "breakout_distance_pct": "0.002",
+                            "pullback_tolerance_pct": "0.010",
+                            "wick_rejection_ratio": "0.35",
+                            "volume_ratio_confirmation": "1.10",
+                        },
+                    }
+                ),
+            )
+        )
+    )
+
+    result = runner.run_strategies(strategy_input())
+    trigger_signal = next(signal for signal in result.signals if signal.strategy_name == "breakout_pullback_trigger_strategy")
+
+    assert trigger_signal.strategy_status != StrategySignalStatus.INVALID
+    assert "missing_support_resistance_key_levels" not in trigger_signal.reason_codes
+    assert trigger_signal.common_payload_json.get("trigger_state") != "insufficient_key_levels"
+
+
+def test_23f_coverage_accepts_valid_trimmed_support_resistance_key_levels() -> None:
+    signal = adapt_strategy_result_to_signal(support_resistance_strategy().evaluate(strategy_input()))
+    row = aggregation_row_from_signal(signal)
+    provider = FakeGovernanceProvider(
+        {
+            "support_resistance_strategy": StrategyGovernance(
+                strategy_name="support_resistance_strategy",
+                strategy_role="support_resistance",
+                provides=("key_levels",),
+                participation_mode=ParticipationMode.EVIDENCE_ONLY.value,
+                decision_weight=Decimal("0"),
+            )
+        }
+    )
+
+    aggregation = StrategyEvidenceAggregator(governance_provider=provider).aggregate_strategy_evidence(
+        aggregation_id="SEA-23C",
+        strategy_signal_run=SimpleNamespace(
+            run_id="SSR-23C",
+            symbol="BTCUSDT",
+            base_interval_value="4h",
+            higher_interval_value="1d",
+        ),
+        strategy_signal_results=(row,),
+        trace_id="trace-23c",
+    )
+    coverage = aggregation.role_coverage_matrix["roles"]["support_resistance"]
+
+    assert coverage["covered"] is True
+    assert "key_levels" in coverage["provided"]
+    assert coverage["effective_coverage_count"] == 1
 
 
 def test_run_strategy_signals_persists_23c_result() -> None:

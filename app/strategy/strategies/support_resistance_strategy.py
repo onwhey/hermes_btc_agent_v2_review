@@ -17,6 +17,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Iterable, Mapping
 
 from app.strategy.base import BaseStrategy
+from app.strategy.common.constants import MAX_COMMON_PAYLOAD_BYTES, MAX_STRATEGY_PAYLOAD_BYTES
+from app.strategy.common.payload_tools import payload_size_bytes
 from app.strategy.common.result_contract import (
     StrategyCommonResult,
     StrategyEvidenceItem,
@@ -27,6 +29,14 @@ from app.strategy.types import StrategyEvaluationInput, StrategySignalStatus
 
 ROLE_FLIP_STATUSES = frozenset({"none", "resistance_to_support", "support_to_resistance", "unconfirmed"})
 ZONE_QUALITIES = frozenset({"clear", "weak", "wide", "narrow", "noisy", "outlier", "insufficient_data", "unknown"})
+PRIVATE_PAYLOAD_TARGET_BYTES = MAX_STRATEGY_PAYLOAD_BYTES - 1024
+COMMON_KEY_LEVEL_LIMIT = 16
+PRIVATE_SELECTED_LEVEL_LIMIT = 16
+PRIVATE_CLUSTER_SUMMARY_LIMIT = 12
+PRIVATE_SCORING_SUMMARY_LIMIT = 12
+PRIVATE_RAW_POINT_LIMIT = 12
+PRIVATE_OUTLIER_LIMIT = 8
+PRIVATE_ROLE_FLIP_LIMIT = 8
 
 
 @dataclass(frozen=True)
@@ -145,13 +155,18 @@ class SupportResistanceStrategy(BaseStrategy):
             _score_cluster(index, cluster, current_price=latest_close, strategy=self)
             for index, cluster in enumerate(_cluster_points(points, current_price=latest_close, width_pct=self.cluster_width_pct), start=1)
         )
-        selected = _select_key_levels(zones, current_price=latest_close, strategy=self)
+        selected = _select_key_levels(zones, current_price=latest_close, strategy=self)[:COMMON_KEY_LEVEL_LIMIT]
         key_levels = tuple(_level_to_common_payload(item, index) for index, item in enumerate(selected, start=1))
+        key_levels = _limit_common_key_levels_for_size(key_levels)
         if not key_levels:
             return self._insufficient_data_result(input_data, len(base_rows), len(higher_rows))
 
+        private_payload = _private_payload(points, zones, selected, strategy=self)
+        public_summary = _public_level_summary(key_levels, current_price=latest_close)
         confidence = max((zone.confidence_score for _, zone in selected), default=Decimal("0"))
         reason_text = "已识别支撑、压力、区间边界和历史参考区域；这些区域只是价格地图，不是交易建议。"
+        if private_payload.get("truncation_summary", {}).get("payload_trimmed"):
+            reason_text += " 支撑压力候选数量较多，已仅保留关键摘要，完整中间调试信息未写入策略结果。"
         common_result = StrategyCommonResult(
             market_bias="not_applicable",
             risk_level="not_applicable",
@@ -160,6 +175,14 @@ class SupportResistanceStrategy(BaseStrategy):
             reason_codes=("support_resistance_zones_identified", "key_levels_clustered"),
             reason_text=reason_text,
             key_levels=key_levels,
+            support_zones=public_summary["support_zones"],
+            resistance_zones=public_summary["resistance_zones"],
+            nearest_support=public_summary["nearest_support"],
+            nearest_resistance=public_summary["nearest_resistance"],
+            current_price=public_summary["current_price"],
+            level_count=public_summary["level_count"],
+            support_count=public_summary["support_count"],
+            resistance_count=public_summary["resistance_count"],
             evidence_items=(
                 StrategyEvidenceItem(
                     evidence_type="support_resistance_price_map",
@@ -186,7 +209,7 @@ class SupportResistanceStrategy(BaseStrategy):
             strategy_status=StrategySignalStatus.SUCCESS.value,
             common_result=common_result,
             strategy_model_material_json=_model_material(key_levels),
-            strategy_payload_json=_private_payload(points, zones, selected, strategy=self),
+            strategy_payload_json=private_payload,
             trace_id=input_data.trace_id,
         )
 
@@ -451,35 +474,202 @@ def _private_payload(
     *,
     strategy: SupportResistanceStrategy,
 ) -> Mapping[str, Any]:
-    return {
-        "raw_swing_points": [_point_json(point) for point in sorted(points, key=lambda item: item.index, reverse=True)[:80]],
-        "merged_level_clusters": [_zone_json(zone) for zone in sorted(zones, key=lambda item: item.strength_score, reverse=True)[:40]],
-        "cluster_scoring_details": [_scoring_json(zone) for zone in sorted(zones, key=lambda item: item.strength_score, reverse=True)[:40]],
+    sorted_zones = tuple(sorted(zones, key=lambda item: item.strength_score, reverse=True))
+    selected_level_details = tuple(
+        _selected_level_private_json(group, zone)
+        for group, zone in selected[:PRIVATE_SELECTED_LEVEL_LIMIT]
+    )
+    retained_points = sorted(points, key=lambda item: (item.index, item.timeframe), reverse=True)[:PRIVATE_RAW_POINT_LIMIT]
+    retained_clusters = sorted_zones[:PRIVATE_CLUSTER_SUMMARY_LIMIT]
+    retained_scoring = sorted_zones[:PRIVATE_SCORING_SUMMARY_LIMIT]
+    retained_role_flips = tuple(zone for zone in sorted_zones if zone.role_flip_status != "none")[:PRIVATE_ROLE_FLIP_LIMIT]
+    retained_outliers = tuple(zone for zone in sorted_zones if zone.zone_quality == "outlier")[:PRIVATE_OUTLIER_LIMIT]
+    payload: dict[str, Any] = {
+        "selected_key_levels": list(selected_level_details),
+        "selected_support_levels": [
+            item
+            for item in selected_level_details
+            if item["level_group"] in {"nearest_support", "major_support", "range_lower_boundary"}
+        ],
+        "selected_resistance_levels": [
+            item
+            for item in selected_level_details
+            if item["level_group"] in {"nearest_resistance", "major_resistance", "range_upper_boundary"}
+        ],
+        "cluster_summary": [_zone_json(zone) for zone in retained_clusters],
+        "scoring_summary": [_scoring_json(zone) for zone in retained_scoring],
+        # Backward-compatible private keys are kept as compact summaries only.
+        "raw_swing_points": [_point_json(point) for point in retained_points],
+        "merged_level_clusters": [_zone_json(zone) for zone in retained_clusters],
+        "cluster_scoring_details": [_scoring_json(zone) for zone in retained_scoring],
         "reaction_strength_details": [
             {"cluster_id": zone.cluster_id, "reaction_strength": _decimal_text(zone.reaction_strength)}
-            for zone in zones[:40]
+            for zone in retained_scoring
         ],
         "recency_score_details": [
             {"cluster_id": zone.cluster_id, "recency_score": _decimal_text(zone.recency_score)}
-            for zone in zones[:40]
+            for zone in retained_scoring
         ],
-        "role_flip_detection_details": [
-            {
-                "cluster_id": zone.cluster_id,
-                "role_flip_status": zone.role_flip_status,
-                "source_point_types": sorted({point.point_type for point in zone.source_points}),
-            }
-            for zone in zones
-            if zone.role_flip_status != "none"
-        ][:20],
+        "role_flip_detection_details": [_role_flip_detail_json(zone) for zone in retained_role_flips],
         "zone_width_config": _zone_width_config(strategy),
         "calculation_params": _calculation_params(strategy),
-        "excluded_outliers": [_zone_json(zone) for zone in zones if zone.zone_quality == "outlier"][:20],
+        "excluded_outliers": [_zone_json(zone) for zone in retained_outliers],
         "selected_level_groups": [
             {"level_group": group, "cluster_id": zone.cluster_id}
             for group, zone in selected
-        ],
+        ][:PRIVATE_SELECTED_LEVEL_LIMIT],
+        "truncation_summary": {
+            "payload_trimmed": _is_payload_summary_trimmed(points, zones, selected),
+            "message": "支撑压力策略仅保存关键摘要；完整中间候选、逐K线调试和全量聚类细节不写入策略结果。",
+            "raw_swing_points_total": len(points),
+            "raw_swing_points_retained": len(retained_points),
+            "merged_level_clusters_total": len(zones),
+            "merged_level_clusters_retained": len(retained_clusters),
+            "selected_key_levels_total": len(selected),
+            "selected_key_levels_retained": len(selected_level_details),
+            "excluded_outliers_total": sum(1 for zone in zones if zone.zone_quality == "outlier"),
+            "excluded_outliers_retained": len(retained_outliers),
+        },
     }
+    return _trim_payload_for_size(payload)
+
+
+def _public_level_summary(
+    key_levels: tuple[Mapping[str, Any], ...],
+    *,
+    current_price: Decimal,
+) -> Mapping[str, Any]:
+    supports = tuple(item for item in key_levels if _is_public_support_level(item))
+    resistances = tuple(item for item in key_levels if _is_public_resistance_level(item))
+    nearest_support = next((item for item in key_levels if item.get("level_group") == "nearest_support"), None)
+    nearest_resistance = next((item for item in key_levels if item.get("level_group") == "nearest_resistance"), None)
+    return {
+        "support_levels": None,
+        "support_zones": supports,
+        "resistance_levels": None,
+        "resistance_zones": resistances,
+        "nearest_support": nearest_support,
+        "nearest_resistance": nearest_resistance,
+        "current_price": _price_text(current_price),
+        "level_count": len(key_levels),
+        "support_count": len(supports),
+        "resistance_count": len(resistances),
+    }
+
+
+def _limit_common_key_levels_for_size(
+    key_levels: tuple[Mapping[str, Any], ...],
+) -> tuple[Mapping[str, Any], ...]:
+    retained = tuple(key_levels)
+    while len(retained) > 8 and payload_size_bytes({"key_levels": list(retained)}) > MAX_COMMON_PAYLOAD_BYTES - 4096:
+        retained = retained[:-1]
+    return retained
+
+
+def _trim_payload_for_size(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    trimmed = dict(payload)
+    if payload_size_bytes(trimmed) <= PRIVATE_PAYLOAD_TARGET_BYTES:
+        return trimmed
+    truncation = dict(trimmed.get("truncation_summary") or {})
+    truncation["payload_trimmed"] = True
+    truncation["size_guard_applied"] = True
+    truncation["message"] = "支撑压力候选数量较多，已二次压缩私有摘要以避免超过策略结果大小限制。"
+    trimmed["truncation_summary"] = truncation
+    for field_name, limit in (
+        ("raw_swing_points", 6),
+        ("merged_level_clusters", 8),
+        ("cluster_summary", 8),
+        ("cluster_scoring_details", 8),
+        ("scoring_summary", 8),
+        ("reaction_strength_details", 8),
+        ("recency_score_details", 8),
+        ("role_flip_detection_details", 5),
+        ("excluded_outliers", 5),
+        ("selected_level_groups", 12),
+        ("selected_key_levels", 12),
+        ("selected_support_levels", 5),
+        ("selected_resistance_levels", 5),
+    ):
+        value = trimmed.get(field_name)
+        if isinstance(value, list) and len(value) > limit:
+            trimmed[field_name] = value[:limit]
+    if payload_size_bytes(trimmed) <= MAX_STRATEGY_PAYLOAD_BYTES:
+        return trimmed
+    for optional_field in ("reaction_strength_details", "recency_score_details"):
+        value = trimmed.get(optional_field)
+        if isinstance(value, list) and len(value) > 3:
+            trimmed[optional_field] = value[:3]
+    if payload_size_bytes(trimmed) <= MAX_STRATEGY_PAYLOAD_BYTES:
+        return trimmed
+    trimmed["omitted_private_debug_fields"] = [
+        "all_candidates",
+        "all_clusters_full_detail",
+        "raw_pivot_points_full_list",
+        "per_kline_debug",
+    ]
+    for field_name, limit in (
+        ("raw_swing_points", 2),
+        ("merged_level_clusters", 4),
+        ("cluster_summary", 4),
+        ("cluster_scoring_details", 4),
+        ("scoring_summary", 4),
+        ("selected_level_groups", 6),
+        ("selected_key_levels", 6),
+        ("selected_support_levels", 3),
+        ("selected_resistance_levels", 3),
+        ("role_flip_detection_details", 2),
+        ("excluded_outliers", 2),
+    ):
+        value = trimmed.get(field_name)
+        if isinstance(value, list) and len(value) > limit:
+            trimmed[field_name] = value[:limit]
+    if payload_size_bytes(trimmed) <= MAX_STRATEGY_PAYLOAD_BYTES:
+        return trimmed
+    trimmed["reaction_strength_details"] = []
+    trimmed["recency_score_details"] = []
+    trimmed["role_flip_detection_details"] = []
+    trimmed["excluded_outliers"] = []
+    return trimmed
+
+
+def _selected_level_private_json(group: str, zone: LevelZone) -> Mapping[str, Any]:
+    payload = dict(_zone_json(zone))
+    payload["level_group"] = group
+    payload["source_point_count"] = len(zone.source_points)
+    payload["dominant_timeframe"] = _dominant_timeframe(zone)
+    return payload
+
+
+def _role_flip_detail_json(zone: LevelZone) -> Mapping[str, Any]:
+    return {
+        "cluster_id": zone.cluster_id,
+        "role_flip_status": zone.role_flip_status,
+        "source_point_types": sorted({point.point_type for point in zone.source_points}),
+    }
+
+
+def _is_payload_summary_trimmed(
+    points: tuple[PricePoint, ...],
+    zones: tuple[LevelZone, ...],
+    selected: tuple[tuple[str, LevelZone], ...],
+) -> bool:
+    return (
+        len(points) > PRIVATE_RAW_POINT_LIMIT
+        or len(zones) > PRIVATE_CLUSTER_SUMMARY_LIMIT
+        or len(selected) > PRIVATE_SELECTED_LEVEL_LIMIT
+    )
+
+
+def _is_public_support_level(item: Mapping[str, Any]) -> bool:
+    return item.get("level_group") in {"nearest_support", "major_support", "range_lower_boundary"} or item.get(
+        "level_type"
+    ) in {"support", "invalidation_reference"}
+
+
+def _is_public_resistance_level(item: Mapping[str, Any]) -> bool:
+    return item.get("level_group") in {"nearest_resistance", "major_resistance", "range_upper_boundary"} or item.get(
+        "level_type"
+    ) in {"resistance", "target_observation"}
 
 
 def _model_material(key_levels: tuple[Mapping[str, Any], ...]) -> Mapping[str, Any]:
