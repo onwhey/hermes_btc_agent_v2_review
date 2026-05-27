@@ -286,3 +286,31 @@ material_json.strategy_evidence.warning = 23F aggregation not found; material pa
 - 不请求 Binance。
 - 不读取账户或持仓。
 - 不实现自动交易。
+
+## 11. material schema version
+
+24B 将 `MATERIAL_SCHEMA_VERSION` 升级为：
+
+```text
+material_schema_v2
+```
+
+原因：
+
+```text
+24B 在 material_json 中新增 strategy_evidence 结构。
+旧 material_schema_v1 material pack 不包含该结构。
+如果继续使用 v1，18 的幂等检查会把旧包误判为当前版本已存在，从而跳过 v2 material pack 生成。
+```
+
+幂等键仍然包含：
+
+```text
+strategy_signal_run_id
+aggregation_version
+material_schema_version
+indicator_version
+candidate_scenario_version
+```
+
+因此已有 `material_schema_v1` 成功记录不会阻止生成 `material_schema_v2` material pack；同一个 run 已有 `material_schema_v2` 成功记录时，仍会保持 skipped / already_exists 幂等行为。

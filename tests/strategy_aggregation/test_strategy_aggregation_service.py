@@ -15,6 +15,7 @@ from app.strategy.aggregation.service import StrategyAggregationService
 from app.strategy.aggregation.types import (
     AnalysisHypothesisDirection,
     ConflictLevel,
+    MATERIAL_SCHEMA_VERSION,
     RiskGateStatus,
     StrategyAggregationRequest,
     StrategyAggregationStatus,
@@ -65,6 +66,15 @@ class FakeAggregationRepository:
             candidate = self.existing_after_unique_conflict
         statuses = kwargs.get("statuses")
         if candidate is not None and statuses is not None and getattr(candidate, "status", None) not in statuses:
+            return None
+        expected_material_schema_version = kwargs.get("material_schema_version")
+        candidate_material_schema_version = getattr(candidate, "material_schema_version", None)
+        if (
+            candidate is not None
+            and candidate_material_schema_version is not None
+            and expected_material_schema_version is not None
+            and candidate_material_schema_version != expected_material_schema_version
+        ):
             return None
         return candidate
 
@@ -264,6 +274,10 @@ def test_success_and_partial_strategy_signal_runs_can_project_long_hypothesis() 
     assert result.effective_strategy_count == 2
 
 
+def test_material_schema_version_is_v2_after_strategy_evidence_shape_change() -> None:
+    assert MATERIAL_SCHEMA_VERSION == "material_schema_v2"
+
+
 def test_blocked_and_failed_strategy_signal_runs_are_not_allowed() -> None:
     for status in ("blocked", "failed"):
         repo = FakeAggregationRepository(strategy_run=strategy_run(status=status))
@@ -353,6 +367,7 @@ def test_confirm_write_persists_aggregation_and_material_pack_with_required_sect
     assert len(repo.aggregation_rows) == 1
     assert len(repo.material_rows) == 1
     aggregation = repo.aggregation_rows[0]
+    assert aggregation.material_schema_version == "material_schema_v2"
     assert aggregation.analysis_hypothesis_direction == "long"
     assert aggregation.analysis_hypothesis_semantics == "analysis_hypothesis_only"
     assert aggregation.direction_projection_source == "fixture_or_existing_signal_projection"
@@ -364,6 +379,8 @@ def test_confirm_write_persists_aggregation_and_material_pack_with_required_sect
     assert aggregation.promotion_requires_future_strategy_and_llm_stage is True
     assert not hasattr(aggregation, "candidate_direction")
     material = repo.material_rows[0].material_json
+    assert repo.material_rows[0].material_schema_version == "material_schema_v2"
+    assert material["material_schema_version"] == "material_schema_v2"
     assert material["swing"]["recent_swing_highs"]
     assert material["swing"]["recent_swing_lows"]
     assert material["volatility"]["atr_14"] is not None
@@ -416,6 +433,8 @@ def test_confirm_write_material_pack_prefers_23f_strategy_evidence() -> None:
     service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
 
     material = repo.material_rows[0].material_json
+    assert repo.material_rows[0].material_schema_version == "material_schema_v2"
+    assert material["material_schema_version"] == "material_schema_v2"
     strategy_evidence = material["strategy_evidence"]
     assert strategy_evidence["source"] == "strategy_evidence_aggregation_result"
     assert strategy_evidence["aggregation_id"] == "SEA-stage18"
@@ -513,6 +532,7 @@ def test_same_strategy_signal_run_version_is_skipped_when_existing() -> None:
         aggregation_run_id="SAR-existing",
         snapshot_id="MCS-stage18",
         status="success",
+        material_schema_version=MATERIAL_SCHEMA_VERSION,
         analysis_hypothesis_direction="long",
         risk_level="low",
         risk_gate_status="pass",
@@ -532,6 +552,69 @@ def test_same_strategy_signal_run_version_is_skipped_when_existing() -> None:
     assert result.aggregation_run_id == "SAR-existing"
     assert repo.result_calls == 0
     assert result.details["skip_reason"] == "already_exists"
+
+
+def test_existing_v1_material_pack_does_not_skip_v2_generation() -> None:
+    existing_v1 = SimpleNamespace(
+        aggregation_run_id="SAR-existing-v1",
+        snapshot_id="MCS-stage18",
+        status="success",
+        material_schema_version="material_schema_v1",
+        analysis_hypothesis_direction="long",
+        risk_level="low",
+        risk_gate_status="pass",
+        conflict_level="low",
+        input_strategy_count=2,
+        input_success_count=2,
+        input_failed_count=0,
+        input_invalid_count=0,
+        input_not_implemented_count=0,
+        effective_strategy_count=2,
+    )
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.80"),),
+        restored_snapshot=restored_snapshot(),
+        existing=existing_v1,
+    )
+
+    result = service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+
+    assert result.status == StrategyAggregationStatus.SUCCESS
+    assert result.aggregation_run_id != "SAR-existing-v1"
+    assert len(repo.aggregation_rows) == 1
+    assert len(repo.material_rows) == 1
+    assert repo.aggregation_rows[0].material_schema_version == MATERIAL_SCHEMA_VERSION
+    assert repo.material_rows[0].material_schema_version == MATERIAL_SCHEMA_VERSION
+    assert repo.material_rows[0].material_json["strategy_evidence"]["source"] == "legacy_strategy_results"
+
+
+def test_existing_v2_material_pack_is_idempotently_skipped() -> None:
+    existing_v2 = SimpleNamespace(
+        aggregation_run_id="SAR-existing-v2",
+        snapshot_id="MCS-stage18",
+        status="success",
+        material_schema_version=MATERIAL_SCHEMA_VERSION,
+        analysis_hypothesis_direction="long",
+        risk_level="low",
+        risk_gate_status="pass",
+        conflict_level="low",
+        input_strategy_count=2,
+        input_success_count=2,
+        input_failed_count=0,
+        input_invalid_count=0,
+        input_not_implemented_count=0,
+        effective_strategy_count=2,
+    )
+    repo = FakeAggregationRepository(strategy_run=strategy_run(), existing=existing_v2)
+
+    result = service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+
+    assert result.status == StrategyAggregationStatus.SKIPPED
+    assert result.aggregation_run_id == "SAR-existing-v2"
+    assert repo.result_calls == 0
+    assert repo.aggregation_rows == []
+    assert repo.material_rows == []
 
 
 def test_blocked_and_failed_existing_attempts_do_not_lock_later_success_rerun() -> None:

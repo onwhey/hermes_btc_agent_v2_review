@@ -26,6 +26,7 @@ from app.strategy.aggregation.types import (
     AnalysisHypothesisConfidence,
     AnalysisHypothesisDirection,
     ConflictLevel,
+    MATERIAL_SCHEMA_VERSION,
     RiskGateStatus,
     StrategyVoteSummary,
 )
@@ -807,6 +808,8 @@ def test_stage18_material_pack_uses_23f_aggregation_or_marks_legacy_source() -> 
     )
 
     bridge = with_evidence.material_json["strategy_evidence"]
+    assert MATERIAL_SCHEMA_VERSION == "material_schema_v2"
+    assert with_evidence.material_json["material_schema_version"] == "material_schema_v2"
     assert bridge["source"] == "strategy_evidence_aggregation_result"
     assert bridge["aggregation_id"] == "SEA-existing"
     assert bridge["strategy_signal_run_id"] == "SSR-23F"
@@ -823,6 +826,7 @@ def test_stage18_material_pack_uses_23f_aggregation_or_marks_legacy_source() -> 
     assert bridge["model_review_focus"] == {"review_points": ["check evidence"]}
 
     legacy = without_evidence.material_json["strategy_evidence"]
+    assert without_evidence.material_json["material_schema_version"] == "material_schema_v2"
     assert legacy["source"] == "legacy_strategy_results"
     assert legacy["aggregation_id"] is None
     assert legacy["strategy_signal_run_id"] == "SSR-23F"

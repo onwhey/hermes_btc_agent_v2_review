@@ -28,7 +28,9 @@ from app.market_data.kline_constants import (
 )
 
 AGGREGATION_VERSION = "aggregation_v1"
-MATERIAL_SCHEMA_VERSION = "material_schema_v1"
+# 24B adds `material_json.strategy_evidence`; bumping the material schema
+# prevents old v1 packs from satisfying idempotency for the new evidence shape.
+MATERIAL_SCHEMA_VERSION = "material_schema_v2"
 INDICATOR_VERSION = "indicator_v1"
 CANDIDATE_SCENARIO_VERSION = "candidate_scenario_v1"
 
