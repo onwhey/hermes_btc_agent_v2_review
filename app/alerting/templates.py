@@ -42,6 +42,7 @@ TEMPLATE_TITLES: Mapping[AlertType, str] = {
     AlertType.MANUAL_BACKFILL_NOTICE: "手动补 K 已安全阻断",
     AlertType.STRATEGY_SIGNAL_SCHEDULER: "策略信号调度提醒",
     AlertType.STRATEGY_AGGREGATION: "策略聚合提醒",
+    AlertType.STRATEGY_EVIDENCE_AGGREGATION_FAILED: "BTC 策略证据聚合失败",
     AlertType.MODEL_ANALYSIS: "BTC 大模型审查候选结果",
     AlertType.STRATEGY_ADVICE: "BTC 4h 策略建议通知",
     AlertType.MANUAL_EXECUTION_RECEIPT: "人工执行结算回执",

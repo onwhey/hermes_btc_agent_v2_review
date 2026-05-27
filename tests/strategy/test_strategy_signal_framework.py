@@ -12,10 +12,14 @@ from typing import Any
 import pytest
 
 import app.strategy.input_builder as input_builder_module
+import app.strategy.auto_evidence_aggregation as auto_evidence_module
 import app.strategy.result_repository as result_repository_module
 import app.strategy.runner as runner_module
 import app.strategy.signal_service as signal_service_module
 import app.strategy.snapshot_resolver as snapshot_resolver_module
+from app.alerting.service import format_alert_message
+from app.alerting.types import AlertSendResult, AlertSendStatus, AlertType
+from app.core.config import AppSettings, load_settings
 from app.market_context.snapshot_types import MarketContextSnapshotResult, MarketContextSnapshotStatus
 from app.strategy.base import BaseStrategy
 from app.strategy.common.result_adapter import adapt_strategy_result_to_signal
@@ -25,6 +29,13 @@ from app.strategy.input_builder import StrategyInputBuilder
 from app.strategy.registry import StrategyRegistry
 from app.strategy.result_repository import StrategySignalResultRepository
 from app.strategy.runner import StrategyRunner
+from app.strategy.auto_evidence_aggregation import StrategyEvidenceAggregationAutoHook
+from app.strategy.aggregation.evidence_types import (
+    CandidateBias,
+    DecisionReadiness,
+    EvidenceAggregationRunResult,
+    EvidenceAggregationStatus,
+)
 from app.strategy.signal_service import StrategySignalService
 from app.strategy.snapshot_resolver import SnapshotResolver
 from app.strategy.strategies.gann_placeholder_strategy import GannPlaceholderStrategy
@@ -230,6 +241,63 @@ class FakeRegistry:
 
     def load_enabled_strategies(self) -> tuple[BaseStrategy, ...]:
         return self.strategies
+
+
+class FakeEvidenceAggregationService:
+    def __init__(
+        self,
+        result: EvidenceAggregationRunResult | None = None,
+        *,
+        fail_message: str | None = None,
+    ) -> None:
+        self.result = result or evidence_aggregation_result(database_action="created")
+        self.fail_message = fail_message
+        self.calls: list[dict[str, Any]] = []
+
+    def run_strategy_evidence_aggregation(self, db_session: Any, *, request: Any) -> EvidenceAggregationRunResult:
+        self.calls.append({"db_session": db_session, "request": request})
+        if self.fail_message:
+            raise RuntimeError(self.fail_message)
+        return self.result
+
+
+class FakeAutoAlertSender:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, event: Any, **kwargs: Any) -> AlertSendResult:
+        self.calls.append({"event": event, "kwargs": kwargs})
+        return AlertSendResult(
+            status=AlertSendStatus.SUBMITTED_TO_HERMES,
+            message="submitted",
+            attempted_real_send=bool(kwargs.get("send_real_alert")),
+            submitted_at_utc=datetime(2026, 5, 16, 8, 12, tzinfo=timezone.utc),
+        )
+
+
+def evidence_aggregation_result(
+    *,
+    status: EvidenceAggregationStatus = EvidenceAggregationStatus.SUCCESS,
+    database_written: bool = True,
+    database_action: str = "created",
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> EvidenceAggregationRunResult:
+    return EvidenceAggregationRunResult(
+        status=status,
+        exit_code=0 if status == EvidenceAggregationStatus.SUCCESS else 4,
+        aggregation_id="SEA-test",
+        strategy_signal_run_id="SSR-test",
+        trace_id="trace-test",
+        database_written=database_written,
+        database_action=database_action,
+        candidate_bias=CandidateBias.LONG,
+        candidate_confidence=Decimal("0.8000"),
+        decision_readiness=DecisionReadiness.READY_FOR_MODEL_REVIEW,
+        message="23F done" if database_written else "23F failed",
+        error_code=error_code,
+        error_message=error_message,
+    )
 
 
 def kline_row(index: int, *, interval_value: str = "4h") -> Any:
@@ -540,6 +608,17 @@ def test_strategy_registry_rejects_non_base_strategy(tmp_path: Path) -> None:
         registry.load_enabled_strategies()
 
 
+def test_24a_23f_is_not_registered_as_normal_strategy() -> None:
+    import app.strategy.registry as registry_module
+
+    default_classes = registry_module._default_strategy_classes()  # type: ignore[attr-defined]
+    registry_config = Path("configs/strategies/strategy_registry.yaml").read_text(encoding="utf-8")
+
+    assert "strategy_evidence_aggregation" not in default_classes
+    assert "evidence_aggregation" not in registry_config
+    assert "StrategyEvidenceAggregationService" not in inspect.getsource(registry_module)
+
+
 def test_strategy_runner_isolates_one_strategy_failure() -> None:
     runner = StrategyRunner(registry=FakeRegistry((PassingStrategy(), FailingStrategy(), PassingStrategy())))
 
@@ -698,6 +777,213 @@ def test_signal_service_confirm_write_persists_run_and_independent_results() -> 
         assert json.loads(row.metrics_json) is not None
         assert "open_position" not in row.metrics_json
         assert row.snapshot_id == "MCS-BTCUSDT-4H-1D-created"
+
+
+def test_24a_config_switch_defaults_false_and_can_be_enabled() -> None:
+    default_settings = load_settings(env_file=None, environ={})
+    enabled_settings = load_settings(
+        env_file=None,
+        environ={"STRATEGY_EVIDENCE_AGGREGATION_ENABLED": "true"},
+    )
+
+    assert default_settings.strategy_evidence_aggregation_enabled is False
+    assert enabled_settings.strategy_evidence_aggregation_enabled is True
+
+
+def test_24a_switch_false_does_not_auto_call_23f_after_strategy_write() -> None:
+    session = FakeSession()
+    evidence_service = FakeEvidenceAggregationService()
+    hook = StrategyEvidenceAggregationAutoHook(
+        settings=AppSettings(strategy_evidence_aggregation_enabled=False),
+        evidence_service=evidence_service,  # type: ignore[arg-type]
+    )
+    service = StrategySignalService(
+        input_builder=FakeInputBuilder(),
+        runner=FakeRunner(),
+        result_repository=StrategySignalResultRepository(),
+        auto_evidence_aggregation_hook=hook,
+    )
+
+    result = service.run_strategy_signals(
+        session,
+        request=StrategySignalRunRequest(
+            snapshot_id="MCS-BTCUSDT-4H-1D-created",
+            trigger_source="cli",
+            dry_run=False,
+            confirm_write=True,
+            trace_id="trace-test",
+        ),
+    )
+
+    assert evidence_service.calls == []
+    assert session.commits == 1
+    auto_details = result.details["strategy_evidence_aggregation"]
+    assert auto_details["status"] == "disabled"
+    assert auto_details["database_written"] is False
+
+
+def test_24a_switch_true_auto_calls_23f_after_confirm_write() -> None:
+    session = FakeSession()
+    evidence_service = FakeEvidenceAggregationService()
+    hook = StrategyEvidenceAggregationAutoHook(
+        settings=AppSettings(strategy_evidence_aggregation_enabled=True),
+        evidence_service=evidence_service,  # type: ignore[arg-type]
+    )
+    service = StrategySignalService(
+        input_builder=FakeInputBuilder(),
+        runner=FakeRunner(),
+        result_repository=StrategySignalResultRepository(),
+        auto_evidence_aggregation_hook=hook,
+    )
+
+    result = service.run_strategy_signals(
+        session,
+        request=StrategySignalRunRequest(
+            snapshot_id="MCS-BTCUSDT-4H-1D-created",
+            trigger_source="cli",
+            dry_run=False,
+            confirm_write=True,
+            trace_id="trace-test",
+        ),
+    )
+
+    assert len(evidence_service.calls) == 1
+    evidence_request = evidence_service.calls[0]["request"]
+    assert evidence_request.strategy_signal_run_id == result.run_id
+    assert evidence_request.confirm_write is True
+    assert evidence_request.dry_run is False
+    assert evidence_request.trigger_source == "cli"
+    assert evidence_request.trace_id == result.trace_id
+    auto_details = result.details["strategy_evidence_aggregation"]
+    assert auto_details["status"] == "success"
+    assert auto_details["database_written"] is True
+    assert auto_details["database_action"] == "created"
+
+
+def test_24a_dry_run_skips_23f_write_even_when_enabled() -> None:
+    session = FakeSession()
+    evidence_service = FakeEvidenceAggregationService()
+    hook = StrategyEvidenceAggregationAutoHook(
+        settings=AppSettings(strategy_evidence_aggregation_enabled=True),
+        evidence_service=evidence_service,  # type: ignore[arg-type]
+    )
+    service = StrategySignalService(
+        input_builder=FakeInputBuilder(),
+        runner=FakeRunner(),
+        result_repository=FailingResultRepository(),
+        auto_evidence_aggregation_hook=hook,
+    )
+
+    result = service.run_strategy_signals(
+        session,
+        request=StrategySignalRunRequest(
+            snapshot_id="MCS-BTCUSDT-4H-1D-created",
+            trigger_source="cli",
+            dry_run=True,
+            confirm_write=False,
+            trace_id="trace-test",
+        ),
+    )
+
+    assert evidence_service.calls == []
+    assert session.added == []
+    assert session.commits == 0
+    auto_details = result.details["strategy_evidence_aggregation"]
+    assert auto_details["status"] == "skipped"
+    assert auto_details["database_written"] is False
+
+
+def test_24a_23f_failure_does_not_rollback_strategy_rows_and_sends_fixed_alert() -> None:
+    session = FakeSession()
+    failed_23f = evidence_aggregation_result(
+        status=EvidenceAggregationStatus.FAILED,
+        database_written=False,
+        database_action="none",
+        error_code="test_23f_failed",
+        error_message="aggregation failed",
+    )
+    evidence_service = FakeEvidenceAggregationService(result=failed_23f)
+    alert_sender = FakeAutoAlertSender()
+    hook = StrategyEvidenceAggregationAutoHook(
+        settings=AppSettings(strategy_evidence_aggregation_enabled=True),
+        evidence_service=evidence_service,  # type: ignore[arg-type]
+        alert_sender=alert_sender,
+    )
+    service = StrategySignalService(
+        input_builder=FakeInputBuilder(),
+        runner=FakeRunner(),
+        result_repository=StrategySignalResultRepository(),
+        auto_evidence_aggregation_hook=hook,
+    )
+
+    result = service.run_strategy_signals(
+        session,
+        request=StrategySignalRunRequest(
+            snapshot_id="MCS-BTCUSDT-4H-1D-created",
+            trigger_source="cli",
+            dry_run=False,
+            confirm_write=True,
+            trace_id="trace-test",
+        ),
+    )
+
+    assert len(session.added) == 3
+    assert session.commits >= 2
+    assert session.rollbacks == 0
+    assert len(alert_sender.calls) == 1
+    event = alert_sender.calls[0]["event"]
+    kwargs = alert_sender.calls[0]["kwargs"]
+    assert event.alert_type == AlertType.STRATEGY_EVIDENCE_AGGREGATION_FAILED
+    assert kwargs["send_real_alert"] is True
+    assert event.details["strategy_signal_run_id"] == result.run_id
+    assert event.details["error_code"] == "test_23f_failed"
+    assert event.details["manual_rerun_available"] is True
+    assert result.run_id in event.details["manual_rerun_command"]
+    rendered = format_alert_message(event)
+    assert result.run_id in rendered
+    assert "manual_rerun_command" in rendered
+    assert "DeepSeek" not in rendered
+    auto_details = result.details["strategy_evidence_aggregation"]
+    assert auto_details["status"] == "failed"
+    assert auto_details["alert_type"] == AlertType.STRATEGY_EVIDENCE_AGGREGATION_FAILED.value
+    assert auto_details["alert_status"] == AlertSendStatus.SUBMITTED_TO_HERMES.value
+
+
+def test_24a_auto_hook_reuses_same_run_id_for_repeated_auto_calls() -> None:
+    session = FakeSession()
+    evidence_service = FakeEvidenceAggregationService(
+        result=evidence_aggregation_result(database_action="updated")
+    )
+    hook = StrategyEvidenceAggregationAutoHook(
+        settings=AppSettings(strategy_evidence_aggregation_enabled=True),
+        evidence_service=evidence_service,  # type: ignore[arg-type]
+    )
+    request = StrategySignalRunRequest(
+        snapshot_id="MCS-BTCUSDT-4H-1D-created",
+        trigger_source="cli",
+        dry_run=False,
+        confirm_write=True,
+        trace_id="trace-repeat",
+    )
+    persisted_result = StrategySignalRunResult(
+        status=StrategyRunStatus.SUCCESS,
+        exit_code=EXIT_SUCCESS,
+        run_id="SSR-repeat",
+        trace_id="trace-repeat",
+        snapshot_id="MCS-BTCUSDT-4H-1D-created",
+        message="persisted",
+        run_row_id=1,
+    )
+
+    first = hook.maybe_run_after_strategy_signal_persistence(session, request=request, result=persisted_result)
+    second = hook.maybe_run_after_strategy_signal_persistence(session, request=request, result=persisted_result)
+
+    assert [call["request"].strategy_signal_run_id for call in evidence_service.calls] == [
+        "SSR-repeat",
+        "SSR-repeat",
+    ]
+    assert first.details["strategy_evidence_aggregation"]["database_action"] == "updated"
+    assert second.details["strategy_evidence_aggregation"]["database_action"] == "updated"
 
 
 def test_signal_service_confirm_write_blocked_persists_only_run_audit_message() -> None:
@@ -935,4 +1221,13 @@ def test_strategy_modules_do_not_import_exchange_alerting_or_kline_write_apis() 
     assert "BinanceRestClient" not in source
     assert "DeepSeekClient" not in source
     assert "bulk_upsert" not in source
+    assert "/fapi/v1" not in source
+
+
+def test_24a_auto_hook_does_not_call_large_models_or_private_strategy_payloads() -> None:
+    source = inspect.getsource(auto_evidence_module)
+
+    assert "DeepSeekClient" not in source
+    assert "openai" not in source.lower()
+    assert "strategy_payload_json" not in source
     assert "/fapi/v1" not in source

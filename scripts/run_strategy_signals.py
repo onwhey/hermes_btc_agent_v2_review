@@ -18,7 +18,8 @@ when ensure-latest-snapshot has no reusable snapshot, the delegated resolver may
 call the stage-15 snapshot service to create a MarketContextSnapshot
 prerequisite.
 Redis impact: none.
-Hermes impact: none in stage 16.
+Hermes impact: delegated to the app service only for the stage-24A automatic
+23F failure alert. Dry-run never sends this alert.
 Formal Kline impact: this script is not allowed to modify `market_kline_4h` or
 `market_kline_1d`.
 Data repair/trading impact: no automatic repair, no manual field editing, no

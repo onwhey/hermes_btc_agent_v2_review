@@ -27,7 +27,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from app.market_data.kline_constants import TRIGGER_SOURCE_CLI
+from app.market_data.kline_constants import TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER
 from app.strategy.aggregation.evidence_aggregator import StrategyEvidenceAggregator
 from app.strategy.aggregation.evidence_config import (
     create_default_strategy_governance_provider,
@@ -48,6 +48,7 @@ from app.strategy.aggregation.evidence_types import (
 )
 
 ALLOWED_INPUT_RUN_STATUSES = {"success", "partial_success"}
+ALLOWED_EVIDENCE_AGGREGATION_TRIGGER_SOURCES = frozenset({TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER})
 
 
 class StrategyEvidenceAggregationService:
@@ -229,7 +230,7 @@ def _validate_request(
             message="strategy_signal_run_id is required.",
             error_code="strategy_signal_run_id_required",
         )
-    if request.trigger_source != TRIGGER_SOURCE_CLI:
+    if request.trigger_source not in ALLOWED_EVIDENCE_AGGREGATION_TRIGGER_SOURCES:
         return EvidenceAggregationRunResult(
             status=EvidenceAggregationStatus.BLOCKED,
             exit_code=EXIT_PARAMETER_ERROR,
@@ -238,7 +239,7 @@ def _validate_request(
             trace_id=trace_id,
             database_written=False,
             database_action="none",
-            message="Only trigger_source=cli is allowed for this manual 23F script.",
+            message="trigger_source supports only cli or scheduler for 23F aggregation.",
             error_code="trigger_source_not_allowed",
         )
     if request.dry_run == request.confirm_write:
@@ -376,6 +377,7 @@ def _rollback_if_possible(db_session: Any) -> None:
 
 
 __all__ = [
+    "ALLOWED_EVIDENCE_AGGREGATION_TRIGGER_SOURCES",
     "StrategyEvidenceAggregationService",
     "run_strategy_evidence_aggregation",
 ]

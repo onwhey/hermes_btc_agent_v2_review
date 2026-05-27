@@ -20,8 +20,10 @@ Scheduler stage-17 hook
     -> app/strategy/signal_service.py::run_strategy_signals
 
 This file does not request Binance, write formal Kline tables, write Redis,
-send Hermes, call DeepSeek or any large language model, read account/position
-state, generate final advice, connect scheduler jobs, or trade.
+call DeepSeek or any large language model, read account/position state, generate
+final advice, connect scheduler jobs, or trade. In stage 24A it may delegate a
+fixed-template Hermes failure alert to the automatic 23F post-step hook after
+strategy signal rows have already been committed.
 """
 
 from __future__ import annotations
@@ -33,6 +35,10 @@ from typing import Any
 
 from app.core.time_utils import now_utc
 from app.market_data.kline_constants import TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER
+from app.strategy.auto_evidence_aggregation import (
+    StrategyEvidenceAggregationAutoHook,
+    create_default_strategy_evidence_aggregation_auto_hook,
+)
 from app.strategy.input_builder import StrategyInputBuilder
 from app.strategy.result_repository import create_default_strategy_signal_result_repository
 from app.strategy.runner import StrategyRunner
@@ -79,11 +85,15 @@ class StrategySignalService:
         input_builder: StrategyInputBuilder | None = None,
         runner: StrategyRunner | None = None,
         result_repository: Any | None = None,
+        auto_evidence_aggregation_hook: StrategyEvidenceAggregationAutoHook | None = None,
     ) -> None:
         self._snapshot_resolver = snapshot_resolver or SnapshotResolver()
         self._input_builder = input_builder or StrategyInputBuilder()
         self._runner = runner or StrategyRunner()
         self._result_repository = result_repository or create_default_strategy_signal_result_repository()
+        self._auto_evidence_aggregation_hook = (
+            auto_evidence_aggregation_hook or create_default_strategy_evidence_aggregation_auto_hook()
+        )
 
     def run_strategy_signals(
         self,
@@ -101,7 +111,8 @@ class StrategySignalService:
         failed/blocked results.
         External service access: no direct external calls.
         Data impact: see class docstring. This method never writes formal
-        Kline tables or sends Hermes.
+        Kline tables. Hermes is only delegated for the 24A automatic 23F failure
+        alert after strategy signal persistence has already succeeded.
         """
 
         started_at_utc = now_utc()
@@ -290,7 +301,11 @@ class StrategySignalService:
         """Persist run/result rows only for confirm-write non-dry-run requests."""
 
         if request.dry_run or not request.confirm_write:
-            return result
+            return self._auto_evidence_aggregation_hook.maybe_run_after_strategy_signal_persistence(
+                db_session,
+                request=request,
+                result=result,
+            )
 
         finished_at_utc = now_utc()
         run_payload = StrategyRunPersistencePayload(
@@ -333,10 +348,15 @@ class StrategySignalService:
                 signal_payloads=signal_payloads,
             )
             _commit_if_possible(db_session)
-            return replace(
+            persisted_result = replace(
                 result,
                 run_row_id=getattr(run_row, "id", None),
                 message=f"{result.message} {_strategy_persistence_success_message(result)}",
+            )
+            return self._auto_evidence_aggregation_hook.maybe_run_after_strategy_signal_persistence(
+                db_session,
+                request=request,
+                result=persisted_result,
             )
         except Exception as exc:  # noqa: BLE001 - persistence errors become structured failures.
             _rollback_if_possible(db_session)

@@ -121,6 +121,7 @@ from app.core.constants import (
     DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_PARTIAL_SUCCESS,
     DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED,
     DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SUCCESS,
+    DEFAULT_STRATEGY_EVIDENCE_AGGREGATION_ENABLED,
     DEFAULT_STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED,
     DEFAULT_STRATEGY_ADVICE_SCHEDULER_ENABLED,
     DEFAULT_MANUAL_EXECUTION_FEE_RATE,
@@ -265,6 +266,7 @@ class AppSettings:
     strategy_aggregation_hermes_notify_blocked: bool = DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_BLOCKED
     strategy_aggregation_hermes_notify_failed: bool = DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_FAILED
     strategy_aggregation_hermes_notify_skipped: bool = DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED
+    strategy_evidence_aggregation_enabled: bool = DEFAULT_STRATEGY_EVIDENCE_AGGREGATION_ENABLED
     strategy_advice_scheduler_enabled: bool = DEFAULT_STRATEGY_ADVICE_SCHEDULER_ENABLED
     strategy_advice_notification_send_enabled: bool = DEFAULT_STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED
     manual_execution_fee_rate: str = DEFAULT_MANUAL_EXECUTION_FEE_RATE
@@ -1113,6 +1115,15 @@ def load_settings(
             ),
             "STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED",
             DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED,
+        ),
+        strategy_evidence_aggregation_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_EVIDENCE_AGGREGATION_ENABLED",
+                str(DEFAULT_STRATEGY_EVIDENCE_AGGREGATION_ENABLED).lower(),
+            ),
+            "STRATEGY_EVIDENCE_AGGREGATION_ENABLED",
+            DEFAULT_STRATEGY_EVIDENCE_AGGREGATION_ENABLED,
         ),
         strategy_advice_scheduler_enabled=_parse_optional_bool_config(
             _get_config_value(

@@ -279,6 +279,19 @@ def format_strategy_signal_run_result_lines(result: StrategySignalRunResult) -> 
         lines.append(f"blocked_reason={result.blocked_reason}")
     if result.error_message:
         lines.append(f"error_message={result.error_message}")
+    auto_aggregation = result.details.get("strategy_evidence_aggregation") if result.details else None
+    if isinstance(auto_aggregation, Mapping):
+        lines.append(f"strategy_evidence_aggregation_status={auto_aggregation.get('status', '')}")
+        lines.append(
+            "strategy_evidence_aggregation_database_written="
+            f"{str(bool(auto_aggregation.get('database_written', False))).lower()}"
+        )
+        if auto_aggregation.get("aggregation_id"):
+            lines.append(f"strategy_evidence_aggregation_id={auto_aggregation.get('aggregation_id')}")
+        if auto_aggregation.get("error_code"):
+            lines.append(f"strategy_evidence_aggregation_error_code={auto_aggregation.get('error_code')}")
+        if auto_aggregation.get("message"):
+            lines.append(f"strategy_evidence_aggregation_message={auto_aggregation.get('message')}")
     return lines
 
 
