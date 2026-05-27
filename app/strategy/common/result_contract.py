@@ -136,6 +136,15 @@ class StrategyCommonResult:
     tested_level_summary: Mapping[str, Any] | None = None
     volume_state: str | None = None
     volume_confirmation: str | None = None
+    risk_gate_decision: str | None = None
+    risk_scope: str | None = None
+    global_market_risk: str | None = None
+    candidate_risk: str | None = None
+    volatility_state: str | None = None
+    chase_risk: str | None = None
+    long_feasibility: str | None = None
+    short_feasibility: str | None = None
+    selected_risk_policy_profile: str | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         return _without_none(
@@ -160,6 +169,15 @@ class StrategyCommonResult:
                 "tested_level_summary": dict(self.tested_level_summary) if self.tested_level_summary else None,
                 "volume_state": self.volume_state,
                 "volume_confirmation": self.volume_confirmation,
+                "risk_gate_decision": self.risk_gate_decision,
+                "risk_scope": self.risk_scope,
+                "global_market_risk": self.global_market_risk,
+                "candidate_risk": self.candidate_risk,
+                "volatility_state": self.volatility_state,
+                "chase_risk": self.chase_risk,
+                "long_feasibility": self.long_feasibility,
+                "short_feasibility": self.short_feasibility,
+                "selected_risk_policy_profile": self.selected_risk_policy_profile,
             }
         )
 

@@ -1,0 +1,73 @@
+enabled: true
+strategy_name: volatility_risk_control_strategy
+strategy_version: "23E-1"
+strategy_role: risk_control
+provides:
+  - volatility_risk
+  - trade_permission_filter
+  - risk_gate_decision
+  - reward_risk_feasibility
+  - chase_risk
+  - stop_distance_reference
+  - market_state_aware_risk_policy
+requires:
+  - role=context, provides=primary_regime
+  - role=support_resistance, provides=key_levels
+  - role=filter, provides=trigger_state
+consumes:
+  - common_result.primary_regime
+  - common_result.regime_phase
+  - common_result.market_environment_context
+  - common_result.key_levels
+  - common_result.trigger_state
+  - common_result.filter_decision
+  - common_result.tested_level_summary
+  - common_result.volume_state
+  - common_result.volume_confirmation
+base_interval: 4h
+higher_interval: 1d
+lookback_bars:
+  base: 80
+  higher: 120
+minimum_required_bars:
+  base: 40
+  higher: 60
+atr:
+  period: 14
+thresholds:
+  high_atr_pct: "0.035"
+  extreme_atr_pct: "0.060"
+  high_range_expansion_ratio: "1.60"
+  extreme_range_expansion_ratio: "2.30"
+  high_chase_distance_pct: "0.020"
+  extreme_chase_distance_pct: "0.035"
+  min_rough_reward_risk_ratio: "1.50"
+  min_net_room_pct: "0.008"
+  fee_buffer_pct: "0.0004"
+  slippage_buffer_pct: "0.0010"
+risk_policy_mapping:
+  primary_regime.uptrend: trend_following_favorable
+  primary_regime.downtrend: trend_following_favorable
+  primary_regime.range: range_caution
+  primary_regime.volatile: volatile_defensive
+  primary_regime.mixed: countertrend_caution
+  regime_phase.pullback_in_uptrend: countertrend_caution
+  regime_phase.countertrend_rebound: countertrend_caution
+  regime_phase.range_mid_rotation: range_caution
+  default: default_conservative
+risk_policy_profiles:
+  default_conservative.default_decision: wait
+  default_conservative.unknown_context_decision: insufficient_context
+  default_conservative.max_chase_risk: low
+  trend_following_favorable.default_decision: allow_with_caution
+  trend_following_favorable.countertrend_action: block_current_candidate
+  trend_following_favorable.max_chase_risk: medium
+  trend_following_favorable.excessive_chase_action: wait
+  countertrend_caution.default_decision: wait
+  countertrend_caution.require_stronger_trigger: true
+  countertrend_caution.max_chase_risk: low
+  range_caution.default_decision: wait
+  range_caution.breakout_requires_volume: true
+  range_caution.middle_zone_action: wait
+  volatile_defensive.default_decision: wait
+  volatile_defensive.extreme_action: block_all_candidates

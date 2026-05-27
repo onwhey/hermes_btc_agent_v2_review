@@ -4,6 +4,7 @@ enabled_strategies:
   - short_term_range
   - support_resistance_strategy
   - breakout_pullback_trigger_strategy
+  - volatility_risk_control_strategy
   - volatility_risk
   - gann_placeholder
 

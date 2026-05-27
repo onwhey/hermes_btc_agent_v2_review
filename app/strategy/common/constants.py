@@ -113,6 +113,27 @@ ALLOWED_VOLUME_STATES = frozenset({"expanding", "contracting", "normal", "spike"
 ALLOWED_VOLUME_CONFIRMATIONS = frozenset(
     {"confirming", "weakening", "rejection_signal", "neutral", "insufficient", "unknown"}
 )
+ALLOWED_RISK_GATE_DECISIONS = frozenset(
+    {
+        "allow",
+        "allow_with_caution",
+        "wait",
+        "block_long_candidate",
+        "block_short_candidate",
+        "block_current_candidate",
+        "block_all_candidates",
+        "insufficient_context",
+        "unknown",
+    }
+)
+ALLOWED_RISK_SCOPES = frozenset({"long_only", "short_only", "current_candidate", "all_candidates", "none", "unknown"})
+ALLOWED_GLOBAL_MARKET_RISKS = frozenset({"normal", "elevated", "high", "extreme", "insufficient_data", "unknown"})
+ALLOWED_CANDIDATE_RISKS = frozenset({"low", "medium", "high", "extreme", "not_applicable", "unknown"})
+ALLOWED_VOLATILITY_STATES = frozenset(
+    {"low_volatility", "normal_volatility", "high_volatility", "extreme_volatility", "insufficient_data", "unknown"}
+)
+ALLOWED_CHASE_RISKS = frozenset({"low", "medium", "high", "extreme", "unknown"})
+ALLOWED_FEASIBILITIES = frozenset({"favorable", "acceptable", "poor", "invalid", "unknown", "insufficient_context"})
 
 # These words are blocked only inside strategy public payload values. Keeping
 # the list here lets the common layer reject execution-like wording while still
@@ -132,15 +153,22 @@ FORBIDDEN_PUBLIC_PAYLOAD_TOKENS = frozenset(
 __all__ = [
     "ALLOWED_FILTER_STATUSES",
     "ALLOWED_FILTER_DECISIONS",
+    "ALLOWED_CANDIDATE_RISKS",
+    "ALLOWED_CHASE_RISKS",
+    "ALLOWED_FEASIBILITIES",
+    "ALLOWED_GLOBAL_MARKET_RISKS",
     "ALLOWED_KEY_LEVEL_TYPES",
     "ALLOWED_MARKET_BIASES",
     "ALLOWED_RISK_LEVELS",
+    "ALLOWED_RISK_GATE_DECISIONS",
+    "ALLOWED_RISK_SCOPES",
     "ALLOWED_SCENARIO_TYPES",
     "ALLOWED_STRATEGY_ROLES",
     "ALLOWED_STRATEGY_STATUSES",
     "ALLOWED_TRIGGER_STATES",
     "ALLOWED_VOLUME_CONFIRMATIONS",
     "ALLOWED_VOLUME_STATES",
+    "ALLOWED_VOLATILITY_STATES",
     "FORBIDDEN_PUBLIC_PAYLOAD_TOKENS",
     "MAX_COMMON_PAYLOAD_BYTES",
     "MAX_STRATEGY_MODEL_MATERIAL_BYTES",

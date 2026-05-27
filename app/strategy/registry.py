@@ -19,6 +19,7 @@ from app.strategy.strategies.breakout_pullback_trigger_strategy import BreakoutP
 from app.strategy.strategies.short_term_range_strategy import ShortTermRangeStrategy
 from app.strategy.strategies.support_resistance_strategy import SupportResistanceStrategy
 from app.strategy.strategies.trend_structure_strategy import TrendStructureStrategy
+from app.strategy.strategies.volatility_risk_control_strategy import VolatilityRiskControlStrategy
 from app.strategy.strategies.volatility_risk_strategy import VolatilityRiskStrategy
 from app.strategy.types import StrategyConfigError
 
@@ -91,6 +92,7 @@ def _default_strategy_classes() -> dict[str, type[BaseStrategy]]:
         ShortTermRangeStrategy.strategy_name: ShortTermRangeStrategy,
         SupportResistanceStrategy.strategy_name: SupportResistanceStrategy,
         BreakoutPullbackTriggerStrategy.strategy_name: BreakoutPullbackTriggerStrategy,
+        VolatilityRiskControlStrategy.strategy_name: VolatilityRiskControlStrategy,
         VolatilityRiskStrategy.strategy_name: VolatilityRiskStrategy,
         GannPlaceholderStrategy.strategy_name: GannPlaceholderStrategy,
     }

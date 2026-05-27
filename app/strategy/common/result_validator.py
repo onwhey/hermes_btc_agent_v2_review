@@ -15,17 +15,24 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
 from app.strategy.common.constants import (
+    ALLOWED_CANDIDATE_RISKS,
+    ALLOWED_CHASE_RISKS,
+    ALLOWED_FEASIBILITIES,
     ALLOWED_FILTER_STATUSES,
     ALLOWED_FILTER_DECISIONS,
+    ALLOWED_GLOBAL_MARKET_RISKS,
     ALLOWED_KEY_LEVEL_TYPES,
     ALLOWED_MARKET_BIASES,
     ALLOWED_RISK_LEVELS,
+    ALLOWED_RISK_GATE_DECISIONS,
+    ALLOWED_RISK_SCOPES,
     ALLOWED_SCENARIO_TYPES,
     ALLOWED_STRATEGY_ROLES,
     ALLOWED_STRATEGY_STATUSES,
     ALLOWED_TRIGGER_STATES,
     ALLOWED_VOLUME_CONFIRMATIONS,
     ALLOWED_VOLUME_STATES,
+    ALLOWED_VOLATILITY_STATES,
     FORBIDDEN_PUBLIC_PAYLOAD_TOKENS,
     MAX_COMMON_PAYLOAD_BYTES,
     MAX_STRATEGY_MODEL_MATERIAL_BYTES,
@@ -207,6 +214,22 @@ def _validate_common_payload(
         issues.append(
             _issue("volume_confirmation_invalid", "common_result.volume_confirmation", "unsupported volume confirmation")
         )
+    if payload.get("risk_gate_decision") is not None and payload.get("risk_gate_decision") not in ALLOWED_RISK_GATE_DECISIONS:
+        issues.append(_issue("risk_gate_decision_invalid", "common_result.risk_gate_decision", "unsupported risk gate decision"))
+    if payload.get("risk_scope") is not None and payload.get("risk_scope") not in ALLOWED_RISK_SCOPES:
+        issues.append(_issue("risk_scope_invalid", "common_result.risk_scope", "unsupported risk scope"))
+    if payload.get("global_market_risk") is not None and payload.get("global_market_risk") not in ALLOWED_GLOBAL_MARKET_RISKS:
+        issues.append(_issue("global_market_risk_invalid", "common_result.global_market_risk", "unsupported global market risk"))
+    if payload.get("candidate_risk") is not None and payload.get("candidate_risk") not in ALLOWED_CANDIDATE_RISKS:
+        issues.append(_issue("candidate_risk_invalid", "common_result.candidate_risk", "unsupported candidate risk"))
+    if payload.get("volatility_state") is not None and payload.get("volatility_state") not in ALLOWED_VOLATILITY_STATES:
+        issues.append(_issue("volatility_state_invalid", "common_result.volatility_state", "unsupported volatility state"))
+    if payload.get("chase_risk") is not None and payload.get("chase_risk") not in ALLOWED_CHASE_RISKS:
+        issues.append(_issue("chase_risk_invalid", "common_result.chase_risk", "unsupported chase risk"))
+    if payload.get("long_feasibility") is not None and payload.get("long_feasibility") not in ALLOWED_FEASIBILITIES:
+        issues.append(_issue("long_feasibility_invalid", "common_result.long_feasibility", "unsupported long feasibility"))
+    if payload.get("short_feasibility") is not None and payload.get("short_feasibility") not in ALLOWED_FEASIBILITIES:
+        issues.append(_issue("short_feasibility_invalid", "common_result.short_feasibility", "unsupported short feasibility"))
 
 
 def _validate_role_rules(
