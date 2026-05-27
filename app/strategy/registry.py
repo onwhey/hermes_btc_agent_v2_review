@@ -15,6 +15,7 @@ from typing import Any, Mapping
 from app.strategy.base import BaseStrategy
 from app.strategy.strategies.gann_placeholder_strategy import GannPlaceholderStrategy
 from app.strategy.strategies.market_direction_regime_strategy import MarketDirectionRegimeStrategy
+from app.strategy.strategies.breakout_pullback_trigger_strategy import BreakoutPullbackTriggerStrategy
 from app.strategy.strategies.short_term_range_strategy import ShortTermRangeStrategy
 from app.strategy.strategies.support_resistance_strategy import SupportResistanceStrategy
 from app.strategy.strategies.trend_structure_strategy import TrendStructureStrategy
@@ -89,6 +90,7 @@ def _default_strategy_classes() -> dict[str, type[BaseStrategy]]:
         MarketDirectionRegimeStrategy.strategy_name: MarketDirectionRegimeStrategy,
         ShortTermRangeStrategy.strategy_name: ShortTermRangeStrategy,
         SupportResistanceStrategy.strategy_name: SupportResistanceStrategy,
+        BreakoutPullbackTriggerStrategy.strategy_name: BreakoutPullbackTriggerStrategy,
         VolatilityRiskStrategy.strategy_name: VolatilityRiskStrategy,
         GannPlaceholderStrategy.strategy_name: GannPlaceholderStrategy,
     }
@@ -132,6 +134,8 @@ def _read_simple_yaml(path: Path) -> dict[str, Any]:
 
     result: dict[str, Any] = {}
     active_key: str | None = None
+    active_list_item: dict[str, Any] | None = None
+    active_list_indent: int | None = None
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.split("#", 1)[0].rstrip()
         if not line.strip():
@@ -140,10 +144,21 @@ def _read_simple_yaml(path: Path) -> dict[str, Any]:
         stripped = line.strip()
         if indent == 0:
             active_key = _parse_top_level_line(path, raw_line, stripped, result)
+            active_list_item = None
+            active_list_indent = None
             continue
         if active_key is None:
             raise StrategyConfigError(f"nested config line without parent key in {path}: {raw_line}")
-        _parse_nested_line(path, raw_line, stripped, result, active_key)
+        active_list_item, active_list_indent = _parse_nested_line(
+            path,
+            raw_line,
+            stripped,
+            result,
+            active_key,
+            active_list_item=active_list_item,
+            active_list_indent=active_list_indent,
+            indent=indent,
+        )
     return result
 
 
@@ -175,15 +190,38 @@ def _parse_nested_line(
     stripped: str,
     result: dict[str, Any],
     active_key: str,
-) -> None:
+    *,
+    active_list_item: dict[str, Any] | None,
+    active_list_indent: int | None,
+    indent: int,
+) -> tuple[dict[str, Any] | None, int | None]:
     parent = result.setdefault(active_key, [])
     if stripped.startswith("- "):
         if not isinstance(parent, list):
             raise StrategyConfigError(f"list item under mapping in {path}: {raw_line}")
-        parent.append(_parse_scalar(stripped[2:].strip()))
-        return
+        item_text = stripped[2:].strip()
+        if ":" in item_text and not item_text.startswith(("'", '"')):
+            key, value = item_text.split(":", 1)
+            item = {key.strip(): _parse_scalar(value.strip()) if value.strip() else {}}
+            parent.append(item)
+            return item, indent
+        parent.append(_parse_scalar(item_text))
+        return None, None
     if ":" not in stripped:
         raise StrategyConfigError(f"invalid nested config line in {path}: {raw_line}")
+    if (
+        isinstance(parent, list)
+        and active_list_item is not None
+        and active_list_indent is not None
+        and indent > active_list_indent
+    ):
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            raise StrategyConfigError(f"empty nested config key in {path}")
+        active_list_item[key] = _parse_scalar(value) if value else {}
+        return active_list_item, active_list_indent
     if isinstance(parent, list):
         if parent:
             raise StrategyConfigError(f"cannot mix list and mapping values in {path}: {active_key}")
@@ -197,6 +235,7 @@ def _parse_nested_line(
     if not key:
         raise StrategyConfigError(f"empty nested config key in {path}")
     parent[key] = _parse_scalar(value) if value else {}
+    return None, None
 
 
 def _parse_scalar(value: str) -> Any:

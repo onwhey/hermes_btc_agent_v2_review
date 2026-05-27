@@ -16,12 +16,16 @@ from typing import Any, Mapping
 
 from app.strategy.common.constants import (
     ALLOWED_FILTER_STATUSES,
+    ALLOWED_FILTER_DECISIONS,
     ALLOWED_KEY_LEVEL_TYPES,
     ALLOWED_MARKET_BIASES,
     ALLOWED_RISK_LEVELS,
     ALLOWED_SCENARIO_TYPES,
     ALLOWED_STRATEGY_ROLES,
     ALLOWED_STRATEGY_STATUSES,
+    ALLOWED_TRIGGER_STATES,
+    ALLOWED_VOLUME_CONFIRMATIONS,
+    ALLOWED_VOLUME_STATES,
     FORBIDDEN_PUBLIC_PAYLOAD_TOKENS,
     MAX_COMMON_PAYLOAD_BYTES,
     MAX_STRATEGY_MODEL_MATERIAL_BYTES,
@@ -193,6 +197,16 @@ def _validate_common_payload(
     _validate_evidence_items(payload.get("evidence_items"), issues)
     if result.strategy_role == "filter" and payload.get("filter_status") not in ALLOWED_FILTER_STATUSES:
         issues.append(_issue("filter_status_invalid", "common_result.filter_status", "unsupported filter status"))
+    if payload.get("filter_decision") is not None and payload.get("filter_decision") not in ALLOWED_FILTER_DECISIONS:
+        issues.append(_issue("filter_decision_invalid", "common_result.filter_decision", "unsupported filter decision"))
+    if payload.get("trigger_state") is not None and payload.get("trigger_state") not in ALLOWED_TRIGGER_STATES:
+        issues.append(_issue("trigger_state_invalid", "common_result.trigger_state", "unsupported trigger state"))
+    if payload.get("volume_state") is not None and payload.get("volume_state") not in ALLOWED_VOLUME_STATES:
+        issues.append(_issue("volume_state_invalid", "common_result.volume_state", "unsupported volume state"))
+    if payload.get("volume_confirmation") is not None and payload.get("volume_confirmation") not in ALLOWED_VOLUME_CONFIRMATIONS:
+        issues.append(
+            _issue("volume_confirmation_invalid", "common_result.volume_confirmation", "unsupported volume confirmation")
+        )
 
 
 def _validate_role_rules(

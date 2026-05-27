@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from app.strategy.types import StrategyEvaluationInput, StrategySignal
 
 if TYPE_CHECKING:
+    from app.strategy.evidence_context import EvidenceContext
     from app.strategy.common.result_contract import StrategyResult
 
 
@@ -37,6 +38,20 @@ class BaseStrategy:
         """Evaluate one strategy against the provided snapshot-derived input."""
 
         raise NotImplementedError
+
+    def evaluate_with_evidence(
+        self,
+        input_data: StrategyEvaluationInput,
+        evidence_context: "EvidenceContext",
+    ) -> "StrategyResult | StrategySignal":
+        """Evaluate with same-run public evidence when a strategy needs it.
+
+        The default implementation preserves the stage-16 interface for
+        independent strategies. Dependent strategies may override this method,
+        but must only read public fields exposed by `EvidenceContext`.
+        """
+
+        return self.evaluate(input_data)
 
 
 __all__ = ["BaseStrategy"]

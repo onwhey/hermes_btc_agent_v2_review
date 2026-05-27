@@ -89,6 +89,30 @@ ALLOWED_KEY_LEVEL_TYPES = frozenset(
 )
 
 ALLOWED_FILTER_STATUSES = frozenset({"pass", "reject", "unknown"})
+ALLOWED_FILTER_DECISIONS = frozenset({"passed", "blocked", "uncertain", "not_applicable"})
+ALLOWED_TRIGGER_STATES = frozenset(
+    {
+        "breakout_attempt",
+        "breakout_confirmed",
+        "breakout_failed",
+        "breakdown_attempt",
+        "breakdown_confirmed",
+        "breakdown_failed",
+        "pullback_testing",
+        "pullback_confirmed",
+        "pullback_failed",
+        "false_breakout",
+        "false_breakdown",
+        "no_clear_trigger",
+        "insufficient_key_levels",
+        "insufficient_data",
+        "unknown",
+    }
+)
+ALLOWED_VOLUME_STATES = frozenset({"expanding", "contracting", "normal", "spike", "insufficient", "unknown"})
+ALLOWED_VOLUME_CONFIRMATIONS = frozenset(
+    {"confirming", "weakening", "rejection_signal", "neutral", "insufficient", "unknown"}
+)
 
 # These words are blocked only inside strategy public payload values. Keeping
 # the list here lets the common layer reject execution-like wording while still
@@ -107,12 +131,16 @@ FORBIDDEN_PUBLIC_PAYLOAD_TOKENS = frozenset(
 
 __all__ = [
     "ALLOWED_FILTER_STATUSES",
+    "ALLOWED_FILTER_DECISIONS",
     "ALLOWED_KEY_LEVEL_TYPES",
     "ALLOWED_MARKET_BIASES",
     "ALLOWED_RISK_LEVELS",
     "ALLOWED_SCENARIO_TYPES",
     "ALLOWED_STRATEGY_ROLES",
     "ALLOWED_STRATEGY_STATUSES",
+    "ALLOWED_TRIGGER_STATES",
+    "ALLOWED_VOLUME_CONFIRMATIONS",
+    "ALLOWED_VOLUME_STATES",
     "FORBIDDEN_PUBLIC_PAYLOAD_TOKENS",
     "MAX_COMMON_PAYLOAD_BYTES",
     "MAX_STRATEGY_MODEL_MATERIAL_BYTES",

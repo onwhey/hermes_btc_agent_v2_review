@@ -131,6 +131,11 @@ class StrategyCommonResult:
     schema_version: str = STRATEGY_COMMON_RESULT_SCHEMA_VERSION
     filter_status: str | None = None
     context_summary: str | None = None
+    trigger_state: str | None = None
+    filter_decision: str | None = None
+    tested_level_summary: Mapping[str, Any] | None = None
+    volume_state: str | None = None
+    volume_confirmation: str | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         return _without_none(
@@ -150,6 +155,11 @@ class StrategyCommonResult:
                 "not_trading_advice": self.not_trading_advice,
                 "filter_status": self.filter_status,
                 "context_summary": self.context_summary,
+                "trigger_state": self.trigger_state,
+                "filter_decision": self.filter_decision,
+                "tested_level_summary": dict(self.tested_level_summary) if self.tested_level_summary else None,
+                "volume_state": self.volume_state,
+                "volume_confirmation": self.volume_confirmation,
             }
         )
 

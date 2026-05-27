@@ -1,0 +1,40 @@
+enabled: true
+strategy_name: breakout_pullback_trigger_strategy
+strategy_version: "23D-1"
+strategy_role: filter
+provides:
+  - breakout_confirmation
+  - breakdown_confirmation
+  - pullback_confirmation
+  - false_breakout_filter
+  - trigger_state
+  - volume_confirmation
+requires:
+  - role: support_resistance
+    provides: key_levels
+consumes:
+  - common_result.key_levels
+base_interval: 4h
+higher_interval: 1d
+lookback_bars:
+  base: 80
+  higher: 120
+minimum_required_bars:
+  base: 40
+  higher: 60
+thresholds:
+  min_breakout_pct: "0.003"
+  min_breakdown_pct: "0.003"
+  zone_touch_tolerance_pct: "0.004"
+  wick_rejection_ratio: "0.45"
+  pullback_max_depth_pct: "0.015"
+  confirmation_bars: 2
+  recent_trigger_lookback_bars: 6
+volume:
+  enabled: true
+  volume_ma_period: 20
+  volume_expand_ratio: "1.30"
+  volume_spike_ratio: "2.00"
+  volume_contract_ratio: "0.80"
+output_limits:
+  tested_levels: 5
