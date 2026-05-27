@@ -38,8 +38,10 @@ from app.strategy.aggregation.types import (
 
 try:
     from sqlalchemy import select
+    from sqlalchemy.orm import load_only
 except ImportError:  # pragma: no cover - dependencies are managed by pyproject.
     select = None  # type: ignore[assignment]
+    load_only = None  # type: ignore[assignment]
 
 
 class StrategyAggregationRepository:
@@ -64,11 +66,46 @@ class StrategyAggregationRepository:
         return db_session.execute(stmt).scalar_one_or_none()
 
     def list_strategy_signal_results(self, db_session: Any, *, run_id: str) -> tuple[Any, ...]:
-        """Return all independent strategy signal rows for one run."""
+        """Return public stage-16 strategy result fields for one run.
+
+        Stage 18 consumes legacy result fields and public `common_payload_json`
+        only. It deliberately avoids loading private strategy payload details;
+        those belong to the strategy implementation layer and to optional
+        adapters, not to the material-pack builder.
+        """
 
         _require_sqlalchemy()
         stmt = (
             select(StrategySignalResult)
+            .options(
+                load_only(
+                    StrategySignalResult.id,
+                    StrategySignalResult.run_id,
+                    StrategySignalResult.snapshot_id,
+                    StrategySignalResult.symbol,
+                    StrategySignalResult.base_interval_value,
+                    StrategySignalResult.higher_interval_value,
+                    StrategySignalResult.strategy_name,
+                    StrategySignalResult.strategy_version,
+                    StrategySignalResult.strategy_status,
+                    StrategySignalResult.direction_bias,
+                    StrategySignalResult.risk_level,
+                    StrategySignalResult.signal_strength,
+                    StrategySignalResult.reason_codes_json,
+                    StrategySignalResult.reason_text,
+                    StrategySignalResult.metrics_json,
+                    StrategySignalResult.error_message,
+                    StrategySignalResult.contract_version,
+                    StrategySignalResult.strategy_role,
+                    StrategySignalResult.common_payload_json,
+                    StrategySignalResult.common_payload_hash,
+                    StrategySignalResult.validation_status,
+                    StrategySignalResult.validation_errors_json,
+                    StrategySignalResult.trace_id,
+                    StrategySignalResult.created_at_utc,
+                    StrategySignalResult.updated_at_utc,
+                )
+            )
             .where(StrategySignalResult.run_id == run_id)
             .order_by(StrategySignalResult.id.asc())
         )
@@ -306,7 +343,7 @@ def _material_version_key(payload: AnalysisMaterialPackPersistencePayload) -> st
 
 
 def _require_sqlalchemy() -> None:
-    if select is None:
+    if select is None or load_only is None:
         raise RuntimeError("SQLAlchemy is required for strategy aggregation repository queries")
 
 

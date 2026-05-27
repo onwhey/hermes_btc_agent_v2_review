@@ -226,7 +226,6 @@ def _strategy_result_item(row: Any) -> Mapping[str, Any]:
 
 def _strategy_result_item_from_common_payload(row: Any, common_payload: Mapping[str, Any]) -> Mapping[str, Any]:
     legacy_metrics = _json_loads(getattr(row, "metrics_json", "{}"), default={})
-    strategy_payload = _json_loads(getattr(row, "strategy_payload_json", "{}"), default={})
     strategy_role = getattr(row, "strategy_role", None)
     return {
         "strategy_name": str(getattr(row, "strategy_name", "")),
@@ -240,7 +239,6 @@ def _strategy_result_item_from_common_payload(row: Any, common_payload: Mapping[
         "metrics": {
             "common_payload": dict(common_payload),
             "legacy_metrics": legacy_metrics,
-            "strategy_private_payload_summary": _private_payload_summary(strategy_payload),
         },
         "contract_version": getattr(row, "contract_version", None),
         "strategy_role": strategy_role,
@@ -268,16 +266,6 @@ def _common_market_bias_for_stage18(common_payload: Mapping[str, Any], row: Any)
 
 def _list_or_empty(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else []
-
-
-def _private_payload_summary(value: Any) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        return {"available": False}
-    return {
-        "available": bool(value),
-        "top_level_keys": sorted(str(key) for key in value.keys())[:20],
-        "participates_in_common_aggregation": False,
-    }
 
 
 def _json_loads(value: Any, *, default: Any) -> Any:

@@ -53,7 +53,12 @@ def test_stage18_prefers_common_payload_when_present() -> None:
         ),
     )
     assert validate_strategy_result(result).passed is True
-    row = SimpleNamespace(
+    class RowWithoutReadablePrivatePayload(SimpleNamespace):
+        @property
+        def strategy_payload_json(self) -> str:
+            raise AssertionError("stage18 must not read private strategy payload")
+
+    row = RowWithoutReadablePrivatePayload(
         strategy_name="fixture_common",
         strategy_version="v1",
         strategy_status="success",
@@ -64,7 +69,6 @@ def test_stage18_prefers_common_payload_when_present() -> None:
         reason_text="legacy",
         metrics_json=json.dumps({"legacy": True}),
         common_payload_json=json.dumps(common_payload, ensure_ascii=False),
-        strategy_payload_json=json.dumps({"private": {"ignored": True}}, ensure_ascii=False),
         contract_version="strategy_result_contract_v1",
         strategy_role="directional",
         common_payload_hash="hash",
@@ -75,11 +79,8 @@ def test_stage18_prefers_common_payload_when_present() -> None:
     assert summary.effective_strategy_count == 1
     assert len(summary.long_strategies) == 1
     assert summary.long_strategies[0]["reason_codes"] == ["common_contract_reason"]
-    assert summary.long_strategies[0]["metrics"]["strategy_private_payload_summary"] == {
-        "available": True,
-        "top_level_keys": ["private"],
-        "participates_in_common_aggregation": False,
-    }
+    assert summary.long_strategies[0]["metrics"]["common_payload"]["market_bias"] == "bullish_bias"
+    assert "strategy_private_payload_summary" not in summary.long_strategies[0]["metrics"]
 
 
 def test_stage18_falls_back_to_legacy_strategy_signal_fields() -> None:

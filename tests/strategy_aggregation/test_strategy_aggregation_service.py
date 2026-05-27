@@ -43,6 +43,7 @@ class FakeAggregationRepository:
         restored_snapshot: Any | None = None,
         existing: Any | None = None,
         existing_after_unique_conflict: Any | None = None,
+        evidence_aggregation: Any | None = None,
         create_material_pack_error: Exception | None = None,
     ) -> None:
         self.strategy_run = strategy_run
@@ -50,6 +51,7 @@ class FakeAggregationRepository:
         self.restored_snapshot = restored_snapshot
         self.existing = existing
         self.existing_after_unique_conflict = existing_after_unique_conflict
+        self.evidence_aggregation = evidence_aggregation
         self.create_material_pack_error = create_material_pack_error
         self.unique_conflict_raised = False
         self.aggregation_rows: list[Any] = []
@@ -86,6 +88,13 @@ class FakeAggregationRepository:
             if row.aggregation_run_id == aggregation_run_id:
                 return row
         return None
+
+    def get_latest_strategy_evidence_aggregation(self, _db_session: Any, *, strategy_signal_run_id: str) -> Any | None:
+        if self.evidence_aggregation is None:
+            return None
+        if self.evidence_aggregation.strategy_signal_run_id != strategy_signal_run_id:
+            return None
+        return self.evidence_aggregation
 
     def create_aggregation_run(self, _db_session: Any, *, payload: Any) -> Any:
         row = SimpleNamespace(**payload.__dict__)
@@ -364,6 +373,9 @@ def test_confirm_write_persists_aggregation_and_material_pack_with_required_sect
     assert material["volatility"]["avg_range_percent_20"] is not None
     assert material["support_resistance"]["support_candidates"]
     assert material["support_resistance"]["resistance_candidates"]
+    assert material["strategy_evidence"]["source"] == "legacy_strategy_results"
+    assert material["strategy_evidence"]["aggregation_id"] is None
+    assert "23F aggregation not found" in material["strategy_evidence"]["warning"]
     scenario = repo.aggregation_rows[0].candidate_scenarios_json["candidate_scenarios"][0]
     assert scenario["scenario_type"] == "long_hypothesis"
     assert scenario["activation_check"]
@@ -371,6 +383,49 @@ def test_confirm_write_persists_aggregation_and_material_pack_with_required_sect
     assert repo.material_rows[0].question_json["questions"]
     assert repo.material_rows[0].data_window_json["base_kline_count"] == 40
     assert repo.material_rows[0].future_leakage_guard_json["uses_future_klines"] is False
+
+
+def test_confirm_write_material_pack_prefers_23f_strategy_evidence() -> None:
+    evidence_row = SimpleNamespace(
+        aggregation_id="SEA-stage18",
+        strategy_signal_run_id="SSR-stage18",
+        status="success",
+        candidate_bias="wait",
+        candidate_confidence=Decimal("0.7200"),
+        decision_readiness="wait_for_confirmation",
+        strategy_evidence_summary_json=json.dumps({"summary": "23F evidence"}, ensure_ascii=False),
+        decision_source_chain_json=json.dumps([{"strategy_name": "risk_gate"}], ensure_ascii=False),
+        role_coverage_matrix_json=json.dumps({"risk_control": {"present": True}}, ensure_ascii=False),
+        evidence_missing_json=json.dumps([], ensure_ascii=False),
+        strategy_conflict_summary_json=json.dumps({"conflicts": []}, ensure_ascii=False),
+        participation_summary_json=json.dumps({"decision_participant": 2}, ensure_ascii=False),
+        observe_only_summary_json=json.dumps({"items": []}, ensure_ascii=False),
+        risk_gate_summary_json=json.dumps({"formal_veto_applied": False}, ensure_ascii=False),
+        model_review_focus_json=json.dumps({"review_points": ["review 23F evidence chain"]}, ensure_ascii=False),
+        not_trading_advice=True,
+    )
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(
+            fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.80"),
+        ),
+        restored_snapshot=restored_snapshot(),
+        evidence_aggregation=evidence_row,
+    )
+
+    service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+
+    material = repo.material_rows[0].material_json
+    strategy_evidence = material["strategy_evidence"]
+    assert strategy_evidence["source"] == "strategy_evidence_aggregation_result"
+    assert strategy_evidence["aggregation_id"] == "SEA-stage18"
+    assert strategy_evidence["strategy_signal_run_id"] == "SSR-stage18"
+    assert strategy_evidence["candidate_bias"] == "wait"
+    assert strategy_evidence["decision_readiness"] == "wait_for_confirmation"
+    assert strategy_evidence["strategy_evidence_summary"] == {"summary": "23F evidence"}
+    assert strategy_evidence["decision_source_chain"] == [{"strategy_name": "risk_gate"}]
+    assert strategy_evidence["model_review_focus"] == {"review_points": ["review 23F evidence chain"]}
+    assert material["support_resistance"]["support_candidates"]
 
 
 def test_direction_hypothesis_outputs_are_not_strategy_signals_or_advice() -> None:
@@ -725,6 +780,8 @@ def test_stage18_source_does_not_call_stage15_stage16_llm_or_binance() -> None:
     assert "DeepSeekClient" not in source
     assert "openai" not in source.lower()
     assert "/fapi/v1" not in source
+    assert "getattr(row, \"strategy_payload_json\"" not in source
+    assert "StrategySignalResult.strategy_payload_json" not in source
 
 
 def test_stage18_source_does_not_instantiate_future_strategy_classes() -> None:

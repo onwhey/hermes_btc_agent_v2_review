@@ -44,6 +44,9 @@ from app.strategy.aggregation.types import (
 
 MIN_BASE_KLINES_FOR_MATERIAL = 20
 MIN_HIGHER_KLINES_FOR_MATERIAL = 1
+LEGACY_STRATEGY_EVIDENCE_WARNING = (
+    "23F aggregation not found; material pack used legacy compatible strategy evidence."
+)
 
 
 def build_future_leakage_guard(restored_snapshot: Any) -> Mapping[str, Any]:
@@ -131,7 +134,10 @@ def build_material_pack(
     question_json = build_stage19_question_list()
     strategy_conflicts = _build_strategy_conflict_json(vote_summary=vote_summary, decision=decision)
     opposing_evidence = _collect_opposing_evidence(candidate_scenarios_json)
-    strategy_evidence_bridge = _strategy_evidence_aggregation_summary(strategy_evidence_aggregation)
+    strategy_evidence = _build_strategy_evidence_material(
+        strategy_evidence_aggregation,
+        strategy_signal_run_id=str(getattr(strategy_signal_run, "run_id", "")),
+    )
 
     material_json: Mapping[str, Any] = {
         "material_schema_version": MATERIAL_SCHEMA_VERSION,
@@ -171,6 +177,7 @@ def build_material_pack(
             "volatility_state": volatility.volatility_state,
         },
         "support_resistance": support_resistance,
+        "strategy_evidence": strategy_evidence,
         "analysis_hypothesis_direction": decision.analysis_hypothesis_direction.value,
         "analysis_hypothesis_semantics": ANALYSIS_HYPOTHESIS_SEMANTICS,
         "direction_projection_source": candidate_scenarios_json.get("direction_projection_source"),
@@ -209,10 +216,6 @@ def build_material_pack(
             "no_automatic_trading": True,
         },
     }
-    if strategy_evidence_bridge:
-        material_json = dict(material_json)
-        material_json["strategy_evidence_aggregation"] = strategy_evidence_bridge
-
     summary_json = {
         "analysis_hypothesis_direction": decision.analysis_hypothesis_direction.value,
         "risk_level": decision.risk_level.value,
@@ -222,10 +225,11 @@ def build_material_pack(
         "volatility_state": volatility.volatility_state,
         "effective_strategy_count": vote_summary.effective_strategy_count,
         "strategy_signal_result_count": len(strategy_signal_results),
+        "strategy_evidence_source": strategy_evidence.get("source"),
     }
-    if strategy_evidence_bridge:
-        summary_json["strategy_evidence_candidate_bias"] = strategy_evidence_bridge.get("candidate_bias")
-        summary_json["strategy_evidence_decision_readiness"] = strategy_evidence_bridge.get("decision_readiness")
+    if strategy_evidence.get("source") == "strategy_evidence_aggregation_result":
+        summary_json["strategy_evidence_candidate_bias"] = strategy_evidence.get("candidate_bias")
+        summary_json["strategy_evidence_decision_readiness"] = strategy_evidence.get("decision_readiness")
     return MaterialPackBuildResult(
         material_json=material_json,
         question_json=question_json,
@@ -298,19 +302,39 @@ def _collect_opposing_evidence(candidate_scenarios_json: Mapping[str, Any]) -> l
     return list(value) if isinstance(value, list) else []
 
 
-def _strategy_evidence_aggregation_summary(row: Any | None) -> Mapping[str, Any]:
+def _build_strategy_evidence_material(row: Any | None, *, strategy_signal_run_id: str) -> Mapping[str, Any]:
+    """Return the strategy-evidence section for the material pack.
+
+    When a stage-23F row exists, this function copies the already aggregated
+    public evidence chain. When it is missing, the pack keeps using legacy
+    stage-18 material and marks that source explicitly so downstream model
+    review cannot mistake the pack for a 23F-backed one.
+    """
+
     if row is None:
-        return {}
+        return {
+            "source": "legacy_strategy_results",
+            "aggregation_id": None,
+            "strategy_signal_run_id": strategy_signal_run_id,
+            "warning": LEGACY_STRATEGY_EVIDENCE_WARNING,
+            "not_trading_advice": True,
+        }
     return {
-        "source": "stage_23f_strategy_evidence_aggregation",
+        "source": "strategy_evidence_aggregation_result",
         "aggregation_id": getattr(row, "aggregation_id", ""),
-        "strategy_signal_run_id": getattr(row, "strategy_signal_run_id", ""),
+        "strategy_signal_run_id": getattr(row, "strategy_signal_run_id", "") or strategy_signal_run_id,
         "status": getattr(row, "status", ""),
         "candidate_bias": getattr(row, "candidate_bias", ""),
         "candidate_confidence": str(getattr(row, "candidate_confidence", "")),
         "decision_readiness": getattr(row, "decision_readiness", ""),
         "strategy_evidence_summary": _json_mapping(getattr(row, "strategy_evidence_summary_json", "{}")),
         "decision_source_chain": _json_list(getattr(row, "decision_source_chain_json", "[]")),
+        "role_coverage_matrix": _json_mapping(getattr(row, "role_coverage_matrix_json", "{}")),
+        "evidence_missing": _json_list(getattr(row, "evidence_missing_json", "[]")),
+        "strategy_conflict_summary": _json_mapping(getattr(row, "strategy_conflict_summary_json", "{}")),
+        "participation_summary": _json_mapping(getattr(row, "participation_summary_json", "{}")),
+        "observe_only_summary": _json_mapping(getattr(row, "observe_only_summary_json", "{}")),
+        "risk_gate_summary": _json_mapping(getattr(row, "risk_gate_summary_json", "{}")),
         "model_review_focus": _json_mapping(getattr(row, "model_review_focus_json", "{}")),
         "not_trading_advice": bool(getattr(row, "not_trading_advice", True)),
     }

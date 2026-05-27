@@ -753,7 +753,7 @@ def test_cli_only_parses_args_and_calls_23f_service(monkeypatch: Any, capsys: An
     assert captured[1].confirm_write is True
 
 
-def test_stage18_material_pack_can_include_23f_aggregation_and_omits_it_when_absent() -> None:
+def test_stage18_material_pack_uses_23f_aggregation_or_marks_legacy_source() -> None:
     decision = AggregationDecision(
         analysis_hypothesis_direction=AnalysisHypothesisDirection.LONG,
         analysis_hypothesis_confidence=AnalysisHypothesisConfidence.MEDIUM,
@@ -778,6 +778,12 @@ def test_stage18_material_pack_can_include_23f_aggregation_and_omits_it_when_abs
         decision_readiness="ready_for_model_review",
         strategy_evidence_summary_json=json.dumps({"candidate_bias": "long"}, ensure_ascii=False),
         decision_source_chain_json=json.dumps([{"strategy_name": "formal_long"}], ensure_ascii=False),
+        role_coverage_matrix_json=json.dumps({"directional": {"provided": ["market_bias"]}}, ensure_ascii=False),
+        evidence_missing_json=json.dumps([{"role": "risk_control"}], ensure_ascii=False),
+        strategy_conflict_summary_json=json.dumps({"conflicts": []}, ensure_ascii=False),
+        participation_summary_json=json.dumps({"decision_participant": 1}, ensure_ascii=False),
+        observe_only_summary_json=json.dumps({"items": []}, ensure_ascii=False),
+        risk_gate_summary_json=json.dumps({"formal_veto_applied": False}, ensure_ascii=False),
         model_review_focus_json=json.dumps({"review_points": ["check evidence"]}, ensure_ascii=False),
         not_trading_advice=True,
     )
@@ -800,11 +806,27 @@ def test_stage18_material_pack_can_include_23f_aggregation_and_omits_it_when_abs
         candidate_scenarios_json={"candidate_scenarios": []},
     )
 
-    bridge = with_evidence.material_json["strategy_evidence_aggregation"]
+    bridge = with_evidence.material_json["strategy_evidence"]
+    assert bridge["source"] == "strategy_evidence_aggregation_result"
     assert bridge["aggregation_id"] == "SEA-existing"
+    assert bridge["strategy_signal_run_id"] == "SSR-23F"
+    assert bridge["candidate_bias"] == "long"
+    assert bridge["decision_readiness"] == "ready_for_model_review"
     assert bridge["strategy_evidence_summary"]["candidate_bias"] == "long"
     assert bridge["decision_source_chain"] == [{"strategy_name": "formal_long"}]
-    assert "strategy_evidence_aggregation" not in without_evidence.material_json
+    assert bridge["role_coverage_matrix"]["directional"]["provided"] == ["market_bias"]
+    assert bridge["evidence_missing"] == [{"role": "risk_control"}]
+    assert bridge["strategy_conflict_summary"] == {"conflicts": []}
+    assert bridge["participation_summary"] == {"decision_participant": 1}
+    assert bridge["observe_only_summary"] == {"items": []}
+    assert bridge["risk_gate_summary"] == {"formal_veto_applied": False}
+    assert bridge["model_review_focus"] == {"review_points": ["check evidence"]}
+
+    legacy = without_evidence.material_json["strategy_evidence"]
+    assert legacy["source"] == "legacy_strategy_results"
+    assert legacy["aggregation_id"] is None
+    assert legacy["strategy_signal_run_id"] == "SSR-23F"
+    assert legacy["warning"] == "23F aggregation not found; material pack used legacy compatible strategy evidence."
 
 
 def restored_snapshot() -> Any:
