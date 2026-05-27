@@ -446,6 +446,64 @@ def test_pullback_testing_and_confirmed_states() -> None:
     assert testing.common_result.to_jsonable()["filter_decision"] == "uncertain"
 
 
+def test_role_flip_resistance_to_support_uses_support_retest_direction() -> None:
+    result = evaluate_with_level(
+        base_rows_with_latest(
+            kline_row(4, open_price="101", high="102.2", low="100.7", close="101.5", volume="120"),
+            previous_breakout=True,
+        ),
+        resistance_level(
+            level_group="role_flip_candidate",
+            role_flip_status="resistance_to_support",
+        ),
+    )
+    common = result.common_result.to_jsonable()
+
+    assert common["tested_level_summary"]["role_flip_status"] == "resistance_to_support"
+    assert common["trigger_state"] in {"pullback_testing", "pullback_confirmed"}
+    assert common["trigger_state"] not in {"breakout_attempt", "breakout_confirmed"}
+    assert result.strategy_payload_json["pullback_detection_details"]["pullback_direction"] == "after_breakout"
+
+
+def test_role_flip_support_to_resistance_uses_resistance_retest_direction() -> None:
+    rows = (
+        kline_row(0, open_price="105", high="106", low="102", close="104"),
+        kline_row(1, open_price="104", high="105", low="102", close="103"),
+        kline_row(2, open_price="100", high="100.5", low="97.8", close="98"),
+        kline_row(3, open_price="98.5", high="99", low="97.5", close="98.5"),
+        kline_row(4, open_price="99.5", high="100.8", low="98.8", close="99.2", volume="120"),
+    )
+    result = evaluate_with_level(
+        rows,
+        support_level(
+            level_group="role_flip_candidate",
+            role_flip_status="support_to_resistance",
+        ),
+    )
+    common = result.common_result.to_jsonable()
+
+    assert common["tested_level_summary"]["role_flip_status"] == "support_to_resistance"
+    assert common["trigger_state"] in {"pullback_testing", "pullback_confirmed"}
+    assert common["trigger_state"] not in {"breakdown_attempt", "breakdown_confirmed"}
+    assert result.strategy_payload_json["pullback_detection_details"]["pullback_direction"] == "after_breakdown"
+
+
+def test_unconfirmed_role_flip_candidate_stays_conservative() -> None:
+    result = evaluate_with_level(
+        base_rows_with_latest(kline_row(4, open_price="101.8", high="103.2", low="101.6", close="103", volume="150")),
+        resistance_level(
+            level_group="role_flip_candidate",
+            role_flip_status="unconfirmed",
+        ),
+    )
+    common = result.common_result.to_jsonable()
+
+    assert common["tested_level_summary"]["role_flip_status"] == "unconfirmed"
+    assert common["trigger_state"] == "no_clear_trigger"
+    assert common["filter_decision"] == "uncertain"
+    assert common["trigger_state"] not in {"breakout_confirmed", "breakdown_confirmed"}
+
+
 def test_volume_expansion_confirms_and_contraction_weakens_confirmed_breakout() -> None:
     expanded = evaluate_with_level(
         base_rows_with_latest(kline_row(4, open_price="101.8", high="103.2", low="101.6", close="103", volume="150")),

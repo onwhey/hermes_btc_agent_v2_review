@@ -403,7 +403,7 @@ def _pullback_state(level: TestedKeyLevel, rows: tuple[Any, ...], strategy: Brea
         _positive_ratio(level.zone_low - _decimal_attr(row, "close_price"), level.zone_low) >= strategy.min_breakdown_pct
         for row in previous_rows
     )
-    if _is_resistance_level(level) and had_up_breakout and low <= level.zone_high * (Decimal("1") + strategy.zone_touch_tolerance_pct):
+    if _uses_up_breakout_pullback(level) and had_up_breakout and low <= level.zone_high * (Decimal("1") + strategy.zone_touch_tolerance_pct):
         depth = _positive_ratio(level.zone_high - low, level.zone_high)
         details = {"pullback_direction": "after_breakout", "pullback_depth_pct": _pct_text(depth)}
         if close < level.zone_low:
@@ -411,7 +411,7 @@ def _pullback_state(level: TestedKeyLevel, rows: tuple[Any, ...], strategy: Brea
         if close >= level.zone_high and depth <= strategy.pullback_max_depth_pct:
             return "pullback_confirmed", details
         return "pullback_testing", details
-    if _is_support_level(level) and had_down_breakdown and high >= level.zone_low * (Decimal("1") - strategy.zone_touch_tolerance_pct):
+    if _uses_down_breakdown_pullback(level) and had_down_breakdown and high >= level.zone_low * (Decimal("1") - strategy.zone_touch_tolerance_pct):
         depth = _positive_ratio(high - level.zone_low, level.zone_low)
         details = {"pullback_direction": "after_breakdown", "pullback_depth_pct": _pct_text(depth)}
         if close > level.zone_high:
@@ -585,17 +585,45 @@ def _level_from_public_payload(item: Mapping[str, Any]) -> TestedKeyLevel | None
 
 
 def _is_resistance_level(level: TestedKeyLevel) -> bool:
-    return level.level_group in {"nearest_resistance", "major_resistance", "range_upper_boundary", "role_flip_candidate"} or level.level_type in {
-        "resistance",
-        "target_observation",
-    }
+    role_side = _level_role_side(level)
+    return role_side == "resistance"
 
 
 def _is_support_level(level: TestedKeyLevel) -> bool:
-    return level.level_group in {"nearest_support", "major_support", "range_lower_boundary", "role_flip_candidate"} or level.level_type in {
+    role_side = _level_role_side(level)
+    return role_side == "support"
+
+
+def _uses_up_breakout_pullback(level: TestedKeyLevel) -> bool:
+    if level.level_group == "role_flip_candidate":
+        return level.role_flip_status == "resistance_to_support"
+    return _is_resistance_level(level)
+
+
+def _uses_down_breakdown_pullback(level: TestedKeyLevel) -> bool:
+    if level.level_group == "role_flip_candidate":
+        return level.role_flip_status == "support_to_resistance"
+    return _is_support_level(level)
+
+
+def _level_role_side(level: TestedKeyLevel) -> str:
+    if level.level_group == "role_flip_candidate":
+        if level.role_flip_status == "resistance_to_support":
+            return "support"
+        if level.role_flip_status == "support_to_resistance":
+            return "resistance"
+        return "unknown"
+    if level.level_group in {"nearest_resistance", "major_resistance", "range_upper_boundary"} or level.level_type in {
+        "resistance",
+        "target_observation",
+    }:
+        return "resistance"
+    if level.level_group in {"nearest_support", "major_support", "range_lower_boundary"} or level.level_type in {
         "support",
         "invalidation_reference",
-    }
+    }:
+        return "support"
+    return "unknown"
 
 
 def _touches_zone(high: Decimal, low: Decimal, close: Decimal, level: TestedKeyLevel, strategy: BreakoutPullbackTriggerStrategy) -> bool:
