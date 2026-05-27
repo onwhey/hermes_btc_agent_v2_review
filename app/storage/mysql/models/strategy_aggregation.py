@@ -12,15 +12,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from app.storage.mysql.base import Base
 
 try:
-    from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, String, Text, UniqueConstraint
+    from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, Numeric, String, Text, UniqueConstraint
     from sqlalchemy.orm import Mapped, mapped_column
 except ImportError:  # pragma: no cover - dependencies are managed by pyproject.
-    BigInteger = Boolean = DateTime = ForeignKey = Index = String = Text = UniqueConstraint = None  # type: ignore[assignment]
+    BigInteger = Boolean = DateTime = ForeignKey = Index = Numeric = String = Text = UniqueConstraint = None  # type: ignore[assignment]
     Mapped = Any  # type: ignore[assignment]
     mapped_column = None  # type: ignore[assignment]
 
@@ -170,6 +171,59 @@ if mapped_column is not None:
         created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
         updated_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
+
+    class StrategyEvidenceAggregationResult(Base):
+        """ORM mapping for one stage-23F strategy evidence aggregation result.
+
+        Parameters: values are supplied by the 23F evidence repository after it
+        has read public strategy signal results.
+        Return value: SQLAlchemy ORM row.
+        Failure scenarios: SQLAlchemy raises mapping/database errors when used.
+        External service access: none at class definition time.
+        Data impact: defines a lightweight strategy-domain aggregation table;
+        it does not store final advice, private strategy payloads, Kline
+        windows, large-model output, account data, or trading execution data.
+        """
+
+        __tablename__ = "strategy_evidence_aggregation_result"
+        __table_args__ = (
+            UniqueConstraint("aggregation_id", name="uq_strategy_evidence_aggregation_id"),
+            UniqueConstraint("strategy_signal_run_id", name="uq_strategy_evidence_signal_run_id"),
+            Index("idx_strategy_evidence_status_created", "status", "created_at_utc"),
+            Index("idx_strategy_evidence_candidate", "candidate_bias", "decision_readiness"),
+            Index("idx_strategy_evidence_trace_id", "trace_id"),
+        )
+
+        id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+        aggregation_id: Mapped[str] = mapped_column(String(160), nullable=False)
+        strategy_signal_run_id: Mapped[str] = mapped_column(
+            String(128),
+            ForeignKey("strategy_signal_run.run_id"),
+            nullable=False,
+        )
+        symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+        base_interval: Mapped[str] = mapped_column(String(16), nullable=False)
+        higher_interval: Mapped[str] = mapped_column(String(16), nullable=False)
+        status: Mapped[str] = mapped_column(String(32), nullable=False)
+        candidate_bias: Mapped[str] = mapped_column(String(32), nullable=False)
+        candidate_confidence: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
+        decision_readiness: Mapped[str] = mapped_column(String(64), nullable=False)
+        strategy_evidence_summary_json: Mapped[str] = mapped_column(Text, nullable=False)
+        decision_source_chain_json: Mapped[str] = mapped_column(Text, nullable=False)
+        role_coverage_matrix_json: Mapped[str] = mapped_column(Text, nullable=False)
+        evidence_missing_json: Mapped[str] = mapped_column(Text, nullable=False)
+        strategy_conflict_summary_json: Mapped[str] = mapped_column(Text, nullable=False)
+        participation_summary_json: Mapped[str] = mapped_column(Text, nullable=False)
+        observe_only_summary_json: Mapped[str] = mapped_column(Text, nullable=False)
+        risk_gate_summary_json: Mapped[str] = mapped_column(Text, nullable=False)
+        model_review_focus_json: Mapped[str] = mapped_column(Text, nullable=False)
+        not_trading_advice: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+        trace_id: Mapped[str] = mapped_column(String(128), nullable=False)
+        trigger_source: Mapped[str] = mapped_column(String(32), nullable=False)
+        created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+        created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+        updated_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
 else:
 
     @dataclass
@@ -269,4 +323,35 @@ else:
         updated_at_utc: datetime | None = None
 
 
-__all__ = ["AnalysisMaterialPack", "StrategyAggregationRun"]
+    @dataclass
+    class StrategyEvidenceAggregationResult:  # type: ignore[no-redef]
+        """Fallback value object used only when SQLAlchemy is unavailable."""
+
+        id: int | None = None
+        aggregation_id: str = ""
+        strategy_signal_run_id: str = ""
+        symbol: str = ""
+        base_interval: str = ""
+        higher_interval: str = ""
+        status: str = ""
+        candidate_bias: str = ""
+        candidate_confidence: Decimal | str = "0"
+        decision_readiness: str = ""
+        strategy_evidence_summary_json: str = "{}"
+        decision_source_chain_json: str = "{}"
+        role_coverage_matrix_json: str = "{}"
+        evidence_missing_json: str = "{}"
+        strategy_conflict_summary_json: str = "{}"
+        participation_summary_json: str = "{}"
+        observe_only_summary_json: str = "{}"
+        risk_gate_summary_json: str = "{}"
+        model_review_focus_json: str = "{}"
+        not_trading_advice: bool = True
+        trace_id: str = ""
+        trigger_source: str = ""
+        created_by: str = ""
+        created_at_utc: datetime | None = None
+        updated_at_utc: datetime | None = None
+
+
+__all__ = ["AnalysisMaterialPack", "StrategyAggregationRun", "StrategyEvidenceAggregationResult"]

@@ -25,7 +25,11 @@ from app.market_context.snapshot_repository import (
     MarketContextSnapshotRepository,
     create_default_market_context_snapshot_repository,
 )
-from app.storage.mysql.models.strategy_aggregation import AnalysisMaterialPack, StrategyAggregationRun
+from app.storage.mysql.models.strategy_aggregation import (
+    AnalysisMaterialPack,
+    StrategyAggregationRun,
+    StrategyEvidenceAggregationResult,
+)
 from app.storage.mysql.models.strategy_signal import StrategySignalResult, StrategySignalRun
 from app.strategy.aggregation.types import (
     AnalysisMaterialPackPersistencePayload,
@@ -119,6 +123,23 @@ class StrategyAggregationRepository:
         stmt = (
             select(AnalysisMaterialPack)
             .where(AnalysisMaterialPack.aggregation_run_id == aggregation_run_id)
+            .limit(1)
+        )
+        return db_session.execute(stmt).scalar_one_or_none()
+
+    def get_latest_strategy_evidence_aggregation(
+        self,
+        db_session: Any,
+        *,
+        strategy_signal_run_id: str,
+    ) -> Any | None:
+        """Return an optional stage-23F aggregation row for stage-18 material."""
+
+        _require_sqlalchemy()
+        stmt = (
+            select(StrategyEvidenceAggregationResult)
+            .where(StrategyEvidenceAggregationResult.strategy_signal_run_id == strategy_signal_run_id)
+            .order_by(StrategyEvidenceAggregationResult.id.desc())
             .limit(1)
         )
         return db_session.execute(stmt).scalar_one_or_none()

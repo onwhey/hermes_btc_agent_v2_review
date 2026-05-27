@@ -6,6 +6,12 @@ provides:
   - trend_structure
   - direction_bias
 enabled: true
+maturity_stage: active
+participation_mode: decision_participant
+decision_weight: "0.6"
+can_veto: false
+veto_scope: none
+notification_required: true
 base_interval: 4h
 higher_interval: 1d
 base_interval_value: 4h

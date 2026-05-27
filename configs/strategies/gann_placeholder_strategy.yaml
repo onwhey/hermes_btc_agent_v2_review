@@ -5,6 +5,12 @@ strategy_role: placeholder
 provides:
   - placeholder
 enabled: true
+maturity_stage: experimental
+participation_mode: observe_only
+decision_weight: "0"
+can_veto: false
+veto_scope: none
+notification_required: true
 base_interval: 4h
 higher_interval: 1d
 base_interval_value: 4h

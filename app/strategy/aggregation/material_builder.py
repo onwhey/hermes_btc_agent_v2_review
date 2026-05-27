@@ -15,6 +15,7 @@ convert Kline indicators into executable long/short signals.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping
 
 from app.strategy.aggregation.candidate_scenario_builder import (
@@ -93,6 +94,7 @@ def build_material_pack(
     vote_summary: StrategyVoteSummary,
     decision: AggregationDecision,
     candidate_scenarios_json: Mapping[str, Any],
+    strategy_evidence_aggregation: Any | None = None,
 ) -> MaterialPackBuildResult:
     """Build deterministic material JSON for the next analysis layer.
 
@@ -129,6 +131,7 @@ def build_material_pack(
     question_json = build_stage19_question_list()
     strategy_conflicts = _build_strategy_conflict_json(vote_summary=vote_summary, decision=decision)
     opposing_evidence = _collect_opposing_evidence(candidate_scenarios_json)
+    strategy_evidence_bridge = _strategy_evidence_aggregation_summary(strategy_evidence_aggregation)
 
     material_json: Mapping[str, Any] = {
         "material_schema_version": MATERIAL_SCHEMA_VERSION,
@@ -206,6 +209,9 @@ def build_material_pack(
             "no_automatic_trading": True,
         },
     }
+    if strategy_evidence_bridge:
+        material_json = dict(material_json)
+        material_json["strategy_evidence_aggregation"] = strategy_evidence_bridge
 
     summary_json = {
         "analysis_hypothesis_direction": decision.analysis_hypothesis_direction.value,
@@ -217,6 +223,9 @@ def build_material_pack(
         "effective_strategy_count": vote_summary.effective_strategy_count,
         "strategy_signal_result_count": len(strategy_signal_results),
     }
+    if strategy_evidence_bridge:
+        summary_json["strategy_evidence_candidate_bias"] = strategy_evidence_bridge.get("candidate_bias")
+        summary_json["strategy_evidence_decision_readiness"] = strategy_evidence_bridge.get("decision_readiness")
     return MaterialPackBuildResult(
         material_json=material_json,
         question_json=question_json,
@@ -289,6 +298,24 @@ def _collect_opposing_evidence(candidate_scenarios_json: Mapping[str, Any]) -> l
     return list(value) if isinstance(value, list) else []
 
 
+def _strategy_evidence_aggregation_summary(row: Any | None) -> Mapping[str, Any]:
+    if row is None:
+        return {}
+    return {
+        "source": "stage_23f_strategy_evidence_aggregation",
+        "aggregation_id": getattr(row, "aggregation_id", ""),
+        "strategy_signal_run_id": getattr(row, "strategy_signal_run_id", ""),
+        "status": getattr(row, "status", ""),
+        "candidate_bias": getattr(row, "candidate_bias", ""),
+        "candidate_confidence": str(getattr(row, "candidate_confidence", "")),
+        "decision_readiness": getattr(row, "decision_readiness", ""),
+        "strategy_evidence_summary": _json_mapping(getattr(row, "strategy_evidence_summary_json", "{}")),
+        "decision_source_chain": _json_list(getattr(row, "decision_source_chain_json", "[]")),
+        "model_review_focus": _json_mapping(getattr(row, "model_review_focus_json", "{}")),
+        "not_trading_advice": bool(getattr(row, "not_trading_advice", True)),
+    }
+
+
 def _first_scenario_value(candidate_scenarios_json: Mapping[str, Any], key: str) -> Any:
     scenarios = candidate_scenarios_json.get("candidate_scenarios")
     if not isinstance(scenarios, list) or not scenarios:
@@ -297,6 +324,22 @@ def _first_scenario_value(candidate_scenarios_json: Mapping[str, Any], key: str)
     if not isinstance(first, Mapping):
         return None
     return first.get(key)
+
+
+def _json_mapping(value: Any) -> Mapping[str, Any]:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return dict(parsed) if isinstance(parsed, Mapping) else {}
+
+
+def _json_list(value: Any) -> list[Any]:
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except json.JSONDecodeError:
+        return []
+    return list(parsed) if isinstance(parsed, list) else []
 
 
 def _optional_int(value: Any) -> int | None:

@@ -1,0 +1,19 @@
+enabled: true
+aggregation_version: strategy_evidence_aggregation_v1
+required_roles:
+  - context
+  - support_resistance
+  - filter
+  - risk_control
+required_role_provides:
+  context: primary_regime, market_environment_context
+  support_resistance: key_levels
+  filter: trigger_state
+  risk_control: risk_gate_decision
+default_maturity_stage: experimental
+default_participation_mode: observe_only
+default_decision_weight: "0"
+default_can_veto: false
+default_veto_scope: none
+default_notification_required: true
+conflict_score_tolerance: "0.15"

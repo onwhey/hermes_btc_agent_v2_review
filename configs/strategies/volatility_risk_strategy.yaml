@@ -6,6 +6,12 @@ provides:
   - volatility_risk
   - risk_level
 enabled: true
+maturity_stage: active
+participation_mode: advisory
+decision_weight: "0.3"
+can_veto: false
+veto_scope: none
+notification_required: true
 base_interval: 4h
 higher_interval: 1d
 base_interval_value: 4h

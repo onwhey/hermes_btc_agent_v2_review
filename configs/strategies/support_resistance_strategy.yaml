@@ -11,6 +11,12 @@ provides:
   - invalidation_reference_zones
   - target_observation_zones
   - role_flip_candidates
+maturity_stage: active
+participation_mode: decision_participant
+decision_weight: "1.0"
+can_veto: false
+veto_scope: none
+notification_required: true
 base_interval: 4h
 higher_interval: 1d
 base_interval_value: 4h

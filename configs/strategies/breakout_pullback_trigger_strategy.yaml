@@ -9,6 +9,12 @@ provides:
   - false_breakout_filter
   - trigger_state
   - volume_confirmation
+maturity_stage: active
+participation_mode: decision_participant
+decision_weight: "1.0"
+can_veto: false
+veto_scope: none
+notification_required: true
 requires:
   - role: support_resistance
     provides: key_levels

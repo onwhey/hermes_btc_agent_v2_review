@@ -280,6 +280,16 @@ class StrategyAggregationService:
             )
 
         decision = build_aggregation_decision(vote_summary)
+        strategy_evidence_aggregation = None
+        evidence_getter = getattr(self._repository, "get_latest_strategy_evidence_aggregation", None)
+        if callable(evidence_getter):
+            try:
+                strategy_evidence_aggregation = evidence_getter(
+                    db_session,
+                    strategy_signal_run_id=request.strategy_signal_run_id,
+                )
+            except Exception:  # noqa: BLE001 - 23F bridge is optional for stage-18 compatibility.
+                strategy_evidence_aggregation = None
         try:
             latest_close = latest_close_price(restored_snapshot.rows_4h)
             support_resistance_probe = build_support_resistance_probe(
@@ -302,6 +312,7 @@ class StrategyAggregationService:
                 vote_summary=vote_summary,
                 decision=decision,
                 candidate_scenarios_json=candidate_scenarios_json,
+                strategy_evidence_aggregation=strategy_evidence_aggregation,
             )
         except ValueError as exc:
             return self._return_or_persist_blocked(

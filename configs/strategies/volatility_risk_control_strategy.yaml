@@ -10,6 +10,12 @@ provides:
   - chase_risk
   - stop_distance_reference
   - market_state_aware_risk_policy
+maturity_stage: active
+participation_mode: decision_participant
+decision_weight: "1.0"
+can_veto: true
+veto_scope: current_candidate
+notification_required: true
 requires:
   - role=context, provides=primary_regime
   - role=support_resistance, provides=key_levels
