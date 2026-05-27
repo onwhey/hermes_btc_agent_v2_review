@@ -78,9 +78,12 @@ ALLOWED_KEY_LEVEL_TYPES = frozenset(
     {
         "support",
         "resistance",
+        "range_boundary",
+        "invalidation_reference",
         "trigger",
         "invalidation",
         "target_observation",
+        "historical_reference",
         "reference",
     }
 )

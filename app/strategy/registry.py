@@ -16,6 +16,7 @@ from app.strategy.base import BaseStrategy
 from app.strategy.strategies.gann_placeholder_strategy import GannPlaceholderStrategy
 from app.strategy.strategies.market_direction_regime_strategy import MarketDirectionRegimeStrategy
 from app.strategy.strategies.short_term_range_strategy import ShortTermRangeStrategy
+from app.strategy.strategies.support_resistance_strategy import SupportResistanceStrategy
 from app.strategy.strategies.trend_structure_strategy import TrendStructureStrategy
 from app.strategy.strategies.volatility_risk_strategy import VolatilityRiskStrategy
 from app.strategy.types import StrategyConfigError
@@ -64,7 +65,7 @@ class StrategyRegistry:
             strategy_class = self._strategy_classes.get(strategy_name)
             if strategy_class is None:
                 raise StrategyConfigError(f"unsupported strategy configured: {strategy_name}")
-            strategy_config = _read_simple_yaml(self._config_dir / f"{strategy_name}_strategy.yaml")
+            strategy_config = _read_simple_yaml(_strategy_config_path(self._config_dir, strategy_name))
             if not bool(strategy_config.get("enabled", True)):
                 continue
             strategy = strategy_class(strategy_config)
@@ -87,9 +88,17 @@ def _default_strategy_classes() -> dict[str, type[BaseStrategy]]:
         TrendStructureStrategy.strategy_name: TrendStructureStrategy,
         MarketDirectionRegimeStrategy.strategy_name: MarketDirectionRegimeStrategy,
         ShortTermRangeStrategy.strategy_name: ShortTermRangeStrategy,
+        SupportResistanceStrategy.strategy_name: SupportResistanceStrategy,
         VolatilityRiskStrategy.strategy_name: VolatilityRiskStrategy,
         GannPlaceholderStrategy.strategy_name: GannPlaceholderStrategy,
     }
+
+
+def _strategy_config_path(config_dir: Path, strategy_name: str) -> Path:
+    exact_path = config_dir / f"{strategy_name}.yaml"
+    if exact_path.exists():
+        return exact_path
+    return config_dir / f"{strategy_name}_strategy.yaml"
 
 
 def _validate_strategy(strategy: BaseStrategy, *, expected_name: str) -> None:
@@ -113,9 +122,9 @@ def _read_simple_yaml(path: Path) -> dict[str, Any]:
     """Read the small YAML subset used by strategy configs.
 
     The parser intentionally supports only top-level scalars, top-level lists,
-    and one-level nested mappings. This keeps 23B `provides`, `lookback_bars`,
-    `minimum_required_bars`, and `thresholds` readable without adding a YAML
-    dependency.
+    and one-level nested mappings. This keeps `provides`, `lookback_bars`,
+    `minimum_required_bars`, `thresholds`, and `output_limits` readable without
+    adding a YAML dependency.
     """
 
     if not path.exists():

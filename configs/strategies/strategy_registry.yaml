@@ -2,6 +2,7 @@ enabled_strategies:
   - trend_structure
   - market_direction_regime
   - short_term_range
+  - support_resistance_strategy
   - volatility_risk
   - gann_placeholder
 

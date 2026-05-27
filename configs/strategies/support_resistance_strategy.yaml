@@ -1,0 +1,38 @@
+enabled: true
+strategy_name: support_resistance_strategy
+strategy_version: "23C-1"
+contract_version: strategy_result_contract_v1
+strategy_role: support_resistance
+provides:
+  - key_levels
+  - support_zones
+  - resistance_zones
+  - range_boundaries
+  - invalidation_reference_zones
+  - target_observation_zones
+  - role_flip_candidates
+base_interval: 4h
+higher_interval: 1d
+base_interval_value: 4h
+higher_interval_value: 1d
+lookback_bars:
+  base: 180
+  higher: 365
+minimum_required_bars:
+  base: 80
+  higher: 120
+thresholds:
+  swing_left_bars: 2
+  swing_right_bars: 2
+  min_swing_move_pct: "0.004"
+  cluster_width_pct: "0.006"
+  max_zone_width_pct: "0.025"
+  nearest_distance_pct: "0.08"
+  major_level_min_strength: "0.60"
+  outlier_reaction_min_pct: "0.01"
+output_limits:
+  nearest_support: 3
+  nearest_resistance: 3
+  major_support: 5
+  major_resistance: 5
+  historical_reference: 5
