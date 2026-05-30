@@ -50,6 +50,39 @@ LIFECYCLE_LABELS = {
     "stop_trading": "暂停交易判断",
 }
 
+REVIEW_DECISION_LABELS = {
+    "accept_23f": "模型认可 23F",
+    "reject_23f": "模型反对 23F",
+    "require_more_evidence": "模型要求更多证据",
+    "wait": "模型建议等待",
+    "no_trade": "模型建议不交易",
+    "blocked": "模型阻断",
+    "unknown": "模型结论不明确",
+}
+
+EVIDENCE_QUALITY_LABELS = {
+    "strong": "证据较强",
+    "moderate": "证据中等",
+    "weak": "证据偏弱",
+    "insufficient": "证据不足",
+    "unknown": "证据质量不明确",
+}
+
+REASON_CODE_LABELS = {
+    "volume_confirmation_missing": "成交量确认缺失",
+    "strategy_evidence_missing": "缺少 23F 策略证据",
+    "model_review_missing": "缺少 24C 模型审查",
+    "trigger_not_confirmed": "触发条件未确认",
+    "context_wait": "市场背景仍需等待",
+    "countertrend_candidate_blocked": "逆势候选被风控阻断",
+    "insufficient_key_levels": "关键价位证据不足",
+    "common_payload_parse_failed": "策略公共证据解析失败",
+    "low_quality": "模型输出质量不足",
+    "boundary_violation": "模型输出越界",
+    "parse_failed": "模型输出解析失败",
+    "schema_invalid": "模型输出结构异常",
+}
+
 
 def render_strategy_advice_notification(review_row: Any) -> RenderedStrategyAdviceNotification:
     """Render one 21A lifecycle review into a Chinese Hermes notification."""
@@ -126,20 +159,13 @@ def _render_brief_message(
     advice: Mapping[str, Any],
     model_review: Mapping[str, Any],
 ) -> str:
-    lifecycle_action = _text(lifecycle.get("action")) or _text_attr(review_row, "lifecycle_action")
-    advice_action = _text(advice.get("advice_action")) or "wait"
-    directional_bias = _text(advice.get("directional_bias")) or "unknown"
-    trade_permission = _text(advice.get("trade_permission")) or "not_allowed"
-    return "\n".join(
-        [
-            "本轮系统已完成 21A 建议生命周期复核。",
-            f"生命周期：{_label(LIFECYCLE_LABELS, lifecycle_action)}",
-            f"当前建议：{_label(ACTION_LABELS, advice_action)} / {_label(DIRECTION_LABELS, directional_bias)} / {_label(PERMISSION_LABELS, trade_permission)}",
-            f"大模型状态：{_model_status_text(model_review)}",
-            *_render_evidence_chain_lines(payload, compact=True),
-            f"来源：review={_source_value(payload, 'review_aggregation_run_id')} material={_source_value(payload, 'material_pack_id')}",
-            _boundary_text(),
-        ]
+    del model_review
+    return _render_compact_message(
+        review_row=review_row,
+        payload=payload,
+        lifecycle=lifecycle,
+        advice=advice,
+        include_lifecycle_reason=False,
     )
 
 
@@ -153,49 +179,51 @@ def _render_full_message(
     risk: Mapping[str, Any],
     strategy: Mapping[str, Any],
 ) -> str:
+    del model_review, risk, strategy
+    return _render_compact_message(
+        review_row=review_row,
+        payload=payload,
+        lifecycle=lifecycle,
+        advice=advice,
+        include_lifecycle_reason=True,
+    )
+
+
+def _render_compact_message(
+    *,
+    review_row: Any,
+    payload: Mapping[str, Any],
+    lifecycle: Mapping[str, Any],
+    advice: Mapping[str, Any],
+    include_lifecycle_reason: bool,
+) -> str:
+    """Render a short Chinese 24D message without raw JSON or dict dumps."""
+
     lifecycle_action = _text(lifecycle.get("action")) or _text_attr(review_row, "lifecycle_action")
     lifecycle_reason = _text(lifecycle.get("reason")) or _text_attr(review_row, "lifecycle_reason")
     advice_action = _text(advice.get("advice_action")) or "wait"
     directional_bias = _text(advice.get("directional_bias")) or "unknown"
     trade_permission = _text(advice.get("trade_permission")) or "not_allowed"
-    return "\n".join(
+    lines = [
+        f"生命周期：{_label(LIFECYCLE_LABELS, lifecycle_action)}",
+    ]
+    if include_lifecycle_reason and lifecycle_reason:
+        lines.append(f"原因：{_bounded(_readable_text(lifecycle_reason), 90)}")
+    lines.extend(
         [
-            f"生命周期：{lifecycle_action}（{_label(LIFECYCLE_LABELS, lifecycle_action)}）",
-            f"原因：{_bounded(lifecycle_reason, 240)}",
-            "",
             "当前建议：",
             f"- 动作：{advice_action}（{_label(ACTION_LABELS, advice_action)}）",
             f"- 方向：{directional_bias}（{_label(DIRECTION_LABELS, directional_bias)}）",
-            f"- 权限：{trade_permission}（{_label(PERMISSION_LABELS, trade_permission)}）",
-            "",
-            "大模型状态：",
-            f"- 本轮是否调用大模型：{_yes_no(model_review.get('model_review_invoked'))}",
-            f"- 是否复用旧模型结果：{_yes_no(model_review.get('model_review_reused'))}",
-            f"- 复用 run：{_text(model_review.get('reused_model_analysis_run_id')) or '无'}",
-            f"- 审查依据：{_text(model_review.get('model_review_basis')) or '无'}",
-            f"- 是否过期：{_yes_no(model_review.get('model_review_expired'))}",
-            f"- chain 状态：{_text(model_review.get('model_review_chain_status')) or 'not_started'}",
-            f"- 未调用原因：{_no_model_reason(model_review)}",
-            f"- 阻断原因：{_text(model_review.get('model_review_block_reason')) or '无'}",
-            _partial_success_notice(model_review),
-            *_render_evidence_chain_lines(payload, compact=False),
-            "",
-            "风险状态：",
-            f"- 风险可接受性：{_text(risk.get('risk_acceptability')) or '未提供'}",
-            f"- 策略冲突：{_text(strategy.get('strategy_conflict')) or '未提供'}",
-            f"- 风险警告：{_list_text(risk.get('risk_warnings'))}",
-            f"- 缺失证据：{_list_text(risk.get('missing_evidence'))}",
-            f"- 风险是否阻断：{_yes_no(risk.get('risk_blocked'))}",
-            "",
-            "来源追踪：",
-            f"- review_aggregation_run_id：{_source_value(payload, 'review_aggregation_run_id')}",
-            f"- material_pack_id：{_source_value(payload, 'material_pack_id')}",
-            f"- strategy_signal_run_id：{_source_value(payload, 'strategy_signal_run_id')}",
-            f"- snapshot_id：{_source_value(payload, 'snapshot_id')}",
-            "",
-            _boundary_text(),
+            f"- 交易许可：{trade_permission}（{_label(PERMISSION_LABELS, trade_permission)}）",
         ]
     )
+    lines.extend(_format_strategy_evidence_summary(payload))
+    lines.extend(_format_risk_gate_summary(payload))
+    lines.extend(_format_model_review_status(payload))
+    lines.extend(_format_model_objections(payload))
+    lines.extend(_format_missing_evidence(payload))
+    lines.append(_boundary_text())
+    return "\n".join(line for line in lines if line)
 
 
 def _payload_from_row(review_row: Any) -> Mapping[str, Any]:
@@ -271,40 +299,115 @@ def _partial_success_notice(model_review: Mapping[str, Any]) -> str:
     return "- partial_success：否"
 
 
-def _render_evidence_chain_lines(payload: Mapping[str, Any], *, compact: bool) -> list[str]:
-    summary = _mapping(payload.get("evidence_chain_summary"))
-    strategy_chain = _mapping(payload.get("strategy_evidence_chain")) or _mapping(
-        summary.get("strategy_evidence_chain")
-    )
-    model_review = _mapping(payload.get("model_review_summary")) or _mapping(summary.get("model_review_summary"))
-    if not strategy_chain and not model_review:
+def _format_strategy_evidence_summary(payload: Mapping[str, Any]) -> list[str]:
+    """Return a bounded public 23F summary for Hermes display."""
+
+    strategy_chain = _strategy_chain_from_payload(payload)
+    if not strategy_chain:
         return []
 
-    lines: list[str] = []
+    lines = ["策略证据："]
     strategy_source = _text(strategy_chain.get("source")) or "missing"
     if strategy_source == "missing":
-        lines.append("策略证据链：缺少 23F 聚合，不能视为策略证据完整。")
-    else:
-        lines.append(
-            "策略证据链："
-            f"23F={_text(strategy_chain.get('candidate_bias')) or 'unknown'}，"
-            f"readiness={_text(strategy_chain.get('decision_readiness')) or 'unknown'}，"
-            f"confidence={_text(strategy_chain.get('candidate_confidence')) or 'unknown'}。"
-        )
-        risk_line = _risk_gate_line(_mapping(strategy_chain.get("risk_gate_summary")))
-        if risk_line:
-            lines.append(risk_line)
-        for point in _list_value(strategy_chain.get("key_strategy_points"))[: (2 if compact else 4)]:
-            point_line = _strategy_point_line(_mapping(point))
-            if point_line:
-                lines.append(point_line)
-    lines.extend(_missing_evidence_lines(strategy_chain, compact=compact))
+        lines.append("- 23F：未找到策略证据聚合结果，证据链不完整。")
+        return lines
 
-    if not model_review or _text(model_review.get("source")) == "missing":
-        lines.append("模型审查：缺少 24C 结果，本轮不能伪装成已经完成大模型审查。")
-    else:
-        lines.extend(_model_review_lines(model_review, compact=compact))
+    candidate_bias = _text(strategy_chain.get("candidate_bias")) or "unknown"
+    readiness = _text(strategy_chain.get("decision_readiness")) or "unknown"
+    aggregation_id = _text(strategy_chain.get("aggregation_id"))
+    summary = f"- 23F：candidate_bias={candidate_bias}，decision_readiness={readiness}"
+    if aggregation_id:
+        summary += f"，aggregation_id={aggregation_id}"
+    lines.append(f"{summary}。")
+
+    for point in _list_value(strategy_chain.get("key_strategy_points"))[:3]:
+        point_line = _strategy_point_line(_mapping(point))
+        if point_line:
+            lines.append(point_line)
     return lines
+
+
+def _format_risk_gate_summary(payload: Mapping[str, Any]) -> list[str]:
+    """Return at most two risk-gate lines from the 23F public summary."""
+
+    risk_gate = _mapping(_strategy_chain_from_payload(payload).get("risk_gate_summary"))
+    if not risk_gate:
+        return []
+    line = _risk_gate_line(risk_gate)
+    return ["风控：", f"- {line}"] if line else []
+
+
+def _format_model_review_status(payload: Mapping[str, Any]) -> list[str]:
+    """Render model-review adoption status without implying a new 21 call."""
+
+    model_review = _model_review_from_payload(payload)
+    if not model_review or _text(model_review.get("source")) == "missing":
+        return ["大模型审查：本轮未找到可用模型审查结果。"]
+
+    adoption = _text(model_review.get("adoption_status")) or "unknown"
+    reason = _text(model_review.get("adoption_reason"))
+    review_decision = _text(model_review.get("review_decision")) or "unknown"
+    evidence_quality = _text(model_review.get("evidence_quality")) or "unknown"
+    recommendation = _text(model_review.get("recommendation_to_advice_layer")) or "unknown"
+    lines = [_model_adoption_line(model_review, adoption=adoption, reason=reason)]
+    lines.append(f"- review_decision={review_decision}（{_label(REVIEW_DECISION_LABELS, review_decision)}）")
+    lines.append(
+        f"- evidence_quality={evidence_quality}（{_label(EVIDENCE_QUALITY_LABELS, evidence_quality)}）；"
+        f"recommendation={recommendation}"
+    )
+    return lines
+
+
+def _format_model_objections(payload: Mapping[str, Any]) -> list[str]:
+    """Render at most two model objections, never raw JSON/Python dict text."""
+
+    model_review = _model_review_from_payload(payload)
+    if not model_review or _text(model_review.get("source")) == "missing":
+        return []
+    objections: list[str] = []
+    for item in (model_review.get("main_objection"), model_review.get("strongest_counterargument")):
+        text = _readable_text(item)
+        if text and text not in objections:
+            objections.append(text)
+        if len(objections) >= 2:
+            break
+    if not objections:
+        return []
+    return ["主要反驳：", *[f"- {_bounded(item, 90)}" for item in objections]]
+
+
+def _format_missing_evidence(payload: Mapping[str, Any]) -> list[str]:
+    """Render missing evidence from 23F and 24C with a hard display limit."""
+
+    strategy_chain = _strategy_chain_from_payload(payload)
+    model_review = _model_review_from_payload(payload)
+    missing: list[str] = []
+    for item in _list_value(strategy_chain.get("evidence_missing")):
+        text = _readable_text(item)
+        if text and text not in missing:
+            missing.append(text)
+        if len(missing) >= 3:
+            break
+    if len(missing) < 3:
+        for item in _list_value(model_review.get("missing_evidence")):
+            text = _readable_text(item)
+            if text and text not in missing:
+                missing.append(text)
+            if len(missing) >= 3:
+                break
+    if not missing:
+        return []
+    return ["缺失证据：", *[f"- {_bounded(item, 80)}" for item in missing[:3]]]
+
+
+def _strategy_chain_from_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    summary = _mapping(payload.get("evidence_chain_summary"))
+    return _mapping(payload.get("strategy_evidence_chain")) or _mapping(summary.get("strategy_evidence_chain"))
+
+
+def _model_review_from_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    summary = _mapping(payload.get("evidence_chain_summary"))
+    return _mapping(payload.get("model_review_summary")) or _mapping(summary.get("model_review_summary"))
 
 
 def _risk_gate_line(risk_gate: Mapping[str, Any]) -> str:
@@ -312,8 +415,10 @@ def _risk_gate_line(risk_gate: Mapping[str, Any]) -> str:
         return ""
     decision = _text(risk_gate.get("risk_gate_decision")) or _text(risk_gate.get("risk_level")) or "unknown"
     scope = _text(risk_gate.get("risk_scope")) or "unknown"
-    reason = _text(risk_gate.get("reason_text")) or _text(risk_gate.get("summary"))
-    return f"风控闸门：{decision} / {scope}。{_bounded(reason, 120)}"
+    reason = _readable_text(risk_gate.get("reason_text") or risk_gate.get("summary"))
+    codes = _list_text(risk_gate.get("reason_codes"), limit=2)
+    suffix = reason or codes
+    return f"风险闸门={decision}，scope={scope}。{_bounded(suffix, 90)}"
 
 
 def _strategy_point_line(point: Mapping[str, Any]) -> str:
@@ -324,58 +429,71 @@ def _strategy_point_line(point: Mapping[str, Any]) -> str:
         or _text(point.get("risk_gate_decision"))
         or _text(point.get("participation_mode"))
     )
-    summary = _text(point.get("summary")) or _list_text(point.get("reason_codes"))
+    summary = _readable_text(point.get("summary")) or _list_text(point.get("reason_codes"), limit=2)
     if not decision and not summary:
         return ""
-    return f"关键策略：{name}：{decision or 'evidence'}，{_bounded(summary, 140)}"
+    return f"- 关键策略：{name}：{decision or 'evidence'}，{_bounded(summary, 70)}"
 
 
-def _missing_evidence_lines(strategy_chain: Mapping[str, Any], *, compact: bool) -> list[str]:
-    missing = _list_value(strategy_chain.get("evidence_missing"))
-    if not missing:
-        return []
-    texts: list[str] = []
-    for item in missing[: (1 if compact else 3)]:
-        mapping = _mapping(item)
-        text = (
-            _text(mapping.get("reason"))
-            or _text(mapping.get("reason_code"))
-            or _text(mapping.get("missing"))
-            or _text(item)
+def _model_adoption_line(model_review: Mapping[str, Any], *, adoption: str, reason: str) -> str:
+    if _is_mock_review_summary(model_review):
+        return "大模型审查：仅测试模型结果，不作为真实模型审查依据。"
+    if adoption == "adopted":
+        return (
+            f"大模型审查：已采用当前材料包已有 {_model_display_name(model_review)} "
+            "审查结果，本轮 21 未新调用大模型。"
         )
-        if text:
-            texts.append(_bounded(text, 100))
-    return [f"缺失证据：{'；'.join(texts)}"] if texts else []
+    if adoption == "low_weight":
+        return "大模型审查：结果质量不足，仅低权重展示，不作为强依据。"
+    if adoption == "rejected":
+        return f"大模型审查：结果不可采用，原因：{_adoption_reason_label(reason)}。"
+    if adoption == "missing":
+        return "大模型审查：本轮未找到可用模型审查结果。"
+    return f"大模型审查：采用状态={adoption}，原因：{_adoption_reason_label(reason or adoption)}。"
 
 
-def _model_review_lines(model_review: Mapping[str, Any], *, compact: bool) -> list[str]:
-    adoption = _text(model_review.get("adoption_status")) or "unknown"
-    reason = _text(model_review.get("adoption_reason"))
-    review_decision = _text(model_review.get("review_decision")) or "unknown"
-    evidence_quality = _text(model_review.get("evidence_quality")) or "unknown"
-    recommendation = _text(model_review.get("recommendation_to_advice_layer")) or "unknown"
-    if bool(model_review.get("is_mock_review")):
-        source_text = "mock_review，仅测试/演练展示"
-    else:
-        source_text = _text(model_review.get("model_key")) or _text(model_review.get("provider")) or "model"
-    lines = [
-        f"模型审查：{review_decision}，证据质量={evidence_quality}，建议={recommendation}，采用状态={adoption}。"
-    ]
-    if adoption != "adopted":
-        lines.append(f"模型未作为强依据：{_bounded(reason or adoption, 140)}")
-    elif source_text:
-        lines.append(f"模型来源：{source_text}")
-    objections = [
-        _text(model_review.get("main_objection")),
-        _text(model_review.get("strongest_counterargument")),
-    ]
-    objection_lines = [_bounded(item, 140) for item in objections if item][: (1 if compact else 2)]
-    if objection_lines:
-        lines.append(f"模型反驳：{'；'.join(objection_lines)}")
-    flags = _list_value(model_review.get("boundary_flags")) or _list_value(model_review.get("quality_flags"))
-    if flags and not compact:
-        lines.append(f"模型质量/边界标记：{_list_text(flags[:3])}")
-    return lines
+def _model_display_name(model_review: Mapping[str, Any]) -> str:
+    raw = " ".join(
+        _text(model_review.get(key)).lower()
+        for key in ("provider", "model_key", "model_name")
+        if _text(model_review.get(key))
+    )
+    if "deepseek" in raw:
+        return "DeepSeek"
+    if "openai" in raw:
+        return "OpenAI"
+    if "claude" in raw:
+        return "Claude"
+    return "真实模型"
+
+
+def _is_mock_review_summary(model_review: Mapping[str, Any]) -> bool:
+    raw = " ".join(
+        _text(model_review.get(key)).lower()
+        for key in ("provider", "model_key", "model_name")
+        if _text(model_review.get(key))
+    )
+    return bool(model_review.get("is_mock_review")) or "mock_review" in raw or raw.startswith("mock")
+
+
+def _adoption_reason_label(reason: str) -> str:
+    if not reason:
+        return "未提供"
+    if reason in REASON_CODE_LABELS:
+        return REASON_CODE_LABELS[reason]
+    if reason.startswith("schema_"):
+        return "结构异常"
+    if reason.startswith("model_review_run_"):
+        return "模型审查运行未成功"
+    if reason == "real_model_disabled":
+        return "真实模型关闭"
+    if reason == "model_review_24c_payload_missing":
+        return "缺少 24C 结构化审查摘要"
+    if reason == "usable_model_review":
+        return "可用模型审查"
+    if reason == "mock_review_is_test_only":
+        return "测试模型结果"
+    return _bounded(_readable_text(reason), 60)
 
 
 def _source_value(payload: Mapping[str, Any], key: str) -> str:
@@ -384,7 +502,7 @@ def _source_value(payload: Mapping[str, Any], key: str) -> str:
 
 
 def _boundary_text() -> str:
-    return "边界声明：这不是自动交易，不是订单，不是强制执行指令；系统未读取账户，系统未下单。"
+    return "边界：本消息不是交易指令；系统不自动交易；是否执行由用户人工决定。"
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -399,10 +517,10 @@ def _yes_no(value: Any) -> str:
     return "是" if bool(value) else "否"
 
 
-def _list_text(value: Any) -> str:
+def _list_text(value: Any, *, limit: int = 5) -> str:
     if not isinstance(value, (list, tuple)) or not value:
         return "无"
-    return "；".join(_bounded(str(item), 120) for item in value[:5])
+    return "；".join(_bounded(_readable_text(item), 70) for item in value[:limit])
 
 
 def _list_value(value: Any) -> list[Any]:
@@ -434,18 +552,137 @@ def _optional_text_attr(row: Any, field_name: str) -> str | None:
     return text or None
 
 
+def _readable_text(value: Any) -> str:
+    """Return a short user-readable Chinese-ish summary, never raw dict JSON."""
+
+    if isinstance(value, Mapping):
+        for key in (
+            "reason_text",
+            "reason",
+            "summary",
+            "context_summary",
+            "main_objection",
+            "strongest_counterargument",
+            "missing",
+            "field",
+        ):
+            text = _readable_text(value.get(key))
+            if text:
+                return text
+        code = _text(value.get("reason_code") or value.get("code"))
+        if code:
+            return _reason_code_label(code)
+        name = _text(value.get("strategy_name") or value.get("strategy_role"))
+        if name:
+            return f"{name} 的结构化摘要已压缩。"
+        return "结构化摘要已压缩。"
+    if isinstance(value, (list, tuple)):
+        texts = [_readable_text(item) for item in value[:3]]
+        return "；".join(item for item in texts if item)
+
+    text = _text(value).replace("\n", " ").strip()
+    if not text:
+        return ""
+    if _looks_like_raw_mapping_text(text):
+        return "结构化摘要已压缩。"
+    if text in REASON_CODE_LABELS:
+        return _reason_code_label(text)
+    translated = _translate_common_english_summary(text)
+    return translated or text
+
+
+def _reason_code_label(code: str) -> str:
+    return REASON_CODE_LABELS.get(code, code)
+
+
+def _looks_like_raw_mapping_text(text: str) -> bool:
+    stripped = text.strip()
+    return (
+        (stripped.startswith("{") and ":" in stripped)
+        or (stripped.startswith("[{") and ":" in stripped)
+        or "'discipline_check'" in stripped
+        or '"discipline_check"' in stripped
+    )
+
+
+def _translate_common_english_summary(text: str) -> str:
+    lower = text.lower()
+    if _ascii_ratio(text) < 0.75:
+        return ""
+    fragments: list[str] = []
+    if "volume" in lower:
+        fragments.append("成交量确认不足")
+    if "key-level" in lower or "key level" in lower:
+        fragments.append("关键价位仍需确认")
+    if "breakout" in lower:
+        fragments.append("突破确认仍需观察")
+    if "pullback" in lower:
+        fragments.append("回踩确认仍需观察")
+    if "risk control" in lower or "risk" in lower:
+        fragments.append("风险条件仍需确认")
+    if "wait" in lower or "waiting" in lower:
+        fragments.append("等待确认")
+    if "confirmation" in lower or "confirmed" in lower:
+        fragments.append("确认信号不足")
+    if not fragments:
+        return ""
+    unique = list(dict.fromkeys(fragments))
+    return "，".join(unique) + "。"
+
+
+def _ascii_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    ascii_chars = sum(1 for char in text if ord(char) < 128)
+    return ascii_chars / len(text)
+
+
 def _bounded(value: str, max_length: int) -> str:
     text = str(value or "").strip()
     if len(text) <= max_length:
         return text
-    return f"{text[: max_length - 15]}...[truncated]"
+    if max_length <= 1:
+        return text[:max_length]
+    return f"{text[: max_length - 1]}…"
 
 
 def _bounded_message(value: str, *, max_length: int) -> str:
-    text = str(value or "")
+    text = "\n".join(line.rstrip() for line in str(value or "").splitlines() if line.strip())
     if len(text) <= max_length:
         return text
-    return f"{text[: max_length - 28]}\n...[truncated for Hermes]"
+    lines = text.splitlines()
+    boundary = _boundary_text()
+    essential_prefixes = (
+        "生命周期",
+        "当前建议",
+        "- 动作",
+        "- 方向",
+        "- 交易许可",
+        "策略证据",
+        "- 23F",
+        "大模型审查",
+        "- review_decision",
+        "- evidence_quality",
+        "风控",
+        "- 风险闸门",
+        "边界",
+    )
+    essential = [line for line in lines if line.startswith(essential_prefixes)]
+    if boundary not in essential:
+        essential.append(boundary)
+    compact = "\n".join(_bounded(line, 140) for line in essential)
+    if len(compact) <= max_length:
+        return compact
+    emergency = "\n".join(
+        [
+            next((line for line in essential if line.startswith("当前建议")), "当前建议："),
+            next((line for line in essential if line.startswith("- 动作")), "- 动作：wait"),
+            next((line for line in essential if line.startswith("- 23F")), "- 23F：unknown"),
+            next((line for line in essential if line.startswith("大模型审查")), "大模型审查：摘要已压缩。"),
+            boundary,
+        ]
+    )
+    return emergency if len(emergency) <= max_length else emergency[:max_length]
 
 
 __all__ = [

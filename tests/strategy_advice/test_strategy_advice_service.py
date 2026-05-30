@@ -307,7 +307,7 @@ def test_notification_payload_includes_23f_and_24c_evidence_chain() -> None:
             strategy_evidence_aggregation_id="SEA-1",
             model_key="real_review",
             provider="real_provider",
-            review_decision="need_more_evidence",
+            review_decision="require_more_evidence",
             evidence_quality="moderate",
             recommendation="wait",
             created_at=CREATED_AT,
@@ -322,7 +322,7 @@ def test_notification_payload_includes_23f_and_24c_evidence_chain() -> None:
     assert payload["strategy_evidence_chain"]["candidate_bias"] == "wait"
     assert payload["strategy_evidence_chain"]["decision_readiness"] == "wait_for_confirmation"
     assert payload["model_review_summary"]["model_key"] == "real_review"
-    assert payload["model_review_summary"]["review_decision"] == "need_more_evidence"
+    assert payload["model_review_summary"]["review_decision"] == "require_more_evidence"
     assert payload["model_review_summary"]["evidence_quality"] == "moderate"
     assert payload["model_review_summary"]["recommendation_to_advice_layer"] == "wait"
     assert payload["model_review_summary"]["adoption_status"] == "adopted"
@@ -761,7 +761,7 @@ def _model_review_candidate(
     result_id: str = "MARES-1",
     model_key: str = "real_review",
     provider: str = "real_provider",
-    review_decision: str = "need_more_evidence",
+    review_decision: str = "require_more_evidence",
     evidence_quality: str = "moderate",
     recommendation: str = "wait",
     quality_flags: list[Any] | None = None,

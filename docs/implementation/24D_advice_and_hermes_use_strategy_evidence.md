@@ -115,7 +115,18 @@ app/strategy_advice/notification_repository.py::create_alert_message
 - 24C `recommendation_to_advice_layer`
 - 24C 是否可采用，以及不可采用原因
 
-消息会被限制在 1500 字以内。每个策略最多一行摘要，模型反驳最多两条，缺失证据最多三条。
+消息目标控制在 800 字以内，硬上限 1500 字。渲染器不再追加
+`...[truncated for Hermes]`，而是按优先级保留当前建议、23F 候选结论、
+大模型采用状态、风控摘要、主要反驳、缺失证据和边界声明。
+
+展示层会做中文化和安全摘要：
+
+- 每个策略最多一行摘要，最多展示三条关键策略。
+- 模型反驳最多两条，缺失证据最多三条，风控摘要最多两条。
+- `review_decision` 等内部枚举保持原值，例如 `require_more_evidence` 不改写。
+- `dict` / JSON / Python 原始结构不会直接进入 Hermes 文案。
+- `mock_review` 只显示为测试模型结果，不描述成真实大模型审查。
+- low quality / boundary violation / parse failed / schema invalid 会透明显示为低权重或不可采用。
 
 ### 2.4 Hermes 与外部服务
 

@@ -170,7 +170,8 @@ def test_dry_run_renders_brief_notification_without_writes_or_hermes() -> None:
     assert result.status == StrategyAdviceNotificationStatus.SUCCESS
     assert result.notification_level == "brief"
     assert result.title == "BTC 4h 建议：延续上一条建议"
-    assert "调用=否" in result.message_preview
+    assert "当前建议：" in result.message_preview
+    assert "系统不自动交易" in result.message_preview
     assert repo.alert_messages == []
     assert repo.events == []
     assert client.calls == []
@@ -182,10 +183,9 @@ def test_dry_run_renders_full_notification_without_writes_or_hermes() -> None:
     rendered = render_strategy_advice_notification(review)
 
     assert "生命周期" in rendered.message
-    assert "大模型状态" in rendered.message
-    assert "风险状态" in rendered.message
-    assert "来源追踪" in rendered.message
-    assert "边界声明" in rendered.message
+    assert "当前建议" in rendered.message
+    assert "大模型审查" in rendered.message
+    assert "边界" in rendered.message
 
 
 def test_notification_required_false_is_skipped_without_writes() -> None:
@@ -381,9 +381,11 @@ def test_brief_notification_is_short_but_contains_model_status_and_boundary() ->
     rendered = render_strategy_advice_notification(_review("ADVR-brief-content", level="brief"))
 
     assert len(rendered.message) < 600
-    assert "本轮系统已完成" in rendered.message
-    assert "大模型状态" in rendered.message
-    assert "不是自动交易" in rendered.message
+    assert "当前建议：" in rendered.message
+    assert "大模型审查" in rendered.message
+    assert "本消息不是交易指令" in rendered.message
+    assert "系统不自动交易" in rendered.message
+    assert "用户人工决定" in rendered.message
 
 
 def test_renderer_displays_strategy_evidence_and_model_review_summary_bounded() -> None:
@@ -395,11 +397,58 @@ def test_renderer_displays_strategy_evidence_and_model_review_summary_bounded() 
 
     rendered = render_strategy_advice_notification(_review("ADVR-evidence", level="full", payload=payload))
 
-    assert "23F=wait" in rendered.message
+    assert "candidate_bias=wait" in rendered.message
     assert "wait_for_confirmation" in rendered.message
-    assert "模型审查" in rendered.message
-    assert "need_more_evidence" in rendered.message
-    assert "模型反驳" in rendered.message
+    assert "已采用当前材料包已有 DeepSeek 审查结果，本轮 21 未新调用大模型" in rendered.message
+    assert "require_more_evidence" in rendered.message
+    assert "need_more_evidence" not in rendered.message
+    assert "主要反驳" in rendered.message
+    assert "fast key-level breakout" not in rendered.message
+    assert "...[truncated for Hermes]" not in rendered.message
+    assert len(rendered.message) <= 1500
+
+
+def test_renderer_marks_mock_review_as_test_only() -> None:
+    rendered = _render_with_model_summary({"is_mock_review": True, "adoption_status": "test_only"})
+
+    assert "仅测试模型结果，不作为真实模型审查依据" in rendered.message
+    assert "已采用当前材料包已有 DeepSeek" not in rendered.message
+
+
+def test_renderer_marks_low_quality_as_low_weight() -> None:
+    rendered = _render_with_model_summary(
+        {
+            "adoption_status": "low_weight",
+            "adoption_reason": "low_quality",
+            "quality_flags": ["low_quality"],
+        }
+    )
+
+    assert "结果质量不足，仅低权重展示，不作为强依据" in rendered.message
+
+
+def test_renderer_marks_boundary_violation_as_not_adoptable() -> None:
+    rendered = _render_with_model_summary(
+        {
+            "adoption_status": "rejected",
+            "adoption_reason": "boundary_violation",
+            "boundary_flags": [{"code": "boundary_violation", "reason": "forbidden_trading_field_present"}],
+        }
+    )
+
+    assert "结果不可采用，原因：模型输出越界" in rendered.message
+
+
+def test_renderer_never_outputs_raw_python_dict_or_truncation_marker() -> None:
+    rendered = _render_with_model_summary(
+        {
+            "main_objection": {"discipline_check": "{'chasing_risk': 'unknown'}"},
+            "strongest_counterargument": {"reason_code": "volume_confirmation_missing"},
+        }
+    )
+
+    assert "{'discipline_check':" not in rendered.message
+    assert "...[truncated for Hermes]" not in rendered.message
     assert len(rendered.message) <= 1500
 
 
@@ -551,13 +600,14 @@ def _evidence_chain_summary() -> dict[str, Any]:
             "source": "model_analysis_result",
             "model_analysis_run_id": "MAR-test",
             "model_analysis_result_id": "MARES-test",
-            "model_key": "real_review",
-            "review_decision": "need_more_evidence",
+            "provider": "deepseek",
+            "model_key": "deepseek_review",
+            "review_decision": "require_more_evidence",
             "evidence_quality": "weak",
             "risk_acceptability": "caution",
             "agreement_with_23f": "partial",
             "main_objection": "当前证据不足以确认方向。",
-            "strongest_counterargument": "若关键位快速突破，等待可能错过确认窗口。",
+            "strongest_counterargument": "A fast key-level breakout could make waiting miss the confirmation window.",
             "recommendation_to_advice_layer": "wait",
             "quality_flags": [],
             "boundary_flags": [],
@@ -575,6 +625,16 @@ def _evidence_chain_summary() -> dict[str, Any]:
         "is_executable": False,
         "auto_trading_allowed": False,
     }
+
+
+def _render_with_model_summary(overrides: dict[str, Any]) -> Any:
+    payload = _payload(level="full", lifecycle_action="update_active_advice", result_advice_id="ADV-evidence")
+    evidence_summary = _evidence_chain_summary()
+    evidence_summary["model_review_summary"].update(overrides)
+    payload["evidence_chain_summary"] = evidence_summary
+    payload["strategy_evidence_chain"] = evidence_summary["strategy_evidence_chain"]
+    payload["model_review_summary"] = evidence_summary["model_review_summary"]
+    return render_strategy_advice_notification(_review("ADVR-evidence-variant", level="full", payload=payload))
 
 
 def _payload(*, level: str, lifecycle_action: str, result_advice_id: str | None) -> dict[str, Any]:
