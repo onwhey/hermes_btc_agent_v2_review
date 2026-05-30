@@ -12,8 +12,8 @@ docs_source:
   - "DeepSeek official API docs: https://api-docs.deepseek.com/api/create-chat-completion"
 model_role: fast_low_cost_review
 analysis_mode: single
-prompt_template_version: review_gate_v1
-review_schema_version: review_schema_v1
+prompt_template_version: review_strategy_evidence_v2
+review_schema_version: review_schema_v2_strategy_evidence
 
 capabilities:
   json_output: true

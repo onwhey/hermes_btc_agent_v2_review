@@ -377,6 +377,9 @@ def build_result_payload(
 ) -> ModelAnalysisResultPersistencePayload:
     """Build one final-row repository payload."""
 
+    validation_focus = list(normalized.get("validation_focus", []))
+    if normalized.get("review_payload_24c"):
+        validation_focus.append({"review_payload_24c": normalized.get("review_payload_24c")})
     return ModelAnalysisResultPersistencePayload(
         model_analysis_result_id=result_id,
         model_analysis_run_id=model_analysis_run_id,
@@ -394,7 +397,7 @@ def build_result_payload(
         rejection_reasons_json=list(normalized.get("rejection_reasons", [])),
         risk_warnings_json=list(normalized.get("risk_warnings", [])),
         conditions_to_reconsider_json=list(normalized.get("conditions_to_reconsider", [])),
-        validation_focus_json=list(normalized.get("validation_focus", [])),
+        validation_focus_json=validation_focus,
         human_review_questions_json=list(normalized.get("human_review_questions", [])),
         summary_text=str(normalized.get("summary_text", "")),
         not_trading_advice_text=str(normalized.get("not_trading_advice_text", "")),

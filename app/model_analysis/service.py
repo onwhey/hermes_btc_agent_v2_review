@@ -509,6 +509,22 @@ class ModelAnalysisService:
                 "prompt_template_hash": provider_resolution.prompt_template_hash,
                 "schema_normalization_policy_version": provider_resolution.schema_normalization_policy_version,
                 "schema_normalization_policy_hash": provider_resolution.schema_normalization_policy_hash,
+                "agreement_with_23f": normalized.get("agreement_with_23f"),
+                "model_review_decision_24c": normalized.get("model_review_decision_24c"),
+                "recommendation_to_advice_layer": normalized.get("recommendation_to_advice_layer"),
+                "main_objection": normalized.get("main_objection"),
+                "strongest_counterargument": normalized.get("strongest_counterargument"),
+                "evidence_refs": normalized.get("evidence_refs"),
+                "time_freshness_assessment": normalized.get("time_freshness_assessment"),
+                "boundary_flags": normalized.get("boundary_flags"),
+                "quality_flags": normalized.get("quality_flags"),
+                "confidence": normalized.get("confidence"),
+                "review_payload_24c": normalized.get("review_payload_24c"),
+                "chain_mode": provider_resolution.analysis_mode,
+                "stage_role": provider_resolution.model_role,
+                "stage_order": provider_resolution.chain_step or 1,
+                "parent_review_id": provider_resolution.parent_model_analysis_run_id,
+                "model_review_chain_id": provider_resolution.chain_id,
                 "raw_request_hash": provider_resolution.raw_request_hash,
                 "raw_request_storage_ref": provider_resolution.raw_request_storage_ref,
                 "raw_response_hash": getattr(provider_output, "raw_response_hash", None),
@@ -1906,11 +1922,17 @@ def _attach_schema_validation_metadata(
 ) -> ModelProviderResult:
     """Attach schema normalization metadata to real provider responses for audit."""
 
-    if not schema_result.enum_normalizations or not isinstance(provider_result, ProviderResponse):
+    if not isinstance(provider_result, ProviderResponse):
         return provider_result
     response_metadata = dict(provider_result.response_metadata or {})
-    response_metadata["schema_enum_normalizations"] = [dict(item) for item in schema_result.enum_normalizations]
-    response_metadata["schema_normalization_warning"] = _schema_normalization_warning(schema_result)
+    if schema_result.enum_normalizations:
+        response_metadata["schema_enum_normalizations"] = [dict(item) for item in schema_result.enum_normalizations]
+        response_metadata["schema_normalization_warning"] = _schema_normalization_warning(schema_result)
+    normalized = schema_result.normalized_output or {}
+    response_metadata["boundary_flags"] = list(normalized.get("boundary_flags") or [])
+    response_metadata["quality_flags"] = list(normalized.get("quality_flags") or [])
+    response_metadata["agreement_with_23f"] = normalized.get("agreement_with_23f")
+    response_metadata["recommendation_to_advice_layer"] = normalized.get("recommendation_to_advice_layer")
     return replace(provider_result, response_metadata=response_metadata)
 
 

@@ -19,6 +19,10 @@ import json
 from typing import Any, Mapping
 
 from app.core.config import AppSettings
+from app.model_analysis.material_input import (
+    build_time_anchor_summary,
+    extract_strategy_evidence,
+)
 from app.model_analysis.schema_validator import ENUM_ALLOWED_VALUES
 from app.model_analysis.types import PromptBuildResult
 
@@ -44,28 +48,59 @@ PROMPT_STRATEGY_KEY_ALIASES = {
 }
 
 REVIEW_OUTPUT_JSON_SKELETON: dict[str, Any] = {
-    "review_decision": "wait",
+    "agreement_with_23f": "insufficient_evidence",
+    "review_decision": "need_more_evidence",
+    "main_objection": "",
+    "strongest_counterargument": "",
+    "missing_evidence": [],
+    "disputed_strategy_points": [],
+    "overestimated_evidence": [],
+    "underestimated_evidence": [],
+    "scenario_review": {
+        "main_scenario": "",
+        "opposite_scenario": "",
+        "risk_scenario": "",
+        "no_trade_scenario": "",
+    },
+    "discipline_check": {
+        "chasing_risk": "unknown",
+        "risk_reward_quality": "unknown",
+        "stop_condition_clarity": "unknown",
+        "overtrading_risk": "unknown",
+    },
+    "recommendation_to_advice_layer": "need_more_evidence",
+    "evidence_refs": [],
+    "time_freshness_assessment": "",
+    "boundary_flags": [],
+    "quality_flags": [],
+    "confidence": "unknown",
+    "summary": "",
+    "not_trading_advice": True,
+    "human_review_required": True,
+    "is_final_trading_advice": False,
+    "is_trading_signal": False,
+    "is_executable": False,
+    "auto_trading_allowed": False,
+    # Backward-compatible stage-19 result fields. The validator also derives
+    # these from 24C fields when a provider omits them.
     "evidence_quality": "unknown",
     "logic_consistency": "unknown",
     "risk_acceptability": "unknown",
     "strategy_conflict_level": "unknown",
-    "missing_evidence": [],
     "rejection_reasons": [],
     "risk_warnings": [],
     "conditions_to_reconsider": [],
     "human_review_questions": [],
     "validation_focus": [],
-    "not_trading_advice": True,
-    "human_review_required": False,
-    "is_final_trading_advice": False,
-    "is_trading_signal": False,
-    "is_executable": False,
-    "auto_trading_allowed": False,
     "summary_text": "",
 }
 
 REVIEW_OUTPUT_ALLOWED_ENUM_VALUES: dict[str, list[str]] = {
     "review_decision": [
+        "accept",
+        "downgrade",
+        "risk_reject",
+        "need_more_evidence",
         "accept_for_further_review",
         "reject_candidate",
         "require_more_evidence",
@@ -73,6 +108,17 @@ REVIEW_OUTPUT_ALLOWED_ENUM_VALUES: dict[str, list[str]] = {
         "human_review_required",
         "blocked",
     ],
+    "agreement_with_23f": ["agree", "partial", "disagree", "insufficient_evidence"],
+    "recommendation_to_advice_layer": [
+        "accept_for_further_review",
+        "wait",
+        "need_more_evidence",
+        "risk_reject",
+        "downgrade",
+        "human_review_required",
+    ],
+    "discipline_check_value": ["ok", "caution", "poor", "unclear", "unknown"],
+    "confidence": ["high", "medium", "low", "unknown"],
     **{field_name: sorted(values) for field_name, values in ENUM_ALLOWED_VALUES.items()},
 }
 
@@ -87,7 +133,7 @@ REVIEW_DECISION_SEMANTIC_RULES: dict[str, Any] = {
     },
 }
 
-PROMPT_TEMPLATE_POLICY_VERSION = "review_prompt_policy_v2"
+PROMPT_TEMPLATE_POLICY_VERSION = "review_prompt_policy_v3_strategy_evidence"
 
 
 def build_prompt_template_hash(
@@ -117,6 +163,11 @@ REVIEW_OUTPUT_RULES = (
     "Enum fields must use allowed_enum_values exactly.",
     "No trading/action fields: entry_price, stop_loss, take_profit, position_size, leverage, order_type, final_advice, buy_now, sell_now.",
     "not_trading_advice=true; human_review_required=boolean; final/signal/executable/auto flags=false.",
+    "Act as an independent risk review officer: rebut 23F first, then decide whether any evidence can be accepted.",
+    "Every major judgment must cite evidence_refs from the provided material pack.",
+    "Do not use material-external news, macro, on-chain, account, position, or old BTC market-memory information.",
+    "Do not treat 23F candidate_bias as fact and do not output formal entry / stop_loss / take_profit.",
+    "If evidence is insufficient, use review_decision=need_more_evidence or wait.",
     "review_decision=require_more_evidence requires human_review_required=true.",
     "If evidence is insufficient but no human intervention is required, use review_decision=wait and human_review_required=false.",
 )
@@ -125,15 +176,18 @@ PROMPT_TEMPLATE_HASH = build_prompt_template_hash()
 
 REVIEW_INSTRUCTIONS = "\n".join(
     (
+        "You are an independent risk review officer, not a strategy and not a final trader.",
+        "Your task is to review whether the 23F strategy evidence chain is reliable.",
+        "You must rebut 23F first, then decide whether to accept, downgrade, reject, or request more evidence.",
         "Review material only, not trades.",
         *REVIEW_OUTPUT_RULES,
-        "The output must conform to review_schema_v1.",
+        "The output must conform to review_schema_v2_strategy_evidence.",
     )
 )
 
 REVIEW_PROVIDER_SYSTEM_MESSAGE = "\n".join(
     (
-        "You are a strict JSON-only material review gate.",
+        "You are a strict JSON-only independent risk review officer.",
         "Return exactly one JSON object that conforms to the user's required_output_json_skeleton.",
         *REVIEW_OUTPUT_RULES,
     )
@@ -155,6 +209,8 @@ def build_model_review_prompt(material_pack: Any, *, settings: AppSettings) -> P
     summary_json = _json_field(material_pack, "summary_json")
     question_json = _json_field(material_pack, "question_json")
     validation_plan_json = _json_field(material_pack, "validation_plan_json")
+    strategy_evidence = extract_strategy_evidence(material_pack)
+    time_anchors = build_time_anchor_summary(material_pack)
 
     strategy_summaries, total_strategy_count = _strategy_summaries(
         (material_json, summary_json),
@@ -177,6 +233,38 @@ def build_model_review_prompt(material_pack: Any, *, settings: AppSettings) -> P
         "strategy_item_count": len(strategy_summaries),
         "truncated_strategy_count": truncated_strategy_count,
         "strategy_summaries": strategy_summaries,
+        "time_anchors": dict(time_anchors),
+        "strategy_evidence": _compact_strategy_evidence(strategy_evidence),
+        "strategy_evidence_source": _compact_scalar(strategy_evidence.get("source")),
+        "strategy_evidence_aggregation_id": _compact_scalar(strategy_evidence.get("aggregation_id")),
+        "candidate_bias": _compact_scalar(strategy_evidence.get("candidate_bias")),
+        "decision_readiness": _compact_scalar(strategy_evidence.get("decision_readiness")),
+        "strategy_evidence_summary": _compact_mapping(
+            _as_mapping(strategy_evidence.get("strategy_evidence_summary")),
+            max_items=16,
+        ),
+        "decision_source_chain": _compact_list(strategy_evidence.get("decision_source_chain"), max_items=10),
+        "role_coverage_matrix": _compact_mapping(
+            _as_mapping(strategy_evidence.get("role_coverage_matrix")),
+            max_items=12,
+        ),
+        "evidence_missing": _compact_list(strategy_evidence.get("evidence_missing"), max_items=12),
+        "strategy_conflict_summary": _compact_list(
+            strategy_evidence.get("strategy_conflict_summary"),
+            max_items=10,
+        ),
+        "risk_gate_summary": _compact_mapping(_as_mapping(strategy_evidence.get("risk_gate_summary")), max_items=12),
+        "model_review_focus": _compact_list(strategy_evidence.get("model_review_focus"), max_items=12)
+        or _compact_mapping(_as_mapping(strategy_evidence.get("model_review_focus")), max_items=12),
+        "kline_window_summary": _compact_mapping(_as_mapping(material_json.get("kline_window_summary")), max_items=8),
+        "market_material_summary": _compact_mapping(
+            {
+                "swing": material_json.get("swing"),
+                "volatility": material_json.get("volatility"),
+                "support_resistance": material_json.get("support_resistance"),
+            },
+            max_items=8,
+        ),
         "material_summary": _compact_mapping(_high_level_summary(summary_json)),
         "review_questions": _compact_list(question_json.get("questions", []) if isinstance(question_json, dict) else []),
         "validation_focus": _compact_mapping(validation_plan_json),
@@ -256,7 +344,9 @@ def _collect_strategy_like_items(value: Any, collected: list[Mapping[str, Any]],
         if _looks_like_strategy_item(value):
             collected.append(value)
             return
-        for child in value.values():
+        for key, child in value.items():
+            if str(key) == "strategy_evidence":
+                continue
             _collect_strategy_like_items(child, collected, depth=depth + 1)
         return
     if isinstance(value, list):
@@ -292,10 +382,12 @@ def _prompt_input_summary(input_summary: Mapping[str, Any]) -> dict[str, Any]:
     compact = dict(input_summary)
     strategy_summaries = input_summary.get("strategy_summaries", [])
     if isinstance(strategy_summaries, list):
+        prompt_strategy_summaries = strategy_summaries[:12]
         compact["strategy_summaries"] = [
             _prompt_strategy_item(item) if isinstance(item, Mapping) else item
-            for item in strategy_summaries
+            for item in prompt_strategy_summaries
         ]
+        compact["prompt_strategy_summaries_truncated"] = max(len(strategy_summaries) - len(prompt_strategy_summaries), 0)
     return compact
 
 
@@ -304,6 +396,39 @@ def _prompt_strategy_item(item: Mapping[str, Any]) -> dict[str, Any]:
         PROMPT_STRATEGY_KEY_ALIASES.get(str(key), str(key)): value
         for key, value in item.items()
     }
+
+
+def _compact_strategy_evidence(strategy_evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Return bounded public 23F evidence without private strategy payloads."""
+
+    keys = (
+        "source",
+        "aggregation_id",
+        "strategy_signal_run_id",
+        "status",
+        "candidate_bias",
+        "candidate_confidence",
+        "decision_readiness",
+        "strategy_evidence_summary",
+        "decision_source_chain",
+        "role_coverage_matrix",
+        "evidence_missing",
+        "strategy_conflict_summary",
+        "participation_summary",
+        "observe_only_summary",
+        "risk_gate_summary",
+        "model_review_focus",
+    )
+    compact: dict[str, Any] = {}
+    for key in keys:
+        value = strategy_evidence.get(key)
+        if isinstance(value, Mapping):
+            compact[key] = _compact_mapping(value, max_items=12)
+        elif isinstance(value, list):
+            compact[key] = _compact_list(value, max_items=10)
+        else:
+            compact[key] = _compact_scalar(value)
+    return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
 
 
 def _high_level_summary(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -347,6 +472,10 @@ def _compact_scalar(value: Any, *, max_chars: int = 300) -> Any:
     if len(text) <= max_chars:
         return text
     return f"{text[:max_chars]}...[truncated]"
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
 __all__ = [

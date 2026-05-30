@@ -149,7 +149,34 @@ def material_pack(
         }
     ]
     default_question_payload = {"questions": ["材料证据是否足够？"]}
+    default_strategy_evidence = {
+        "source": "strategy_evidence_aggregation_result",
+        "aggregation_id": "SEA-stage19",
+        "strategy_signal_run_id": strategy_signal_run_id,
+        "status": "success",
+        "candidate_bias": "wait",
+        "candidate_confidence": "0.62",
+        "decision_readiness": "wait_for_confirmation",
+        "strategy_evidence_summary": {"summary": "23F public evidence chain fixture"},
+        "decision_source_chain": [{"strategy_name": "risk_gate", "effect": "wait"}],
+        "role_coverage_matrix": {"context": {"present": True}, "risk_control": {"present": True}},
+        "evidence_missing": [],
+        "strategy_conflict_summary": [],
+        "participation_summary": {"decision_participant": 2},
+        "observe_only_summary": {},
+        "risk_gate_summary": {"risk_gate_decision": "wait", "risk_scope": "current_candidate"},
+        "model_review_focus": ["审查 23F 证据链是否可靠"],
+    }
+    default_kline_window_summary = {
+        "latest_base_kline": {"open_time_utc": "2026-05-20T04:00:00Z", "close": 68000},
+        "latest_higher_kline": {"open_time_utc": "2026-05-19T00:00:00Z", "close": 67600},
+        "base_window_count": 120,
+        "higher_window_count": 90,
+    }
     default_material_payload = {
+        "material_schema_version": "material_schema_v2",
+        "kline_window_summary": default_kline_window_summary,
+        "strategy_evidence": default_strategy_evidence,
         "strategy_summaries": strategy_items,
         "strategy_conflict_points": {
             "failed_strategy_count": failed_strategy_count,
@@ -172,7 +199,7 @@ def material_pack(
         base_interval="4h",
         higher_interval="1d",
         aggregation_version="aggregation_v1",
-        material_schema_version="material_schema_v1",
+        material_schema_version="material_schema_v2",
         status=status,
         material_json=_json_payload(default_material_payload if material_payload is None else material_payload),
         summary_json=_json_payload(default_summary_payload if summary_payload is None else summary_payload),
@@ -188,10 +215,12 @@ def material_pack(
             else data_window_payload
         ),
         future_leakage_guard_json=_json_payload(
-            {"future_leakage_guard": True, "uses_closed_material_only": True}
+            {"future_leakage_guard": True, "uses_closed_material_only": True, "uses_future_klines": False}
             if future_leakage_guard_payload is None
             else future_leakage_guard_payload
         ),
+        created_at_utc=datetime(2026, 5, 20, 9, 0, 0, tzinfo=timezone.utc),
+        updated_at_utc=datetime(2026, 5, 20, 9, 0, 0, tzinfo=timezone.utc),
     )
 
 
@@ -286,7 +315,7 @@ def test_enabled_mock_registry_allows_dry_run_and_supplies_metadata(tmp_path: Pa
 
     assert result.status == ModelAnalysisStatus.SUCCESS
     assert result.model_key == "mock_review"
-    assert result.model_role == "review_gate"
+    assert result.model_role == "primary_review"
     assert result.analysis_mode == "single"
     assert result.details["mock_provider_only"] is True
     assert repo.run_rows == []
@@ -326,12 +355,19 @@ def test_confirm_write_persists_run_and_result_only_with_enabled_config() -> Non
     assert repo.run_rows[0].is_executable is False
     assert repo.run_rows[0].auto_trading_allowed is False
     assert repo.run_rows[0].model_key == "mock_review"
-    assert repo.run_rows[0].model_role == "review_gate"
+    assert repo.run_rows[0].model_role == "primary_review"
     assert repo.run_rows[0].analysis_mode == "single"
     assert repo.run_rows[0].chain_id is None
     assert repo.run_rows[0].chain_step is None
     assert repo.run_rows[0].parent_model_analysis_run_id is None
     assert repo.run_rows[0].comparison_group_id is None
+    assert result.details["chain_mode"] == "single"
+    assert result.details["stage_role"] == "primary_review"
+    assert result.details["stage_order"] == 1
+    assert result.details["agreement_with_23f"]
+    assert result.details["review_payload_24c"]["strongest_counterargument"]
+    assert "strategy_evidence" in repo.run_rows[0].input_summary_json
+    assert "time_anchors" in repo.run_rows[0].input_summary_json
     assert repo.result_rows[0].review_version_key == result.review_version_key
 
 
@@ -359,6 +395,44 @@ def test_success_and_complete_partial_success_material_pack_can_enter_review() -
 
     assert success_result.status == ModelAnalysisStatus.SUCCESS
     assert partial_result.status == ModelAnalysisStatus.SUCCESS
+
+
+def test_24c_missing_strategy_evidence_blocks_before_model_call() -> None:
+    base_payload = json.loads(material_pack().material_json)
+    del base_payload["strategy_evidence"]
+
+    class RaisingProvider:
+        provider_name = "mock"
+
+        def review_material(self, _prompt: Any) -> Any:
+            raise AssertionError("model provider must not be called when strategy_evidence is missing")
+
+    result = service_with_repo(
+        FakeModelAnalysisRepository(material_pack=material_pack(material_payload=base_payload)),
+        provider=RaisingProvider(),
+    ).run_model_analysis(FakeSession(), request=run_request())
+
+    assert result.status == ModelAnalysisStatus.BLOCKED
+    assert result.error_code == "strategy_evidence_missing"
+
+
+def test_24c_missing_time_anchor_blocks_before_model_call() -> None:
+    base_payload = json.loads(material_pack().material_json)
+    del base_payload["kline_window_summary"]
+
+    class RaisingProvider:
+        provider_name = "mock"
+
+        def review_material(self, _prompt: Any) -> Any:
+            raise AssertionError("model provider must not be called when time anchors are missing")
+
+    result = service_with_repo(
+        FakeModelAnalysisRepository(material_pack=material_pack(material_payload=base_payload)),
+        provider=RaisingProvider(),
+    ).run_model_analysis(FakeSession(), request=run_request())
+
+    assert result.status == ModelAnalysisStatus.BLOCKED
+    assert result.error_code == "material_pack_time_anchor_missing"
 
 
 def test_partial_success_core_material_missing_is_blocked() -> None:
@@ -498,7 +572,7 @@ def test_output_char_and_byte_limits_block_review() -> None:
     byte_result = service_with_repo(
         repo,
         provider=provider,
-        settings=AppSettings(model_review_max_output_chars=20000, model_review_max_output_bytes=1000),
+        settings=AppSettings(model_review_max_output_chars=50000, model_review_max_output_bytes=1000),
     ).run_model_analysis(FakeSession(), request=run_request())
 
     assert char_result.status == ModelAnalysisStatus.BLOCKED
@@ -507,7 +581,7 @@ def test_output_char_and_byte_limits_block_review() -> None:
     assert byte_result.error_code == "output_byte_limit_exceeded"
 
 
-def test_invalid_schema_and_forbidden_trading_fields_are_blocked() -> None:
+def test_invalid_schema_blocks_and_forbidden_trading_fields_are_boundary_flags() -> None:
     invalid_schema_result = service_with_repo(
         FakeModelAnalysisRepository(material_pack=material_pack()),
         provider=MockModelReviewProvider(override_response={"review_decision": "wait"}),
@@ -524,8 +598,11 @@ def test_invalid_schema_and_forbidden_trading_fields_are_blocked() -> None:
             provider=MockModelReviewProvider(override_response=forbidden),
         ).run_model_analysis(FakeSession(), request=run_request())
 
-        assert result.status == ModelAnalysisStatus.BLOCKED
-        assert result.error_code == "schema_forbidden_trading_field"
+        assert result.status == ModelAnalysisStatus.SUCCESS
+        assert result.error_code is None
+        assert result.human_review_required is True
+        assert result.details["boundary_flags"][0]["reason"] == "forbidden_trading_field_present"
+        assert field_name in result.details["boundary_flags"][0]["path"]
 
 
 def test_schema_requires_human_review_required_boolean_and_not_trading_advice_true() -> None:
@@ -541,6 +618,32 @@ def test_schema_requires_human_review_required_boolean_and_not_trading_advice_tr
     assert not_boolean_result.error_code == "schema_human_review_required_not_boolean"
     assert not_advice_result.is_valid is False
     assert not_advice_result.error_code == "schema_not_trading_advice_false"
+
+
+def test_24c_schema_marks_low_quality_without_accepting_high_confidence() -> None:
+    output = _valid_provider_output()
+    output["strongest_counterargument"] = ""
+    output["evidence_refs"] = []
+
+    result = validate_model_review_output(output)
+
+    assert result.is_valid is True
+    assert result.normalized_output["human_review_required"] is True
+    assert result.normalized_output["evidence_quality"] == "weak"
+    assert "missing_strongest_counterargument" in result.normalized_output["quality_flags"]
+    assert "missing_evidence_refs" in result.normalized_output["quality_flags"]
+
+
+def test_24c_schema_marks_external_information_as_boundary_violation() -> None:
+    output = _valid_provider_output()
+    output["summary"] = "模型引用了材料外外部新闻，因此必须降级。"
+
+    result = validate_model_review_output(output)
+
+    assert result.is_valid is True
+    assert result.normalized_output["human_review_required"] is True
+    assert result.normalized_output["risk_acceptability"] == "unacceptable"
+    assert result.normalized_output["boundary_flags"][0]["reason"] == "external_information_reference"
 
 
 def test_existing_success_result_skips_and_blocked_failed_attempts_do_not_lock_rerun() -> None:
@@ -695,6 +798,27 @@ def test_prompt_builder_compresses_dynamic_strategy_list_without_name_assumption
     assert prompt.input_byte_count <= 32768
 
 
+def test_24c_prompt_includes_strategy_evidence_time_anchors_and_review_officer_rules() -> None:
+    prompt = build_model_review_prompt(material_pack(), settings=AppSettings())
+    prompt_payload = json.loads(prompt.prompt_text)
+
+    assert prompt.input_summary["strategy_evidence"]["source"] == "strategy_evidence_aggregation_result"
+    assert prompt.input_summary["strategy_evidence_aggregation_id"] == "SEA-stage19"
+    assert prompt.input_summary["candidate_bias"] == "wait"
+    assert prompt.input_summary["decision_readiness"] == "wait_for_confirmation"
+    assert prompt.input_summary["time_anchors"]["analysis_time_utc"] == "2026-05-20T09:00:00Z"
+    assert prompt.input_summary["time_anchors"]["latest_base_kline_close_time_utc"] == "2026-05-20T08:00:00Z"
+    assert prompt.input_summary["time_anchors"]["latest_higher_kline_close_time_utc"] == "2026-05-20T00:00:00Z"
+    assert prompt.input_summary["time_anchors"]["data_freshness_status"] == "fresh"
+    instructions = prompt_payload["instructions"]
+    assert "independent risk review officer" in instructions
+    assert "rebut 23F first" in instructions
+    assert "Do not use material-external news" in instructions
+    assert "Do not treat 23F candidate_bias as fact" in instructions
+    assert "entry / stop_loss / take_profit" in instructions
+    assert "strategy_evidence" in prompt.prompt_text
+
+
 def test_model_analysis_schema_uses_attempt_key_and_single_result_unique_key() -> None:
     from sqlalchemy import UniqueConstraint
 
@@ -804,6 +928,7 @@ def test_model_analysis_source_does_not_call_real_model_strategy_or_trading_inte
     assert "BinanceRestClient" not in source
     assert "MarketKline4h" not in source
     assert "MarketKline1d" not in source
+    assert "strategy_payload_json" not in source
     assert "DeepSeekClient" not in source
     assert "GannStrategy" not in source
     assert "TrendStrategy" not in source
@@ -886,7 +1011,32 @@ def _valid_provider_output(
     summary_text: str = "这是 mock 审查结果，不是最终交易建议。",
 ) -> dict[str, Any]:
     return {
+        "agreement_with_23f": "partial",
         "review_decision": review_decision,
+        "main_objection": "23F 的候选偏向仍需要反方审查，不能直接当成事实。",
+        "strongest_counterargument": "若关键角色证据缺失或风控摘要阻断，23F candidate_bias 必须降级。",
+        "disputed_strategy_points": [],
+        "overestimated_evidence": ["candidate_bias"],
+        "underestimated_evidence": ["risk_gate_summary"],
+        "scenario_review": {
+            "main_scenario": "23F 证据链完整时可进入后续建议层审查。",
+            "opposite_scenario": "相反证据增强时应降级为 wait。",
+            "risk_scenario": "风控阻断时不得生成可执行结构。",
+            "no_trade_scenario": "证据不足时保持 need_more_evidence。",
+        },
+        "discipline_check": {
+            "chasing_risk": "caution",
+            "risk_reward_quality": "unclear",
+            "stop_condition_clarity": "unclear",
+            "overtrading_risk": "caution",
+        },
+        "recommendation_to_advice_layer": "wait",
+        "evidence_refs": ["strategy_evidence.strategy_evidence_summary", "strategy_evidence.risk_gate_summary"],
+        "time_freshness_assessment": "时间锚点完整，审查范围限定在材料包内。",
+        "boundary_flags": [],
+        "quality_flags": [],
+        "confidence": "medium",
+        "summary": summary_text,
         "human_review_required": (
             review_decision == ReviewDecision.HUMAN_REVIEW_REQUIRED.value
             if human_review_required is None
@@ -942,10 +1092,10 @@ def _write_model_registry(
                     f"enabled: {str(model_enabled).lower()}",
                     "model_name: mock-reviewer",
                     "model_version: mock_v1",
-                    "model_role: review_gate",
+                    "model_role: primary_review",
                     "analysis_mode: single",
-                    "prompt_template_version: review_gate_v1",
-                    "review_schema_version: review_schema_v1",
+                    "prompt_template_version: review_strategy_evidence_v2",
+                    "review_schema_version: review_schema_v2_strategy_evidence",
                 ]
             ),
             encoding="utf-8",

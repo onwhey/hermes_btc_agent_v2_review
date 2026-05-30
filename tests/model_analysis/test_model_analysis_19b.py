@@ -652,7 +652,7 @@ def test_real_deepseek_schema_invalid_preserves_usage_without_writing_or_hermes(
     assert alert.calls == []
 
 
-def test_real_deepseek_forbidden_and_safety_flags_block(tmp_path: Path) -> None:
+def test_real_deepseek_forbidden_fields_flag_boundary_and_safety_flags_block(tmp_path: Path) -> None:
     config_dir = _write_deepseek_config(tmp_path / "config")
 
     forbidden = _valid_provider_output()
@@ -695,8 +695,11 @@ def test_real_deepseek_forbidden_and_safety_flags_block(tmp_path: Path) -> None:
         ),
     ).run_model_analysis(FakeSession(), request=_real_request())
 
-    assert forbidden_result.error_code == "schema_forbidden_trading_field"
-    assert "***REDACTED_FORBIDDEN_TRADING_FIELD***" in forbidden_result.details["sanitized_content_preview"]
+    assert forbidden_result.status == ModelAnalysisStatus.SUCCESS
+    assert forbidden_result.error_code is None
+    assert forbidden_result.human_review_required is True
+    assert forbidden_result.details["boundary_flags"][0]["reason"] == "forbidden_trading_field_present"
+    assert "entry_price" in forbidden_result.details["boundary_flags"][0]["path"]
     assert not_advice_result.error_code == "schema_not_trading_advice_false"
     assert not_boolean_result.error_code == "schema_human_review_required_not_boolean"
     assert safety_result.error_code == "schema_safety_flag_not_false"
@@ -810,14 +813,14 @@ def test_result_persistence_failed_updates_run_and_preserves_output_context(tmp_
     assert repo.run_rows[0].review_version_key
     assert repo.result_rows == []
     assert result.model_key == "deepseek_v4_pro_review"
-    assert result.model_role == "mathematical_structure_review"
+    assert result.model_role == "primary_review"
     assert result.analysis_mode == "single"
     output_lines = dict(line.split("=", 1) for line in format_model_analysis_result_lines(result))
     assert output_lines["provider"] == "deepseek"
     assert output_lines["model_key"] == "deepseek_v4_pro_review"
     assert output_lines["model_name"] == "deepseek-v4-pro"
     assert output_lines["model_version"] == "v4_pro"
-    assert output_lines["model_role"] == "mathematical_structure_review"
+    assert output_lines["model_role"] == "primary_review"
     assert output_lines["analysis_mode"] == "single"
     assert output_lines["material_pack_id"] == "AMP-stage19"
     assert output_lines["aggregation_run_id"] == "SAR-stage19"
@@ -1203,7 +1206,7 @@ def test_oversized_raw_response_dry_run_has_no_artifact_or_hermes_side_effect(tm
     assert alert.calls == []
 
 
-def test_real_provider_schema_forbidden_trading_fields_are_blocked(tmp_path: Path) -> None:
+def test_real_provider_schema_forbidden_trading_fields_are_boundary_flags(tmp_path: Path) -> None:
     config_dir = _write_deepseek_config(tmp_path / "config")
     output = _valid_provider_output()
     output["entry_price"] = "forbidden"
@@ -1215,8 +1218,10 @@ def test_real_provider_schema_forbidden_trading_fields_are_blocked(tmp_path: Pat
         provider=provider,
     ).run_model_analysis(FakeSession(), request=_real_request())
 
-    assert result.status == ModelAnalysisStatus.BLOCKED
-    assert result.error_code == "schema_forbidden_trading_field"
+    assert result.status == ModelAnalysisStatus.SUCCESS
+    assert result.error_code is None
+    assert result.human_review_required is True
+    assert result.details["boundary_flags"][0]["reason"] == "forbidden_trading_field_present"
     assert provider.calls == 1
 
 
@@ -1257,8 +1262,8 @@ def _review_version_key_for_test(
     *,
     profile_hash: str = "profile-hash",
     prompt_template_hash: str = PROMPT_TEMPLATE_HASH,
-    prompt_template_version: str = "review_gate_v1",
-    review_schema_version: str = "review_schema_v1",
+    prompt_template_version: str = "review_strategy_evidence_v2",
+    review_schema_version: str = "review_schema_v2_strategy_evidence",
     schema_normalization_policy_version: str = SCHEMA_NORMALIZATION_POLICY_VERSION,
     schema_normalization_policy_hash: str = SCHEMA_NORMALIZATION_POLICY_HASH,
 ) -> str:
@@ -1458,10 +1463,10 @@ def _write_profile(
                 'docs_checked_at: "2026-05-20T00:00:00Z"',
                 "docs_source:",
                 "  - DeepSeek official API documentation for stage 19B tests.",
-                "model_role: mathematical_structure_review",
+                "model_role: primary_review",
                 "analysis_mode: single",
-                "prompt_template_version: review_gate_v1",
-                "review_schema_version: review_schema_v1",
+                "prompt_template_version: review_strategy_evidence_v2",
+                "review_schema_version: review_schema_v2_strategy_evidence",
                 "",
                 "capabilities:",
                 "  json_output: true",

@@ -14,6 +14,12 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from app.model_analysis.material_input import (
+    build_time_anchor_summary,
+    extract_strategy_evidence,
+    strategy_evidence_missing_fields,
+    time_anchor_missing_fields,
+)
 from app.model_analysis.types import ModelAnalysisStatus
 
 REVIEWABLE_MATERIAL_PACK_STATUSES = frozenset(
@@ -51,7 +57,7 @@ def validate_material_pack_reviewability(material_pack: Any) -> MaterialPackRevi
 
     status = str(getattr(material_pack, "status", "")).strip().lower()
     if status == ModelAnalysisStatus.SUCCESS.value:
-        return MaterialPackReviewability(is_reviewable=True)
+        return _validate_24c_strategy_evidence_and_time(material_pack)
     if status != ModelAnalysisStatus.PARTIAL_SUCCESS.value:
         return MaterialPackReviewability(
             is_reviewable=False,
@@ -59,7 +65,58 @@ def validate_material_pack_reviewability(material_pack: Any) -> MaterialPackRevi
             message="analysis_material_pack status is not reviewable.",
             error_message=f"status={status or 'unknown'}",
         )
-    return _validate_partial_success_material_pack(material_pack)
+    partial_result = _validate_partial_success_material_pack(material_pack)
+    if not partial_result.is_reviewable:
+        return partial_result
+    return _validate_24c_strategy_evidence_and_time(material_pack)
+
+
+def _validate_24c_strategy_evidence_and_time(material_pack: Any) -> MaterialPackReviewability:
+    """Require the public 23F evidence bridge and review time anchors."""
+
+    strategy_evidence = extract_strategy_evidence(material_pack)
+    if not strategy_evidence:
+        return MaterialPackReviewability(
+            is_reviewable=False,
+            error_code="strategy_evidence_missing",
+            message="analysis_material_pack strategy_evidence is required for 24C model review.",
+            error_message="material_json.strategy_evidence is missing or empty",
+        )
+    source = str(strategy_evidence.get("source", "") or "")
+    if source != "strategy_evidence_aggregation_result":
+        return MaterialPackReviewability(
+            is_reviewable=False,
+            error_code="strategy_evidence_source_not_23f",
+            message="analysis_material_pack strategy_evidence does not come from 23F aggregation.",
+            error_message=f"strategy_evidence.source={source or 'unknown'}",
+        )
+    missing_evidence = strategy_evidence_missing_fields(strategy_evidence)
+    if missing_evidence:
+        return MaterialPackReviewability(
+            is_reviewable=False,
+            error_code="strategy_evidence_incomplete",
+            message="analysis_material_pack strategy_evidence is incomplete.",
+            error_message=f"missing_or_empty={', '.join(missing_evidence)}",
+        )
+
+    time_anchors = build_time_anchor_summary(material_pack)
+    missing_time = time_anchor_missing_fields(time_anchors)
+    if missing_time:
+        return MaterialPackReviewability(
+            is_reviewable=False,
+            error_code="material_pack_time_anchor_missing",
+            message="analysis_material_pack required time anchors are missing.",
+            error_message=f"missing_or_empty={', '.join(missing_time)}",
+        )
+    freshness_status = str(time_anchors.get("data_freshness_status", "") or "")
+    if freshness_status != "fresh":
+        return MaterialPackReviewability(
+            is_reviewable=False,
+            error_code="stale_data",
+            message="analysis_material_pack time anchors are not fresh enough for model review.",
+            error_message=f"data_freshness_status={freshness_status}",
+        )
+    return MaterialPackReviewability(is_reviewable=True)
 
 
 def _validate_partial_success_material_pack(material_pack: Any) -> MaterialPackReviewability:
