@@ -333,6 +333,29 @@ def test_notification_payload_includes_23f_and_24c_evidence_chain() -> None:
     assert repo.model_review_lookup_count == 1
 
 
+def test_evidence_chain_prefers_persisted_review_decision_over_legacy_payload_value() -> None:
+    aggregation = _aggregation("MRAG-review-decision", summary="create_new_advice conditional_trade bullish")
+    repo = _repo_with_aggregation(aggregation)
+    repo.strategy_evidence_by_run[aggregation.strategy_signal_run_id] = _strategy_evidence_row(
+        aggregation.strategy_signal_run_id,
+        aggregation_id="SEA-review-decision",
+    )
+    repo.model_reviews_by_material[aggregation.material_pack_id] = (
+        _model_review_candidate(
+            material_pack_id=aggregation.material_pack_id,
+            strategy_signal_run_id=aggregation.strategy_signal_run_id,
+            strategy_evidence_aggregation_id="SEA-review-decision",
+            review_decision="require_more_evidence",
+            review_payload_review_decision="need_more_evidence",
+            created_at=CREATED_AT,
+        ),
+    )
+
+    result, _ = _run(repo, "MRAG-review-decision", confirm=True)
+
+    assert result.notification_payload_json["model_review_summary"]["review_decision"] == "require_more_evidence"
+
+
 def test_model_review_selection_prefers_real_model_over_mock_review() -> None:
     aggregation = _aggregation("MRAG-real-priority", summary="create_new_advice conditional_trade bullish")
     repo = _repo_with_aggregation(aggregation)
@@ -762,6 +785,7 @@ def _model_review_candidate(
     model_key: str = "real_review",
     provider: str = "real_provider",
     review_decision: str = "require_more_evidence",
+    review_payload_review_decision: str | None = None,
     evidence_quality: str = "moderate",
     recommendation: str = "wait",
     quality_flags: list[Any] | None = None,
@@ -772,7 +796,7 @@ def _model_review_candidate(
 ) -> Any:
     review_payload = {
         "agreement_with_23f": "partial",
-        "review_decision": review_decision,
+        "review_decision": review_payload_review_decision or review_decision,
         "main_objection": "23F wait posture still needs volume confirmation.",
         "strongest_counterargument": "A fast key-level breakout could make waiting miss the confirmation window.",
         "missing_evidence": ["volume_confirmation"],

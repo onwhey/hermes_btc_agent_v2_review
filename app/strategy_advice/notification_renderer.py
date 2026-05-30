@@ -54,10 +54,24 @@ REVIEW_DECISION_LABELS = {
     "accept_23f": "模型认可 23F",
     "reject_23f": "模型反对 23F",
     "require_more_evidence": "模型要求更多证据",
+    "need_more_evidence": "模型要求更多证据",
     "wait": "模型建议等待",
     "no_trade": "模型建议不交易",
     "blocked": "模型阻断",
     "unknown": "模型结论不明确",
+}
+
+RECOMMENDATION_LABELS = {
+    "allow_conditional": "允许后续建议层谨慎评估",
+    "accept_for_further_review": "可进入后续人工审查",
+    "wait": "等待",
+    "reject": "拒绝",
+    "risk_reject": "风险拒绝",
+    "downgrade": "降级",
+    "require_more_evidence": "要求更多证据",
+    "need_more_evidence": "要求更多证据",
+    "human_review_required": "需要人工复核",
+    "unknown": "不明确",
 }
 
 EVIDENCE_QUALITY_LABELS = {
@@ -82,6 +96,15 @@ REASON_CODE_LABELS = {
     "parse_failed": "模型输出解析失败",
     "schema_invalid": "模型输出结构异常",
 }
+
+ENGLISH_PHRASE_LABELS = (
+    ("insufficient evidence from multiple strategies", "多个策略证据不足"),
+    ("support/resistance missing", "支撑压力证据缺失"),
+    ("detailed output from all decision participant strategies", "缺少决策参与策略的详细输出"),
+    ("support and resistance levels", "缺少支撑压力位"),
+    ("no confirmed conditional setup is available", "尚无确认的条件交易方案"),
+    ("waiting for confirmation", "等待确认"),
+)
 
 
 def render_strategy_advice_notification(review_row: Any) -> RenderedStrategyAdviceNotification:
@@ -353,7 +376,7 @@ def _format_model_review_status(payload: Mapping[str, Any]) -> list[str]:
     lines.append(f"- review_decision={review_decision}（{_label(REVIEW_DECISION_LABELS, review_decision)}）")
     lines.append(
         f"- evidence_quality={evidence_quality}（{_label(EVIDENCE_QUALITY_LABELS, evidence_quality)}）；"
-        f"recommendation={recommendation}"
+        f"recommendation={_recommendation_text(recommendation)}"
     )
     return lines
 
@@ -496,6 +519,12 @@ def _adoption_reason_label(reason: str) -> str:
     return _bounded(_readable_text(reason), 60)
 
 
+def _recommendation_text(recommendation: str) -> str:
+    if not recommendation:
+        return "不明确"
+    return _label(RECOMMENDATION_LABELS, recommendation)
+
+
 def _source_value(payload: Mapping[str, Any], key: str) -> str:
     source = _mapping(payload.get("source"))
     return _text(source.get(key)) or "无"
@@ -610,6 +639,9 @@ def _translate_common_english_summary(text: str) -> str:
     if _ascii_ratio(text) < 0.75:
         return ""
     fragments: list[str] = []
+    for phrase, label in ENGLISH_PHRASE_LABELS:
+        if phrase in lower:
+            fragments.append(label)
     if "volume" in lower:
         fragments.append("成交量确认不足")
     if "key-level" in lower or "key level" in lower:
@@ -625,7 +657,7 @@ def _translate_common_english_summary(text: str) -> str:
     if "confirmation" in lower or "confirmed" in lower:
         fragments.append("确认信号不足")
     if not fragments:
-        return ""
+        return "模型原文提示存在未翻译内容，请查看模型审查原文。" if len(text) >= 24 else ""
     unique = list(dict.fromkeys(fragments))
     return "，".join(unique) + "。"
 

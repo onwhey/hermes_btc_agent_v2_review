@@ -324,8 +324,10 @@ def _model_review_summary_from_candidate(
         "status": _text(getattr(run_row, "status", "")) or ("success" if result_row is not None else "missing"),
         "error_code": _text(getattr(run_row, "error_code", "")),
         "schema_error_code": _text(response_metadata.get("schema_error_code")),
-        "review_decision": _text(review_payload.get("review_decision"))
-        or _text(getattr(result_row, "review_decision", "")),
+        "review_decision": _model_review_decision_from_candidate(
+            result_row=result_row,
+            review_payload=review_payload,
+        ),
         "evidence_quality": _text(getattr(result_row, "evidence_quality", "")),
         "risk_acceptability": _text(getattr(result_row, "risk_acceptability", "")),
         "strategy_conflict_level": _text(getattr(result_row, "strategy_conflict_level", "")),
@@ -375,6 +377,19 @@ def _key_strategy_points(
         if len(points) >= 5:
             break
     return points
+
+
+def _model_review_decision_from_candidate(
+    *,
+    result_row: Any | None,
+    review_payload: Mapping[str, Any],
+) -> str:
+    """Prefer the persisted 24C result enum over legacy JSON compatibility fields."""
+
+    persisted_decision = _text(getattr(result_row, "review_decision", ""))
+    if persisted_decision:
+        return persisted_decision
+    return _text(review_payload.get("review_decision"))
 
 
 def _compact_strategy_point(item: Mapping[str, Any]) -> dict[str, Any]:

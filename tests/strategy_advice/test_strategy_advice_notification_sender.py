@@ -408,6 +408,48 @@ def test_renderer_displays_strategy_evidence_and_model_review_summary_bounded() 
     assert len(rendered.message) <= 1500
 
 
+def test_renderer_keeps_require_more_evidence_and_hides_legacy_recommendation_enum() -> None:
+    rendered = _render_with_model_summary(
+        {
+            "review_decision": "require_more_evidence",
+            "recommendation_to_advice_layer": "need_more_evidence",
+        }
+    )
+
+    assert "review_decision=require_more_evidence" in rendered.message
+    assert "review_decision=need_more_evidence" not in rendered.message
+    assert "need_more_evidence" not in rendered.message
+    assert "模型要求更多证据" in rendered.message
+
+
+def test_renderer_translates_common_english_evidence_phrases() -> None:
+    rendered = _render_with_model_summary(
+        {
+            "main_objection": (
+                "Insufficient evidence from multiple strategies; support/resistance missing."
+            ),
+            "strongest_counterargument": (
+                "Detailed output from all decision participant strategies is absent."
+            ),
+            "missing_evidence": [
+                "Support and resistance levels",
+                "No confirmed conditional setup is available",
+                "Waiting for confirmation",
+            ],
+        }
+    )
+
+    assert "多个策略证据不足" in rendered.message
+    assert "支撑压力证据缺失" in rendered.message
+    assert "缺少决策参与策略的详细输出" in rendered.message
+    assert "缺少支撑压力位" in rendered.message
+    assert "尚无确认的条件交易方案" in rendered.message
+    assert "Insufficient evidence from multiple strategies" not in rendered.message
+    assert "Detailed output from all decision participant strategies" not in rendered.message
+    assert "Support and resistance levels" not in rendered.message
+    assert len(rendered.message) <= 1500
+
+
 def test_renderer_marks_mock_review_as_test_only() -> None:
     rendered = _render_with_model_summary({"is_mock_review": True, "adoption_status": "test_only"})
 
