@@ -386,6 +386,23 @@ def test_brief_notification_is_short_but_contains_model_status_and_boundary() ->
     assert "不是自动交易" in rendered.message
 
 
+def test_renderer_displays_strategy_evidence_and_model_review_summary_bounded() -> None:
+    payload = _payload(level="full", lifecycle_action="update_active_advice", result_advice_id="ADV-evidence")
+    evidence_summary = _evidence_chain_summary()
+    payload["evidence_chain_summary"] = evidence_summary
+    payload["strategy_evidence_chain"] = evidence_summary["strategy_evidence_chain"]
+    payload["model_review_summary"] = evidence_summary["model_review_summary"]
+
+    rendered = render_strategy_advice_notification(_review("ADVR-evidence", level="full", payload=payload))
+
+    assert "23F=wait" in rendered.message
+    assert "wait_for_confirmation" in rendered.message
+    assert "模型审查" in rendered.message
+    assert "need_more_evidence" in rendered.message
+    assert "模型反驳" in rendered.message
+    assert len(rendered.message) <= 1500
+
+
 def test_boundary_flags_remain_false_in_result_and_event_payload() -> None:
     repo = _repo_with_review(_review("ADVR-boundary", result_advice_id="ADV-boundary"))
     result, _session = _run(
@@ -399,6 +416,8 @@ def test_boundary_flags_remain_false_in_result_and_event_payload() -> None:
     assert result.is_trading_signal is False
     assert result.is_executable is False
     assert result.auto_trading_allowed is False
+    assert payload["not_trading_advice"] is True
+    assert payload["is_final_trading_advice"] is False
     assert payload["is_trading_signal"] is False
     assert payload["is_executable"] is False
     assert payload["auto_trading_allowed"] is False
@@ -495,6 +514,69 @@ def _review(
     )
 
 
+def _evidence_chain_summary() -> dict[str, Any]:
+    return {
+        "schema_version": "strategy_advice_evidence_chain_summary_v1",
+        "strategy_evidence_chain": {
+            "source": "strategy_evidence_aggregation_result",
+            "aggregation_id": "SEA-test",
+            "strategy_signal_run_id": "SSR-test",
+            "status": "success",
+            "candidate_bias": "wait",
+            "candidate_confidence": "0.6200",
+            "decision_readiness": "wait_for_confirmation",
+            "key_strategy_points": [
+                {
+                    "strategy_name": "breakout_pullback_trigger_strategy",
+                    "strategy_role": "filter",
+                    "filter_decision": "wait",
+                    "summary": "突破/回踩触发尚未确认。",
+                },
+                {
+                    "strategy_name": "volatility_risk_control_strategy",
+                    "strategy_role": "risk_control",
+                    "risk_gate_decision": "wait",
+                    "summary": "风控层不支持追单。",
+                },
+            ],
+            "risk_gate_summary": {
+                "risk_gate_decision": "wait",
+                "risk_scope": "current_candidate",
+                "reason_text": "等待确认。",
+            },
+            "evidence_missing": [{"reason_code": "volume_confirmation_missing"}],
+            "not_trading_advice": True,
+        },
+        "model_review_summary": {
+            "source": "model_analysis_result",
+            "model_analysis_run_id": "MAR-test",
+            "model_analysis_result_id": "MARES-test",
+            "model_key": "real_review",
+            "review_decision": "need_more_evidence",
+            "evidence_quality": "weak",
+            "risk_acceptability": "caution",
+            "agreement_with_23f": "partial",
+            "main_objection": "当前证据不足以确认方向。",
+            "strongest_counterargument": "若关键位快速突破，等待可能错过确认窗口。",
+            "recommendation_to_advice_layer": "wait",
+            "quality_flags": [],
+            "boundary_flags": [],
+            "adoption_status": "adopted",
+            "model_review_adoptable": True,
+            "not_trading_advice": True,
+            "is_final_trading_advice": False,
+            "is_trading_signal": False,
+            "is_executable": False,
+            "auto_trading_allowed": False,
+        },
+        "not_trading_advice": True,
+        "is_final_trading_advice": False,
+        "is_trading_signal": False,
+        "is_executable": False,
+        "auto_trading_allowed": False,
+    }
+
+
 def _payload(*, level: str, lifecycle_action: str, result_advice_id: str | None) -> dict[str, Any]:
     return {
         "schema_version": "strategy_advice_payload_v1",
@@ -543,6 +625,8 @@ def _payload(*, level: str, lifecycle_action: str, result_advice_id: str | None)
             "evidence_quality": "sufficient",
         },
         "boundaries": {
+            "not_trading_advice": True,
+            "is_final_trading_advice": False,
             "is_trading_signal": False,
             "is_executable": False,
             "auto_trading_allowed": False,

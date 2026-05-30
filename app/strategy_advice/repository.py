@@ -1,8 +1,9 @@
 """Repository for stage-21A strategy advice lifecycle persistence.
 
 This file belongs to `app/strategy_advice`. It reads stage-20A
-`model_review_aggregation_run` rows and reads/writes only stage-21A advice,
-lifecycle review, event, and setup rows.
+`model_review_aggregation_run` rows, reads already persisted stage-23F and
+stage-24C public evidence summaries for notification display, and reads/writes
+only stage-21A advice, lifecycle review, event, and setup rows.
 
 Called by `app/strategy_advice/service.py`. External services: none. MySQL:
 reads/writes through the caller-owned session and never commits. Redis: none.
@@ -12,9 +13,13 @@ execution: none.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 from app.core.time_utils import now_utc
+from app.storage.mysql.models.model_analysis import ModelAnalysisResult as ModelAnalysisResultRow
+from app.storage.mysql.models.model_analysis import ModelAnalysisRun
+from app.storage.mysql.models.strategy_aggregation import StrategyEvidenceAggregationResult
 from app.strategy_advice.models import (
     ModelReviewAggregationRun,
     StrategyAdvice,
@@ -79,6 +84,60 @@ class StrategyAdviceRepository:
             .limit(1)
         )
         return db_session.execute(stmt).scalar_one_or_none()
+
+    def get_latest_strategy_evidence_aggregation(
+        self,
+        db_session: Any,
+        *,
+        strategy_signal_run_id: str,
+    ) -> Any | None:
+        """Return the latest stage-23F evidence row for 24D display.
+
+        This reads only `strategy_evidence_aggregation_result`, whose fields are
+        public aggregation summaries. It does not read individual strategy
+        private payloads and does not recompute 23F.
+        """
+
+        _require_sqlalchemy()
+        if not strategy_signal_run_id:
+            return None
+        stmt = (
+            select(StrategyEvidenceAggregationResult)
+            .where(StrategyEvidenceAggregationResult.strategy_signal_run_id == strategy_signal_run_id)
+            .order_by(StrategyEvidenceAggregationResult.id.desc())
+            .limit(1)
+        )
+        return db_session.execute(stmt).scalar_one_or_none()
+
+    def list_model_reviews_for_material_pack(
+        self,
+        db_session: Any,
+        *,
+        material_pack_id: str,
+    ) -> tuple[Any, ...]:
+        """Return stage-24C model-review attempts/results for 24D display.
+
+        The query uses model-analysis run/result metadata and compact JSON
+        summaries already persisted by stage 24C. It never calls a model and
+        never requests material outside the material pack.
+        """
+
+        _require_sqlalchemy()
+        if not material_pack_id:
+            return ()
+        stmt = (
+            select(ModelAnalysisRun, ModelAnalysisResultRow)
+            .outerjoin(
+                ModelAnalysisResultRow,
+                ModelAnalysisResultRow.model_analysis_run_id == ModelAnalysisRun.model_analysis_run_id,
+            )
+            .where(ModelAnalysisRun.material_pack_id == material_pack_id)
+            .order_by(ModelAnalysisRun.created_at_utc.desc(), ModelAnalysisRun.id.desc())
+        )
+        return tuple(
+            SimpleNamespace(model_analysis_run=run_row, model_analysis_result=result_row)
+            for run_row, result_row in db_session.execute(stmt).all()
+        )
 
     def create_strategy_advice(
         self,

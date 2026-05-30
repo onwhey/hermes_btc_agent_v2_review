@@ -161,6 +161,8 @@ def build_event_payloads(
                     "notification_payload": event_payload
                     if event_type == AdviceEventType.NOTIFICATION_PAYLOAD_CREATED
                     else {},
+                    "not_trading_advice": True,
+                    "is_final_trading_advice": False,
                     "is_trading_signal": False,
                     "is_executable": False,
                     "auto_trading_allowed": False,

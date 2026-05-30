@@ -14,13 +14,14 @@ scripts/run_strategy_advice.py::main
        (confirm-write only)
 
 This file belongs to `app/strategy_advice`. It consumes stage-20A aggregation
-rows, creates or maintains bounded human strategy advice lifecycle state, and
-prepares notification payload fields for future 21B delivery.
+rows, links already persisted 23F/24C public evidence summaries, creates or
+maintains bounded human strategy advice lifecycle state, and prepares
+notification payload fields for future 21B delivery.
 
-It does not call stage 19, does not call model providers, does not connect
-scheduler jobs, does not send Hermes, does not generate executable trading
-signals, does not read private trading state, does not modify formal Kline
-tables, and does not perform trading.
+It does not call stage 19, does not call model providers, does not re-run 23F,
+does not connect scheduler jobs, does not send Hermes, does not generate
+executable trading signals, does not read private trading state, does not modify
+formal Kline tables, and does not perform trading.
 """
 
 from __future__ import annotations
@@ -29,6 +30,10 @@ from typing import Any
 
 from app.core.time_utils import now_utc
 from app.market_data.kline_constants import TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER
+from app.strategy_advice.evidence_chain import (
+    build_evidence_chain_summary,
+    build_missing_evidence_chain_summary,
+)
 from app.strategy_advice.id_utils import build_strategy_advice_id, build_strategy_advice_review_id
 from app.strategy_advice.lifecycle import (
     AdviceCandidate,
@@ -140,6 +145,10 @@ class StrategyAdviceService:
                 error_message=str(exc),
             )
 
+        evidence_chain_summary = self._load_evidence_chain_summary(
+            db_session=db_session,
+            aggregation_row=aggregation_row,
+        )
         candidate = build_advice_candidate_from_aggregation(aggregation_row)
         plan = self._build_lifecycle_plan(
             request=request,
@@ -147,6 +156,7 @@ class StrategyAdviceService:
             aggregation_row=aggregation_row,
             active_advice=active_advice,
             candidate=candidate,
+            evidence_chain_summary=evidence_chain_summary,
         )
         if request.dry_run:
             return result_from_lifecycle_plan(request=request, plan=plan)
@@ -177,6 +187,48 @@ class StrategyAdviceService:
             )
         return result_from_lifecycle_plan(request=request, plan=plan)
 
+    def _load_evidence_chain_summary(self, *, db_session: Any, aggregation_row: Any) -> dict[str, Any]:
+        """Read existing 23F/24C evidence rows and return a bounded summary.
+
+        This method performs read-only lookups only. Missing evidence is
+        represented transparently in the returned payload; it does not re-run
+        23F, does not call model providers, and does not block 21 lifecycle
+        decisions merely because evidence is absent.
+        """
+
+        material_pack_id = text_attr(aggregation_row, "material_pack_id")
+        strategy_signal_run_id = text_attr(aggregation_row, "strategy_signal_run_id")
+        try:
+            strategy_evidence_row = None
+            get_strategy_evidence = getattr(self._repository, "get_latest_strategy_evidence_aggregation", None)
+            if callable(get_strategy_evidence):
+                strategy_evidence_row = get_strategy_evidence(
+                    db_session,
+                    strategy_signal_run_id=strategy_signal_run_id,
+                )
+            model_review_candidates: tuple[Any, ...] = ()
+            list_model_reviews = getattr(self._repository, "list_model_reviews_for_material_pack", None)
+            if callable(list_model_reviews):
+                model_review_candidates = tuple(
+                    list_model_reviews(
+                        db_session,
+                        material_pack_id=material_pack_id,
+                    )
+                )
+            return build_evidence_chain_summary(
+                strategy_evidence_row=strategy_evidence_row,
+                model_review_candidates=model_review_candidates,
+                material_pack_id=material_pack_id,
+                strategy_signal_run_id=strategy_signal_run_id or None,
+            )
+        except Exception:  # noqa: BLE001 - evidence display must degrade transparently.
+            _rollback_if_possible(db_session)
+            return build_missing_evidence_chain_summary(
+                material_pack_id=material_pack_id,
+                strategy_signal_run_id=strategy_signal_run_id or None,
+                reason="evidence_chain_lookup_failed",
+            )
+
     def _build_lifecycle_plan(
         self,
         *,
@@ -185,6 +237,7 @@ class StrategyAdviceService:
         aggregation_row: Any,
         active_advice: Any | None,
         candidate: AdviceCandidate,
+        evidence_chain_summary: dict[str, Any],
     ) -> LifecyclePlan:
         if active_advice is None:
             if should_create_new_advice_without_active(candidate, aggregation_row):
@@ -193,12 +246,14 @@ class StrategyAdviceService:
                     review_id=review_id,
                     aggregation_row=aggregation_row,
                     candidate=candidate,
+                    evidence_chain_summary=evidence_chain_summary,
                 )
             return self._plan_no_active_wait_or_stop(
                 request=request,
                 review_id=review_id,
                 aggregation_row=aggregation_row,
                 candidate=candidate,
+                evidence_chain_summary=evidence_chain_summary,
             )
         if candidate.terminal_lifecycle_action is not None and candidate.terminal_advice_status is not None:
             return self._plan_terminal_active_advice(
@@ -207,6 +262,7 @@ class StrategyAdviceService:
                 aggregation_row=aggregation_row,
                 active_advice=active_advice,
                 candidate=candidate,
+                evidence_chain_summary=evidence_chain_summary,
             )
         if active_advice_semantic_signature(active_advice) == candidate.semantic_signature:
             return self._plan_continue_active_advice(
@@ -215,6 +271,7 @@ class StrategyAdviceService:
                 aggregation_row=aggregation_row,
                 active_advice=active_advice,
                 candidate=candidate,
+                evidence_chain_summary=evidence_chain_summary,
             )
         return self._plan_update_active_advice(
             request=request,
@@ -222,6 +279,7 @@ class StrategyAdviceService:
             aggregation_row=aggregation_row,
             active_advice=active_advice,
             candidate=candidate,
+            evidence_chain_summary=evidence_chain_summary,
         )
 
     def _plan_create_new_advice(
@@ -231,6 +289,7 @@ class StrategyAdviceService:
         review_id: str,
         aggregation_row: Any,
         candidate: AdviceCandidate,
+        evidence_chain_summary: dict[str, Any],
     ) -> LifecyclePlan:
         version_no = 1
         advice_id = build_strategy_advice_id(
@@ -272,6 +331,7 @@ class StrategyAdviceService:
             event_types=(AdviceEventType.CREATED, AdviceEventType.ACTIVATED),
             event_advice_ids=(advice_id, advice_id),
             setup_payloads=setup_payloads,
+            evidence_chain_summary=evidence_chain_summary,
         )
 
     def _plan_no_active_wait_or_stop(
@@ -281,6 +341,7 @@ class StrategyAdviceService:
         review_id: str,
         aggregation_row: Any,
         candidate: AdviceCandidate,
+        evidence_chain_summary: dict[str, Any],
     ) -> LifecyclePlan:
         lifecycle_action = lifecycle_action_without_active(candidate)
         return self._finalize_plan(
@@ -300,6 +361,7 @@ class StrategyAdviceService:
             event_types=(),
             event_advice_ids=(),
             setup_payloads=(),
+            evidence_chain_summary=evidence_chain_summary,
         )
 
     def _plan_continue_active_advice(
@@ -310,6 +372,7 @@ class StrategyAdviceService:
         aggregation_row: Any,
         active_advice: Any,
         candidate: AdviceCandidate,
+        evidence_chain_summary: dict[str, Any],
     ) -> LifecyclePlan:
         active_id = text_attr(active_advice, "advice_id")
         return self._finalize_plan(
@@ -329,6 +392,7 @@ class StrategyAdviceService:
             event_types=(AdviceEventType.CONTINUED,),
             event_advice_ids=(active_id,),
             setup_payloads=(),
+            evidence_chain_summary=evidence_chain_summary,
         )
 
     def _plan_update_active_advice(
@@ -339,6 +403,7 @@ class StrategyAdviceService:
         aggregation_row: Any,
         active_advice: Any,
         candidate: AdviceCandidate,
+        evidence_chain_summary: dict[str, Any],
     ) -> LifecyclePlan:
         old_id = text_attr(active_advice, "advice_id")
         version_no = int(getattr(active_advice, "version_no", 1) or 1) + 1
@@ -384,6 +449,7 @@ class StrategyAdviceService:
             event_types=(AdviceEventType.SUPERSEDED, AdviceEventType.CREATED, AdviceEventType.ACTIVATED),
             event_advice_ids=(old_id, advice_id, advice_id),
             setup_payloads=setup_payloads,
+            evidence_chain_summary=evidence_chain_summary,
         )
         return replace_plan_status_update(plan, row=active_advice, status=AdviceStatus.SUPERSEDED)
 
@@ -395,6 +461,7 @@ class StrategyAdviceService:
         aggregation_row: Any,
         active_advice: Any,
         candidate: AdviceCandidate,
+        evidence_chain_summary: dict[str, Any],
     ) -> LifecyclePlan:
         active_id = text_attr(active_advice, "advice_id")
         event_type = event_type_for_terminal_status(candidate.terminal_advice_status or AdviceStatus.CLOSED)
@@ -415,6 +482,7 @@ class StrategyAdviceService:
             event_types=(event_type,),
             event_advice_ids=(active_id,),
             setup_payloads=(),
+            evidence_chain_summary=evidence_chain_summary,
         )
         return replace_plan_status_update(
             plan,
@@ -441,6 +509,7 @@ class StrategyAdviceService:
         event_types: tuple[AdviceEventType, ...],
         event_advice_ids: tuple[str | None, ...],
         setup_payloads: tuple[StrategyAdviceTradeSetupPersistencePayload, ...],
+        evidence_chain_summary: dict[str, Any],
     ) -> LifecyclePlan:
         notification_level = notification_level_for_lifecycle(lifecycle_action, candidate)
         notification_reason = notification_reason_for_lifecycle(lifecycle_action, candidate)
@@ -455,6 +524,7 @@ class StrategyAdviceService:
             advice_path=advice_path,
             notification_level=notification_level,
             trade_setup_count=len(setup_payloads),
+            evidence_chain_summary=evidence_chain_summary,
         )
         lifecycle_payload = build_lifecycle_review_payload(
             review_id=review_id,

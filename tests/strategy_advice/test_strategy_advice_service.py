@@ -8,7 +8,8 @@ Kline tables.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
@@ -51,6 +52,10 @@ class FakeStrategyAdviceRepository:
         self.events: list[Any] = []
         self.trade_setups: list[Any] = []
         self.status_updates: list[tuple[Any, str]] = []
+        self.strategy_evidence_by_run: dict[str, Any] = {}
+        self.model_reviews_by_material: dict[str, tuple[Any, ...]] = {}
+        self.strategy_evidence_lookup_count = 0
+        self.model_review_lookup_count = 0
 
     def get_review_aggregation_run_by_id(self, db_session: Any, *, review_aggregation_run_id: str) -> Any | None:
         del db_session
@@ -73,6 +78,21 @@ class FakeStrategyAdviceRepository:
         if active.symbol == symbol and active.base_interval == base_interval and active.higher_interval == higher_interval:
             return active
         return None
+
+    def get_latest_strategy_evidence_aggregation(
+        self,
+        db_session: Any,
+        *,
+        strategy_signal_run_id: str,
+    ) -> Any | None:
+        del db_session
+        self.strategy_evidence_lookup_count += 1
+        return self.strategy_evidence_by_run.get(strategy_signal_run_id)
+
+    def list_model_reviews_for_material_pack(self, db_session: Any, *, material_pack_id: str) -> tuple[Any, ...]:
+        del db_session
+        self.model_review_lookup_count += 1
+        return self.model_reviews_by_material.get(material_pack_id, ())
 
     def create_strategy_advice(self, db_session: Any, *, payload: Any) -> Any:
         del db_session
@@ -271,6 +291,177 @@ def test_model_status_fields_are_inherited_and_payload_records_no_model_reason()
     assert model_payload["reused_notice"]["reused_model_analysis_run_id"] == "MAR-OLD"
     assert "expired_notice" in model_payload
     assert "partial_success_notice" in model_payload
+
+
+def test_notification_payload_includes_23f_and_24c_evidence_chain() -> None:
+    aggregation = _aggregation("MRAG-evidence", summary="create_new_advice conditional_trade bullish")
+    repo = _repo_with_aggregation(aggregation)
+    repo.strategy_evidence_by_run[aggregation.strategy_signal_run_id] = _strategy_evidence_row(
+        aggregation.strategy_signal_run_id,
+        aggregation_id="SEA-1",
+    )
+    repo.model_reviews_by_material[aggregation.material_pack_id] = (
+        _model_review_candidate(
+            material_pack_id=aggregation.material_pack_id,
+            strategy_signal_run_id=aggregation.strategy_signal_run_id,
+            strategy_evidence_aggregation_id="SEA-1",
+            model_key="real_review",
+            provider="real_provider",
+            review_decision="need_more_evidence",
+            evidence_quality="moderate",
+            recommendation="wait",
+            created_at=CREATED_AT,
+        ),
+    )
+
+    result, _ = _run(repo, "MRAG-evidence", confirm=True)
+    payload = result.notification_payload_json
+
+    assert payload["strategy_evidence_chain"]["source"] == "strategy_evidence_aggregation_result"
+    assert payload["strategy_evidence_chain"]["aggregation_id"] == "SEA-1"
+    assert payload["strategy_evidence_chain"]["candidate_bias"] == "wait"
+    assert payload["strategy_evidence_chain"]["decision_readiness"] == "wait_for_confirmation"
+    assert payload["model_review_summary"]["model_key"] == "real_review"
+    assert payload["model_review_summary"]["review_decision"] == "need_more_evidence"
+    assert payload["model_review_summary"]["evidence_quality"] == "moderate"
+    assert payload["model_review_summary"]["recommendation_to_advice_layer"] == "wait"
+    assert payload["model_review_summary"]["adoption_status"] == "adopted"
+    assert payload["model_review_summary"]["model_review_adoptable"] is True
+    assert payload["evidence_chain_summary"]["not_trading_advice"] is True
+    assert "strategy_payload_json" not in json.dumps(payload, ensure_ascii=False)
+    assert repo.strategy_evidence_lookup_count == 1
+    assert repo.model_review_lookup_count == 1
+
+
+def test_model_review_selection_prefers_real_model_over_mock_review() -> None:
+    aggregation = _aggregation("MRAG-real-priority", summary="create_new_advice conditional_trade bullish")
+    repo = _repo_with_aggregation(aggregation)
+    repo.strategy_evidence_by_run[aggregation.strategy_signal_run_id] = _strategy_evidence_row(
+        aggregation.strategy_signal_run_id,
+        aggregation_id="SEA-real-priority",
+    )
+    repo.model_reviews_by_material[aggregation.material_pack_id] = (
+        _model_review_candidate(
+            material_pack_id=aggregation.material_pack_id,
+            strategy_signal_run_id=aggregation.strategy_signal_run_id,
+            strategy_evidence_aggregation_id="SEA-real-priority",
+            model_key="mock_review",
+            provider="mock",
+            result_id="MARES-mock",
+            created_at=CREATED_AT + timedelta(minutes=5),
+        ),
+        _model_review_candidate(
+            material_pack_id=aggregation.material_pack_id,
+            strategy_signal_run_id=aggregation.strategy_signal_run_id,
+            strategy_evidence_aggregation_id="SEA-real-priority",
+            model_key="real_review",
+            provider="real_provider",
+            result_id="MARES-real",
+            created_at=CREATED_AT,
+        ),
+    )
+
+    result, _ = _run(repo, "MRAG-real-priority", confirm=True)
+
+    assert result.notification_payload_json["model_review_summary"]["model_key"] == "real_review"
+    assert result.notification_payload_json["model_review_summary"]["model_analysis_result_id"] == "MARES-real"
+    assert result.notification_payload_json["model_review_summary"]["is_mock_review"] is False
+
+
+def test_model_review_selection_uses_latest_success_for_same_model_key() -> None:
+    aggregation = _aggregation("MRAG-latest-model", summary="create_new_advice conditional_trade bullish")
+    repo = _repo_with_aggregation(aggregation)
+    repo.strategy_evidence_by_run[aggregation.strategy_signal_run_id] = _strategy_evidence_row(
+        aggregation.strategy_signal_run_id,
+        aggregation_id="SEA-latest",
+    )
+    repo.model_reviews_by_material[aggregation.material_pack_id] = (
+        _model_review_candidate(
+            material_pack_id=aggregation.material_pack_id,
+            strategy_signal_run_id=aggregation.strategy_signal_run_id,
+            strategy_evidence_aggregation_id="SEA-latest",
+            model_key="real_review",
+            provider="real_provider",
+            result_id="MARES-old",
+            created_at=CREATED_AT,
+        ),
+        _model_review_candidate(
+            material_pack_id=aggregation.material_pack_id,
+            strategy_signal_run_id=aggregation.strategy_signal_run_id,
+            strategy_evidence_aggregation_id="SEA-latest",
+            model_key="real_review",
+            provider="real_provider",
+            result_id="MARES-new",
+            created_at=CREATED_AT + timedelta(minutes=5),
+        ),
+    )
+
+    result, _ = _run(repo, "MRAG-latest-model", confirm=True)
+
+    assert result.notification_payload_json["model_review_summary"]["model_analysis_result_id"] == "MARES-new"
+
+
+def test_low_quality_model_review_is_displayed_as_low_weight_only() -> None:
+    aggregation = _aggregation("MRAG-low-quality", summary="create_new_advice conditional_trade bullish")
+    repo = _repo_with_aggregation(aggregation)
+    repo.strategy_evidence_by_run[aggregation.strategy_signal_run_id] = _strategy_evidence_row(
+        aggregation.strategy_signal_run_id,
+        aggregation_id="SEA-low-quality",
+    )
+    repo.model_reviews_by_material[aggregation.material_pack_id] = (
+        _model_review_candidate(
+            material_pack_id=aggregation.material_pack_id,
+            strategy_signal_run_id=aggregation.strategy_signal_run_id,
+            strategy_evidence_aggregation_id="SEA-low-quality",
+            quality_flags=["low_quality"],
+            created_at=CREATED_AT,
+        ),
+    )
+
+    result, _ = _run(repo, "MRAG-low-quality", confirm=True)
+    model_summary = result.notification_payload_json["model_review_summary"]
+
+    assert model_summary["adoption_status"] == "low_weight"
+    assert model_summary["model_review_adoptable"] is False
+    assert model_summary["is_low_weight"] is True
+    assert "low_quality" in model_summary["quality_flags"]
+
+
+def test_boundary_violation_model_review_is_not_adopted() -> None:
+    aggregation = _aggregation("MRAG-boundary-model", summary="create_new_advice conditional_trade bullish")
+    repo = _repo_with_aggregation(aggregation)
+    repo.strategy_evidence_by_run[aggregation.strategy_signal_run_id] = _strategy_evidence_row(
+        aggregation.strategy_signal_run_id,
+        aggregation_id="SEA-boundary",
+    )
+    repo.model_reviews_by_material[aggregation.material_pack_id] = (
+        _model_review_candidate(
+            material_pack_id=aggregation.material_pack_id,
+            strategy_signal_run_id=aggregation.strategy_signal_run_id,
+            strategy_evidence_aggregation_id="SEA-boundary",
+            boundary_flags=[{"code": "boundary_violation", "reason": "forbidden_trading_field_present"}],
+            created_at=CREATED_AT,
+        ),
+    )
+
+    result, _ = _run(repo, "MRAG-boundary-model", confirm=True)
+    model_summary = result.notification_payload_json["model_review_summary"]
+
+    assert model_summary["adoption_status"] == "rejected"
+    assert model_summary["adoption_reason"] == "boundary_violation"
+    assert model_summary["model_review_adoptable"] is False
+
+
+def test_missing_23f_or_24c_is_marked_transparently() -> None:
+    repo = _repo_with_aggregation(_aggregation("MRAG-missing-chain", summary="create_new_advice conditional_trade bullish"))
+
+    result, _ = _run(repo, "MRAG-missing-chain", confirm=True)
+    payload = result.notification_payload_json
+
+    assert payload["strategy_evidence_chain"]["source"] == "missing"
+    assert payload["strategy_evidence_chain"]["missing_reason"] == "strategy_evidence_missing"
+    assert payload["model_review_summary"]["source"] == "missing"
+    assert payload["model_review_summary"]["adoption_reason"] == "model_review_missing"
 
 
 def test_high_risk_does_not_create_active_trade_setup() -> None:
@@ -494,6 +685,185 @@ def _aggregation(
         summary_text=summary,
         created_at_utc=CREATED_AT,
     )
+
+
+def _strategy_evidence_row(strategy_signal_run_id: str, *, aggregation_id: str) -> Any:
+    return SimpleNamespace(
+        aggregation_id=aggregation_id,
+        strategy_signal_run_id=strategy_signal_run_id,
+        symbol="BTCUSDT",
+        base_interval="4h",
+        higher_interval="1d",
+        status="success",
+        candidate_bias="wait",
+        candidate_confidence=Decimal("0.6200"),
+        decision_readiness="wait_for_confirmation",
+        strategy_evidence_summary_json=json.dumps(
+            {
+                "context": {
+                    "strategy_name": "market_direction_regime_strategy",
+                    "strategy_role": "context",
+                    "summary": "market context still requires confirmation.",
+                    "reason_codes": ["context_wait"],
+                }
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        decision_source_chain_json=json.dumps(
+            [
+                {
+                    "strategy_name": "breakout_pullback_trigger_strategy",
+                    "strategy_role": "filter",
+                    "filter_decision": "wait",
+                    "summary": "breakout or pullback trigger is not confirmed.",
+                    "reason_codes": ["trigger_not_confirmed"],
+                },
+                {
+                    "strategy_name": "volatility_risk_control_strategy",
+                    "strategy_role": "risk_control",
+                    "risk_gate_decision": "wait",
+                    "risk_scope": "current_candidate",
+                    "summary": "risk control does not support chasing.",
+                },
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        role_coverage_matrix_json=json.dumps({"context": {"present": True}}, sort_keys=True),
+        evidence_missing_json=json.dumps([{"reason_code": "volume_confirmation_missing"}], sort_keys=True),
+        strategy_conflict_summary_json=json.dumps([], sort_keys=True),
+        participation_summary_json=json.dumps({"decision_participant": 2}, sort_keys=True),
+        observe_only_summary_json=json.dumps({}, sort_keys=True),
+        risk_gate_summary_json=json.dumps(
+            {
+                "risk_gate_decision": "wait",
+                "risk_scope": "current_candidate",
+                "risk_level": "medium",
+                "reason_text": "risk control requires confirmation.",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        model_review_focus_json=json.dumps(["challenge whether 23F wait posture is too conservative"]),
+        not_trading_advice=True,
+        trace_id="trace-23f",
+        created_at_utc=CREATED_AT,
+    )
+
+
+def _model_review_candidate(
+    *,
+    material_pack_id: str,
+    strategy_signal_run_id: str,
+    strategy_evidence_aggregation_id: str,
+    run_id: str = "MAR-1",
+    result_id: str = "MARES-1",
+    model_key: str = "real_review",
+    provider: str = "real_provider",
+    review_decision: str = "need_more_evidence",
+    evidence_quality: str = "moderate",
+    recommendation: str = "wait",
+    quality_flags: list[Any] | None = None,
+    boundary_flags: list[Any] | None = None,
+    status: str = "success",
+    error_code: str | None = None,
+    created_at: datetime = CREATED_AT,
+) -> Any:
+    review_payload = {
+        "agreement_with_23f": "partial",
+        "review_decision": review_decision,
+        "main_objection": "23F wait posture still needs volume confirmation.",
+        "strongest_counterargument": "A fast key-level breakout could make waiting miss the confirmation window.",
+        "missing_evidence": ["volume_confirmation"],
+        "disputed_strategy_points": [],
+        "overestimated_evidence": [],
+        "underestimated_evidence": [],
+        "scenario_review": {
+            "main_scenario": "wait",
+            "opposite_scenario": "breakout",
+            "risk_scenario": "false_breakout",
+            "no_trade_scenario": "insufficient_confirmation",
+        },
+        "discipline_check": {
+            "chasing_risk": "caution",
+            "risk_reward_quality": "unclear",
+            "stop_condition_clarity": "unclear",
+            "overtrading_risk": "caution",
+        },
+        "recommendation_to_advice_layer": recommendation,
+        "evidence_refs": ["strategy_evidence.decision_source_chain[0]"],
+        "time_freshness_assessment": "fresh",
+        "boundary_flags": boundary_flags or [],
+        "quality_flags": quality_flags or [],
+        "confidence": "medium",
+        "summary": "model suggests waiting for confirmation.",
+    }
+    run = SimpleNamespace(
+        model_analysis_run_id=run_id,
+        review_version_key=f"RVK-{run_id}",
+        material_pack_id=material_pack_id,
+        aggregation_run_id=f"AGR-{material_pack_id}",
+        strategy_signal_run_id=strategy_signal_run_id,
+        snapshot_id="MCS-test",
+        symbol="BTCUSDT",
+        base_interval="4h",
+        higher_interval="1d",
+        model_provider=provider,
+        model_name=model_key,
+        model_version="test",
+        model_key=model_key,
+        model_role="primary_review",
+        analysis_mode="single",
+        status=status,
+        input_summary_json=json.dumps(
+            {
+                "strategy_evidence_aggregation_id": strategy_evidence_aggregation_id,
+                "strategy_evidence": {"aggregation_id": strategy_evidence_aggregation_id},
+            },
+            sort_keys=True,
+        ),
+        response_metadata_summary_json=json.dumps(
+            {
+                "schema_error_code": "",
+                "boundary_flags": boundary_flags or [],
+                "quality_flags": quality_flags or [],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        is_final_trading_advice=False,
+        is_trading_signal=False,
+        is_executable=False,
+        auto_trading_allowed=False,
+        error_code=error_code,
+        profile_hash="profile-hash",
+        created_at_utc=created_at,
+    )
+    result = SimpleNamespace(
+        model_analysis_result_id=result_id,
+        model_analysis_run_id=run_id,
+        review_version_key=f"RVK-{run_id}",
+        material_pack_id=material_pack_id,
+        aggregation_run_id=f"AGR-{material_pack_id}",
+        strategy_signal_run_id=strategy_signal_run_id,
+        review_decision=review_decision,
+        human_review_required=True,
+        evidence_quality=evidence_quality,
+        logic_consistency="minor_conflict",
+        risk_acceptability="caution",
+        strategy_conflict_level="medium",
+        missing_evidence_json=json.dumps(["volume_confirmation"], sort_keys=True),
+        rejection_reasons_json=json.dumps([], sort_keys=True),
+        risk_warnings_json=json.dumps([], sort_keys=True),
+        conditions_to_reconsider_json=json.dumps([], sort_keys=True),
+        validation_focus_json=json.dumps([{"review_payload_24c": review_payload}], ensure_ascii=False),
+        human_review_questions_json=json.dumps([], sort_keys=True),
+        summary_text="model suggests waiting for confirmation.",
+        not_trading_advice_text="not trading advice",
+        created_at_utc=created_at,
+    )
+    return SimpleNamespace(model_analysis_run=run, model_analysis_result=result)
 
 
 def _row_from_payload(payload: Any) -> Any:

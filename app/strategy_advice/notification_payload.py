@@ -31,6 +31,7 @@ def build_notification_payload(
     advice_path: str | None,
     notification_level: str,
     trade_setup_count: int,
+    evidence_chain_summary: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     """Build a bounded notification payload for future Hermes delivery.
 
@@ -58,6 +59,9 @@ def build_notification_payload(
     if model_review["model_review_chain_status"] == "partial_success":
         model_review["partial_success_notice"] = "partial_success cannot be reported as a complete model relay review"
 
+    evidence_summary = dict(evidence_chain_summary or {})
+    strategy_evidence_chain = dict(evidence_summary.get("strategy_evidence_chain") or {})
+    model_review_summary = dict(evidence_summary.get("model_review_summary") or {})
     return {
         "schema_version": STRATEGY_ADVICE_PAYLOAD_SCHEMA_VERSION,
         "lifecycle": {
@@ -83,6 +87,9 @@ def build_notification_payload(
             "snapshot_id": _text_attr(aggregation_row, "snapshot_id"),
         },
         "model_review": model_review,
+        "evidence_chain_summary": evidence_summary,
+        "strategy_evidence_chain": strategy_evidence_chain,
+        "model_review_summary": model_review_summary,
         "risk": dict(candidate.risk_summary_json),
         "strategy": dict(candidate.strategy_summary_json),
         "trade_setup": {
@@ -93,6 +100,8 @@ def build_notification_payload(
         "boundaries": {
             "stage21a_calls_model": False,
             "stage21a_sends_hermes": False,
+            "not_trading_advice": True,
+            "is_final_trading_advice": False,
             "is_trading_signal": False,
             "is_executable": False,
             "auto_trading_allowed": False,
