@@ -254,7 +254,13 @@ class StrategySignalSchedulerService:
             started_at_utc=now_utc(),
         )
         _commit_if_possible(db_session)
-        return self._run_stage16_and_finalize_event(db_session, event=event, trace_id=trace_id, target=target)
+        return self._run_stage16_and_finalize_event(
+            db_session,
+            event=event,
+            request=request,
+            trace_id=trace_id,
+            target=target,
+        )
 
     def _handle_1d_success(
         self,
@@ -329,6 +335,7 @@ class StrategySignalSchedulerService:
         return self._run_stage16_and_finalize_event(
             db_session,
             event=existing_event,
+            request=request,
             trace_id=trace_id,
             target=target,
         )
@@ -366,7 +373,7 @@ class StrategySignalSchedulerService:
             target_higher_open_time_ms=target["target_higher_open_time_ms"],
             target_higher_open_time_utc=target["target_higher_open_time_utc"],
             status=status.value,
-            trigger_source=TRIGGER_SOURCE_SCHEDULER,
+            trigger_source=request.trigger_source or TRIGGER_SOURCE_SCHEDULER,
             trigger_reason=trigger_reason,
             upstream_4h_collector_event_id=(
                 request.upstream_collector_event_id
@@ -422,6 +429,7 @@ class StrategySignalSchedulerService:
         db_session: Any,
         *,
         event: Any,
+        request: StrategySignalSchedulerRequest,
         trace_id: str,
         target: dict[str, Any],
     ) -> StrategySignalSchedulerResult:
@@ -430,6 +438,7 @@ class StrategySignalSchedulerService:
                 db_session,
                 trace_id=trace_id,
                 current_time_ms=target["current_time_ms"],
+                trigger_source=request.trigger_source or TRIGGER_SOURCE_SCHEDULER,
             )
         except Exception as exc:  # noqa: BLE001 - scheduler event must capture stage-16 boundary failures.
             _rollback_if_possible(db_session)
@@ -494,6 +503,7 @@ class StrategySignalSchedulerService:
         *,
         trace_id: str,
         current_time_ms: int,
+        trigger_source: str,
     ) -> StrategySignalRunResult:
         request = StrategySignalRunRequest(
             symbol=self._config.strategy_signal_symbol,
@@ -501,7 +511,7 @@ class StrategySignalSchedulerService:
             higher_interval_value=self._config.strategy_signal_higher_interval,
             lookback_base_count=self._settings.market_context_4h_lookback_count,
             lookback_higher_count=self._settings.market_context_1d_lookback_count,
-            trigger_source=TRIGGER_SOURCE_SCHEDULER,
+            trigger_source=trigger_source,
             ensure_latest_snapshot=True,
             dry_run=False,
             confirm_write=True,
