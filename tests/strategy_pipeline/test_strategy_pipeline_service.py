@@ -11,6 +11,12 @@ from app.scheduler.strategy_signal_scheduler_types import (
     StrategySignalSchedulerResult,
     StrategySignalSchedulerStatus,
 )
+from app.strategy.aggregation.evidence_types import (
+    CandidateBias,
+    DecisionReadiness,
+    EvidenceAggregationRunResult,
+    EvidenceAggregationStatus,
+)
 from app.strategy.aggregation.types import StrategyAggregationResult, StrategyAggregationStatus
 from app.strategy_advice.scheduler_schema import (
     StrategyAdviceSchedulerResult,
@@ -45,9 +51,15 @@ class FakeEvidenceAggregation:
 
 
 class FakeRepository:
-    def __init__(self, order: list[str] | None = None, latest_slot: datetime | None = SLOT) -> None:
+    def __init__(
+        self,
+        order: list[str] | None = None,
+        latest_slot: datetime | None = SLOT,
+        existing_evidence: FakeEvidenceAggregation | None = None,
+    ) -> None:
         self.order = order if order is not None else []
         self.latest_slot = latest_slot
+        self.existing_evidence = existing_evidence
         self.created_events: list[Any] = []
         self.updated_events: list[Any] = []
 
@@ -59,9 +71,9 @@ class FakeRepository:
         db_session: Any,
         *,
         strategy_signal_run_id: str,
-    ) -> FakeEvidenceAggregation:
-        self.order.append("23f")
-        return FakeEvidenceAggregation()
+    ) -> FakeEvidenceAggregation | None:
+        self.order.append("23f_lookup")
+        return self.existing_evidence
 
     def create_pipeline_event_log(self, db_session: Any, *, payload: Any) -> dict[str, Any]:
         row: dict[str, Any] = {"payload": payload}
@@ -125,27 +137,62 @@ class FakeStage18:
         )
 
 
-class FakeStage20Worker:
-    def __init__(self, order: list[str]) -> None:
+class FakeStage23F:
+    def __init__(
+        self,
+        order: list[str],
+        *,
+        status: EvidenceAggregationStatus = EvidenceAggregationStatus.SUCCESS,
+    ) -> None:
         self.order = order
+        self.status = status
+        self.requests: list[Any] = []
+
+    def run_strategy_evidence_aggregation(self, db_session: Any, *, request: Any) -> EvidenceAggregationRunResult:
+        self.order.append("23f_create")
+        self.requests.append(request)
+        return EvidenceAggregationRunResult(
+            status=self.status,
+            exit_code=0,
+            aggregation_id="SEA-created",
+            strategy_signal_run_id=request.strategy_signal_run_id,
+            trace_id=request.trace_id,
+            database_written=self.status
+            not in {EvidenceAggregationStatus.BLOCKED, EvidenceAggregationStatus.FAILED},
+            database_action="created",
+            candidate_bias=CandidateBias.WAIT,
+            decision_readiness=DecisionReadiness.WAIT_FOR_CONFIRMATION,
+            message="stage23f ok",
+        )
+
+
+class FakeStage20Worker:
+    def __init__(self, order: list[str], *, result_kwargs: dict[str, Any] | None = None) -> None:
+        self.order = order
+        self.result_kwargs = result_kwargs or {}
         self.requests: list[Any] = []
 
     def run_model_review_chain_worker(self, db_session: Any, *, request: Any) -> Any:
         self.order.append("20c")
         self.requests.append(request)
+        values = {
+            "status": MODEL_REVIEW_CHAIN_WORKER_STATUS_SUCCESS,
+            "trace_id": request.trace_id,
+            "material_pack_id": request.material_pack_id,
+            "model_review_reused": True,
+            "reused_model_analysis_run_id": "MAR-test",
+            "summary_text": "stage20c ok",
+        }
+        values.update(self.result_kwargs)
         return build_worker_result(
-            status=MODEL_REVIEW_CHAIN_WORKER_STATUS_SUCCESS,
-            trace_id=request.trace_id,
-            material_pack_id=request.material_pack_id,
-            model_review_reused=True,
-            reused_model_analysis_run_id="MAR-test",
-            summary_text="stage20c ok",
+            **values,
         )
 
 
 class FakeStage20A:
-    def __init__(self, order: list[str]) -> None:
+    def __init__(self, order: list[str], *, model_review_reused: bool = True) -> None:
         self.order = order
+        self.model_review_reused = model_review_reused
 
     def run_model_review_aggregation(self, db_session: Any, *, request: Any) -> ModelReviewAggregationResult:
         self.order.append("20a")
@@ -158,7 +205,7 @@ class FakeStage20A:
             strategy_signal_run_id="SSR-test",
             snapshot_id="MCS-test",
             trace_id=request.trace_id,
-            model_review_reused=True,
+            model_review_reused=self.model_review_reused,
             reused_model_analysis_run_id="MAR-test",
             summary_text="stage20a ok",
         )
@@ -217,9 +264,9 @@ def test_confirm_write_calls_existing_stage_services_in_pipeline_order() -> None
     )
 
     assert result.status == StrategyPipelineStatus.SUCCESS
-    assert order == ["17", "23f", "18", "20c", "20a", "21c"]
+    assert order == ["17", "23f_lookup", "23f_create", "18", "20c", "20a", "21c"]
     assert result.strategy_signal_run_id == "SSR-test"
-    assert result.strategy_evidence_aggregation_id == "SEA-test"
+    assert result.strategy_evidence_aggregation_id == "SEA-created"
     assert result.material_pack_id == "AMP-test"
     assert result.model_analysis_run_id == "MAR-test"
     assert result.review_aggregation_run_id == "MRAG-test"
@@ -265,6 +312,7 @@ def test_pipeline_does_not_duplicate_real_model_or_hermes_without_pipeline_gates
         stage20_worker=worker,
         settings=AppSettings(
             strategy_pipeline_enabled=True,
+            strategy_evidence_aggregation_enabled=True,
             model_review_real_model_enabled=True,
             strategy_pipeline_real_model_enabled=False,
             strategy_advice_notification_send_enabled=True,
@@ -290,6 +338,125 @@ def test_pipeline_does_not_duplicate_real_model_or_hermes_without_pipeline_gates
     assert result.hermes_real_sent is False
 
 
+def test_pipeline_real_model_called_false_for_mock_review() -> None:
+    order: list[str] = []
+    worker = FakeStage20Worker(
+        order,
+        result_kwargs={
+            "model_review_invoked": True,
+            "model_review_invocation_mode": "worker_real_model",
+            "model_review_reused": False,
+            "invoked_model_keys_json": ("mock_review",),
+        },
+    )
+    service = _build_full_success_service(
+        order=order,
+        stage20_worker=worker,
+        stage20a_service=FakeStage20A(order, model_review_reused=False),
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.model_review_invoked is True
+    assert result.model_review_reused is False
+    assert result.real_model_called is False
+
+
+def test_pipeline_real_model_called_false_when_review_is_reused() -> None:
+    service = _build_full_success_service(order=[])
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.model_review_reused is True
+    assert result.real_model_called is False
+
+
+def test_pipeline_real_model_called_true_only_for_new_real_provider_call() -> None:
+    order: list[str] = []
+    worker = FakeStage20Worker(
+        order,
+        result_kwargs={
+            "model_review_invoked": True,
+            "model_review_invocation_mode": "worker_real_model",
+            "model_review_reused": False,
+            "invoked_model_keys_json": ("deepseek_primary_review",),
+        },
+    )
+    service = _build_full_success_service(
+        order=order,
+        stage20_worker=worker,
+        stage20a_service=FakeStage20A(order, model_review_reused=False),
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.model_review_invoked is True
+    assert result.model_review_reused is False
+    assert result.real_model_called is True
+
+
+def test_pipeline_reuses_existing_23f_without_creating_duplicate() -> None:
+    order: list[str] = []
+    repository = FakeRepository(order=order, existing_evidence=FakeEvidenceAggregation())
+    stage23f = FakeStage23F(order)
+    service = _build_full_success_service(order=order, repository=repository, stage23f_service=stage23f)
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.SUCCESS
+    assert result.strategy_evidence_aggregation_id == "SEA-test"
+    assert order == ["17", "23f_lookup", "18", "20c", "20a", "21c"]
+    assert stage23f.requests == []
+
+
+def test_pipeline_creates_23f_when_missing_after_stage16() -> None:
+    order: list[str] = []
+    stage23f = FakeStage23F(order)
+    service = _build_full_success_service(order=order, stage23f_service=stage23f)
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.SUCCESS
+    assert result.strategy_evidence_aggregation_id == "SEA-created"
+    assert stage23f.requests[0].strategy_signal_run_id == "SSR-test"
+    assert order[:3] == ["17", "23f_lookup", "23f_create"]
+
+
+def test_pipeline_blocks_when_23f_is_disabled_and_does_not_run_18() -> None:
+    order: list[str] = []
+    service = _build_full_success_service(
+        order=order,
+        settings=AppSettings(
+            strategy_pipeline_enabled=True,
+            strategy_evidence_aggregation_enabled=False,
+        ),
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.BLOCKED
+    assert result.error_code == "strategy_evidence_aggregation_disabled"
+    assert "18" not in order
+
+
 def test_pipeline_result_preserves_non_trading_boundary_fields() -> None:
     service = _build_full_success_service(order=[])
 
@@ -309,17 +476,22 @@ def _build_full_success_service(
     order: list[str],
     repository: FakeRepository | None = None,
     lock_manager: FakeLockManager | None = None,
+    stage23f_service: FakeStage23F | None = None,
     stage20_worker: FakeStage20Worker | None = None,
+    stage20a_service: FakeStage20A | None = None,
     settings: AppSettings | None = None,
 ) -> StrategyPipelineService:
     return StrategyPipelineService(
-        settings=settings or AppSettings(strategy_pipeline_enabled=True),
+        settings=settings or AppSettings(
+            strategy_pipeline_enabled=True,
+            strategy_evidence_aggregation_enabled=True,
+        ),
         repository=repository or FakeRepository(order=order),
         lock_manager=lock_manager or FakeLockManager(),
         stage17_service=FakeStage17(order),
+        stage23f_service=stage23f_service or FakeStage23F(order),
         stage18_service=FakeStage18(order),
         stage20_worker=stage20_worker or FakeStage20Worker(order),
-        stage20a_service=FakeStage20A(order),
+        stage20a_service=stage20a_service or FakeStage20A(order),
         stage21_service=FakeStage21(order),
     )
-

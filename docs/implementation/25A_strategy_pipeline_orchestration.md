@@ -200,3 +200,36 @@ ORM：
 
 默认测试不请求 Binance，不连接真实 Redis，不发送 Hermes，不调用真实大模型，不访问交易接口。
 
+## 9. 2026-05-31 补充修复：显式编排 24A/23F 与真实模型调用标记
+
+本次修复后，25A 在 17/16 成功返回 `strategy_signal_run_id` 后，不再只检查 23F 是否存在，而是调用
+`app/strategy_pipeline/evidence_stage.py::run_or_reuse_stage23f_for_pipeline`。
+
+该阶段的实际规则：
+
+- 如果已存在可用 `strategy_evidence_aggregation_result`，25A 复用其 `aggregation_id`，不重复创建。
+- 如果不存在，25A 显式调用 `app/strategy/aggregation/evidence_service.py::run_strategy_evidence_aggregation` 创建 23F 聚合结果。
+- 如果 `STRATEGY_EVIDENCE_AGGREGATION_ENABLED=false`，25A 返回 blocked，且不会继续跑 18 material pack。
+- 如果 23F 返回 failed / blocked 或没有持久化可用结果，25A 停止在 24A/23F 阶段并写入 pipeline event log。
+
+修复后的调度顺序：
+
+```text
+25A CLI
+→ 17
+→ 16
+→ 15 snapshot resolver / lazy snapshot path inside 16
+→ 23B/C/D/E strategy execution inside 16
+→ 25A explicit 24A/23F lookup-or-create
+→ 18 material pack
+→ 20C/19/20A model review chain and aggregation
+→ 21A/21B advice lifecycle and notification
+```
+
+`model_review_invoked` 与 `real_model_called` 的语义也已拆开：
+
+- `model_review_invoked=true` 只表示 20C 模型审查链路被触发。
+- `real_model_called=true` 只表示本轮 pipeline 新调用了 DeepSeek / OpenAI / Claude 等真实外部 provider。
+- mock_review、dry-run、复用已有模型审查结果，都必须保持 `real_model_called=false`。
+
+本次仍未修改 scheduler runner 自动接管逻辑；25A 仍然只是手动统一入口。

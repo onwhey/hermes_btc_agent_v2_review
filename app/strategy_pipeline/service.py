@@ -24,11 +24,13 @@ from app.scheduler.slot_state import KLINE_4H_INCREMENTAL_JOB_NAME
 from app.scheduler.strategy_signal_scheduler_types import StrategySignalSchedulerRequest, StrategySignalSchedulerStatus
 from app.strategy.aggregation.types import StrategyAggregationRequest, StrategyAggregationStatus
 from app.strategy_advice.scheduler_schema import StrategyAdviceSchedulerRequest, StrategyAdviceSchedulerStatus
+from app.strategy_pipeline.evidence_stage import run_or_reuse_stage23f_for_pipeline
 from app.strategy_pipeline.locks import (
     StrategyPipelineLock,
     StrategyPipelineLockManager,
     build_strategy_pipeline_lock_key,
 )
+from app.strategy_pipeline.model_review_flags import infer_real_model_called_from_worker_result
 from app.strategy_pipeline.repository import (
     StrategyPipelineRepository,
     create_default_strategy_pipeline_repository,
@@ -51,6 +53,7 @@ from app.strategy_pipeline.types import (
 from app.strategy_pipeline.stage_services import (
     create_pipeline_stage17_service,
     create_pipeline_stage18_service,
+    create_pipeline_stage23f_service,
     create_pipeline_stage20_worker,
     create_pipeline_stage20a_service,
     create_pipeline_stage21_service,
@@ -75,6 +78,7 @@ class StrategyPipelineService:
         repository: StrategyPipelineRepository | Any | None = None,
         lock_manager: StrategyPipelineLockManager | Any | None = None,
         stage17_service: Any | None = None,
+        stage23f_service: Any | None = None,
         stage18_service: Any | None = None,
         stage20_worker: Any | None = None,
         stage20a_service: Any | None = None,
@@ -84,6 +88,7 @@ class StrategyPipelineService:
         self._repository = repository or create_default_strategy_pipeline_repository()
         self._lock_manager = lock_manager or StrategyPipelineLockManager()
         self._stage17_service = stage17_service
+        self._stage23f_service = stage23f_service
         self._stage18_service = stage18_service
         self._stage20_worker = stage20_worker
         self._stage20a_service = stage20a_service
@@ -197,9 +202,25 @@ class StrategyPipelineService:
         state.details["stage17_result"] = compact_object(stage17)
         self._update_event_progress(db_session, event_row=event_row, request=request, state=state)
 
-        evidence_result = self._verify_stage23f(db_session, request=request, state=state)
-        if evidence_result is not None:
-            return self._finish_result(db_session, event_row=event_row, request=request, result=evidence_result)
+        evidence_outcome = run_or_reuse_stage23f_for_pipeline(
+            db_session,
+            request=request,
+            state=state,
+            settings=self._settings,
+            repository=self._repository,
+            evidence_service=self._stage23f_service or create_pipeline_stage23f_service(),
+        )
+        if not evidence_outcome.should_continue:
+            result = self._build_result(
+                request=request,
+                state=state,
+                status=evidence_outcome.status or StrategyPipelineStatus.BLOCKED,
+                current_step=PIPELINE_STEP_STAGE23F,
+                message=evidence_outcome.message,
+                error_code=evidence_outcome.error_code,
+                error_message=evidence_outcome.error_message,
+            )
+            return self._finish_result(db_session, event_row=event_row, request=request, result=result)
         self._update_event_progress(db_session, event_row=event_row, request=request, state=state)
 
         stage18 = self._run_stage18(db_session, request=request, state=state)
@@ -251,54 +272,6 @@ class StrategyPipelineService:
         if hasattr(service, "run_after_collector_success"):
             return service.run_after_collector_success(db_session, request=scheduler_request)
         return service(db_session=db_session, request=scheduler_request)
-
-    def _verify_stage23f(
-        self,
-        db_session: Any,
-        *,
-        request: StrategyPipelineRequest,
-        state: PipelineState,
-    ) -> StrategyPipelineResult | None:
-        state.current_step = PIPELINE_STEP_STAGE23F
-        if not state.strategy_signal_run_id:
-            return self._build_result(
-                request=request,
-                state=state,
-                status=StrategyPipelineStatus.BLOCKED,
-                current_step=PIPELINE_STEP_STAGE23F,
-                message="Stage 23F cannot be verified because stage 16 did not return a strategy_signal_run_id.",
-                error_code="strategy_signal_run_missing",
-            )
-        aggregation = self._repository.get_latest_strategy_evidence_aggregation(
-            db_session,
-            strategy_signal_run_id=state.strategy_signal_run_id,
-        )
-        if aggregation is None:
-            return self._build_result(
-                request=request,
-                state=state,
-                status=StrategyPipelineStatus.BLOCKED,
-                current_step=PIPELINE_STEP_STAGE23F,
-                message="Stage 24A/23F did not produce strategy evidence aggregation for this run.",
-                error_code="strategy_evidence_aggregation_missing",
-            )
-        state.strategy_evidence_aggregation_id = str(getattr(aggregation, "aggregation_id", "") or "")
-        state.details["stage23f_result"] = {
-            "aggregation_id": state.strategy_evidence_aggregation_id,
-            "status": str(getattr(aggregation, "status", "") or ""),
-            "candidate_bias": str(getattr(aggregation, "candidate_bias", "") or ""),
-            "decision_readiness": str(getattr(aggregation, "decision_readiness", "") or ""),
-        }
-        if str(getattr(aggregation, "status", "") or "").lower() in {"failed", "blocked"}:
-            return self._build_result(
-                request=request,
-                state=state,
-                status=StrategyPipelineStatus.BLOCKED,
-                current_step=PIPELINE_STEP_STAGE23F,
-                message="Stage 23F aggregation exists but is not usable.",
-                error_code="strategy_evidence_aggregation_unusable",
-            )
-        return None
 
     def _run_stage18(
         self,
@@ -362,7 +335,7 @@ class StrategyPipelineService:
         )
         state.model_review_invoked = bool(getattr(worker_result, "model_review_invoked", False))
         state.model_review_reused = bool(getattr(worker_result, "model_review_reused", False))
-        state.real_model_called = bool(getattr(worker_result, "model_review_invoked", False))
+        state.real_model_called = infer_real_model_called_from_worker_result(worker_result)
         state.model_analysis_run_id = getattr(worker_result, "reused_model_analysis_run_id", None)
         state.details["stage20c_result"] = compact_object(worker_result)
 
