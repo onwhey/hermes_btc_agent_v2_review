@@ -793,9 +793,57 @@ def test_prompt_builder_compresses_dynamic_strategy_list_without_name_assumption
 
     assert prompt.strategy_item_count == 30
     assert prompt.truncated_strategy_count == 20
-    assert len(prompt.input_summary["strategy_summaries"][0]["reason_codes"]) == 5
+    assert 1 <= len(prompt.input_summary["strategy_summaries"][0]["reason_codes"]) <= 5
     assert prompt.input_char_count <= 10000
     assert prompt.input_byte_count <= 32768
+
+
+def test_24c_large_material_input_is_compacted_under_hard_limit() -> None:
+    pack = material_pack(material_payload=_bloated_material_payload())
+    prompt = build_model_review_prompt(pack, settings=AppSettings())
+    prompt_payload = json.loads(prompt.prompt_text)
+    input_summary = prompt.input_summary
+
+    assert prompt.input_char_count <= 8000
+    assert input_summary["candidate_bias"] == "long"
+    assert input_summary["decision_readiness"] == "wait_for_confirmation"
+    assert input_summary["strategy_evidence_aggregation_id"] == "SEA-stage19"
+    assert input_summary["strategy_signal_run_id"] == "SSR-stage19"
+    assert input_summary["time_anchors"]["analysis_time_utc"] == "2026-05-20T09:00:00Z"
+    assert input_summary["time_anchors"]["latest_base_kline_close_time_utc"] == "2026-05-20T08:00:00Z"
+    assert input_summary["time_anchors"]["latest_higher_kline_close_time_utc"] == "2026-05-20T00:00:00Z"
+    assert input_summary["risk_gate_summary"]["risk_gate_decision"] == "wait"
+    assert input_summary["evidence_missing"]
+    assert 1 <= len(input_summary["model_review_focus"]) <= 5
+    assert input_summary["input_compaction"]["full_material_json_not_sent"] is True
+    assert input_summary["input_compaction"]["full_strategy_evidence_not_sent"] is True
+    assert "Rebut 23F first" in prompt_payload["instructions"]
+    assert "DO_NOT_SEND_PRIVATE_PAYLOAD_MARKER" not in prompt.prompt_text
+
+
+def test_24c_large_strategy_evidence_dry_run_does_not_write_or_send_final_notice() -> None:
+    repo = FakeModelAnalysisRepository(material_pack=material_pack(material_payload=_bloated_material_payload()))
+    alert = FakeAlertSender()
+
+    result = service_with_repo(repo, alert=alert).run_model_analysis(FakeSession(), request=run_request())
+
+    assert result.status == ModelAnalysisStatus.SUCCESS
+    assert result.input_char_count <= 10000
+    assert repo.run_rows == []
+    assert repo.result_rows == []
+    assert alert.calls == []
+    assert result.is_final_trading_advice is False
+    assert result.is_trading_signal is False
+
+
+def test_24c_compacted_input_still_obeys_configured_hard_limit() -> None:
+    result = service_with_repo(
+        FakeModelAnalysisRepository(material_pack=material_pack(material_payload=_bloated_material_payload())),
+        settings=AppSettings(model_review_max_input_chars=5000, model_review_max_input_bytes=32768),
+    ).run_model_analysis(FakeSession(), request=run_request())
+
+    assert result.status == ModelAnalysisStatus.BLOCKED
+    assert result.error_code == "input_char_limit_exceeded"
 
 
 def test_24c_prompt_includes_strategy_evidence_time_anchors_and_review_officer_rules() -> None:
@@ -1060,6 +1108,114 @@ def _valid_provider_output(
         "is_executable": False,
         "auto_trading_allowed": False,
     }
+
+
+def _bloated_material_payload() -> dict[str, Any]:
+    base_payload = json.loads(material_pack().material_json)
+    large_text = "evidence detail " + ("x" * 360)
+    strategy_evidence = dict(base_payload["strategy_evidence"])
+    strategy_evidence.update(
+        {
+            "candidate_bias": "long",
+            "candidate_confidence": "0.71",
+            "decision_readiness": "wait_for_confirmation",
+            "strategy_evidence_summary": {
+                f"role_{role_index}": [
+                    {
+                        "strategy_name": f"fixture_strategy_{role_index}_{item_index}",
+                        "strategy_role": f"role_{role_index}",
+                        "participation_mode": "decision_participant",
+                        "candidate_bias": "long" if item_index % 2 == 0 else "wait",
+                        "summary": large_text,
+                        "reason_text": large_text,
+                        "reason_codes": [f"reason_{code_index}" for code_index in range(12)],
+                        "evidence_items": [large_text for _ in range(8)],
+                        "supporting_evidence": [large_text for _ in range(8)],
+                        "opposing_evidence": [large_text for _ in range(8)],
+                        "key_levels": [
+                            {
+                                "level_type": "support",
+                                "level_group": "nearest_support",
+                                "zone_low": "68000",
+                                "zone_high": "68120",
+                                "reason": large_text,
+                            }
+                            for _ in range(6)
+                        ],
+                    }
+                    for item_index in range(8)
+                ]
+                for role_index in range(8)
+            },
+            "decision_source_chain": [
+                {
+                    "strategy_name": f"chain_strategy_{index}",
+                    "strategy_role": "filter",
+                    "filter_decision": "wait",
+                    "reason_text": large_text,
+                    "evidence_items": [large_text for _ in range(5)],
+                }
+                for index in range(60)
+            ],
+            "role_coverage_matrix": {
+                f"role_{index}": {
+                    "present": True,
+                    "status": "present",
+                    "provided": [f"provide_{provide_index}" for provide_index in range(24)],
+                    "required": [f"required_{provide_index}" for provide_index in range(12)],
+                    "missing": [],
+                    "debug_detail": large_text,
+                }
+                for index in range(10)
+            },
+            "evidence_missing": [
+                {
+                    "strategy_role": "context",
+                    "provides": "market_environment_context",
+                    "reason": large_text,
+                }
+                for _ in range(12)
+            ],
+            "strategy_conflict_summary": [
+                {
+                    "conflict_type": "direction_conflict",
+                    "strategy_role": "directional",
+                    "reason": large_text,
+                    "severity": "medium",
+                }
+                for _ in range(12)
+            ],
+            "participation_summary": {
+                "decision_participant": 4,
+                "advisory": 2,
+                "observe_only": {"count": 3, "debug": large_text},
+                "disabled": 1,
+            },
+            "observe_only_summary": {
+                f"observer_{index}": {"strategy_name": f"observer_{index}", "reason": large_text}
+                for index in range(12)
+            },
+            "risk_gate_summary": {
+                "risk_gate_decision": "wait",
+                "risk_scope": "current_candidate",
+                "global_market_risk": "medium",
+                "candidate_risk": "elevated",
+                "long_feasibility": "caution",
+                "short_feasibility": "unknown",
+                "reason_codes": [f"risk_reason_{index}" for index in range(12)],
+                "reason_text": large_text,
+            },
+            "model_review_focus": [f"focus_{index}: {large_text}" for index in range(20)],
+        }
+    )
+    base_payload["strategy_evidence"] = strategy_evidence
+    base_payload["material_debug_rows"] = [large_text for _ in range(80)]
+    base_payload["full_indicator_dump"] = {
+        f"indicator_{index}": [large_text for _ in range(10)]
+        for index in range(10)
+    }
+    base_payload["strategy_payload_json"] = {"secret_marker": "DO_NOT_SEND_PRIVATE_PAYLOAD_MARKER"}
+    return base_payload
 
 
 def _json_payload(value: Mapping[str, Any] | list[Any] | str) -> str:

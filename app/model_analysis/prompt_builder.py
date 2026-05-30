@@ -23,6 +23,14 @@ from app.model_analysis.material_input import (
     build_time_anchor_summary,
     extract_strategy_evidence,
 )
+from app.model_analysis.input_compactor import (
+    PROMPT_HARD_CHAR_LIMIT,
+    PROMPT_TARGET_CHAR_LIMIT,
+    build_compacted_model_review_input_summary,
+    compact_list,
+    compact_scalar,
+    json_char_count,
+)
 from app.model_analysis.schema_validator import ENUM_ALLOWED_VALUES
 from app.model_analysis.types import PromptBuildResult
 
@@ -133,8 +141,7 @@ REVIEW_DECISION_SEMANTIC_RULES: dict[str, Any] = {
     },
 }
 
-PROMPT_TEMPLATE_POLICY_VERSION = "review_prompt_policy_v3_strategy_evidence"
-
+PROMPT_TEMPLATE_POLICY_VERSION = "review_prompt_policy_v4_strategy_evidence_compacted"
 
 def build_prompt_template_hash(
     *,
@@ -177,9 +184,8 @@ PROMPT_TEMPLATE_HASH = build_prompt_template_hash()
 REVIEW_INSTRUCTIONS = "\n".join(
     (
         "You are an independent risk review officer, not a strategy and not a final trader.",
-        "Your task is to review whether the 23F strategy evidence chain is reliable.",
-        "You must rebut 23F first, then decide whether to accept, downgrade, reject, or request more evidence.",
-        "Review material only, not trades.",
+        "Review whether the 23F strategy evidence chain is reliable.",
+        "Rebut 23F first, cite provided evidence, and output structured JSON only.",
         *REVIEW_OUTPUT_RULES,
         "The output must conform to review_schema_v2_strategy_evidence.",
     )
@@ -218,72 +224,57 @@ def build_model_review_prompt(material_pack: Any, *, settings: AppSettings) -> P
         max_reason_items=settings.model_review_max_reason_items_per_strategy,
     )
     truncated_strategy_count = max(total_strategy_count - len(strategy_summaries), 0)
+    original_material_json_char_count = json_char_count(material_json)
+    original_strategy_evidence_char_count = json_char_count(strategy_evidence)
 
-    input_summary: dict[str, Any] = {
-        "material_pack_id": str(getattr(material_pack, "material_pack_id", "")),
-        "aggregation_run_id": str(getattr(material_pack, "aggregation_run_id", "")),
-        "strategy_signal_run_id": str(getattr(material_pack, "strategy_signal_run_id", "")),
-        "snapshot_id": str(getattr(material_pack, "snapshot_id", "")),
-        "symbol": str(getattr(material_pack, "symbol", "")),
-        "base_interval": str(getattr(material_pack, "base_interval", "")),
-        "higher_interval": str(getattr(material_pack, "higher_interval", "")),
-        "material_status": str(getattr(material_pack, "status", "")),
-        "aggregation_version": str(getattr(material_pack, "aggregation_version", "")),
-        "material_schema_version": str(getattr(material_pack, "material_schema_version", "")),
-        "strategy_item_count": len(strategy_summaries),
-        "truncated_strategy_count": truncated_strategy_count,
-        "strategy_summaries": strategy_summaries,
-        "time_anchors": dict(time_anchors),
-        "strategy_evidence": _compact_strategy_evidence(strategy_evidence),
-        "strategy_evidence_source": _compact_scalar(strategy_evidence.get("source")),
-        "strategy_evidence_aggregation_id": _compact_scalar(strategy_evidence.get("aggregation_id")),
-        "candidate_bias": _compact_scalar(strategy_evidence.get("candidate_bias")),
-        "decision_readiness": _compact_scalar(strategy_evidence.get("decision_readiness")),
-        "strategy_evidence_summary": _compact_mapping(
-            _as_mapping(strategy_evidence.get("strategy_evidence_summary")),
-            max_items=16,
-        ),
-        "decision_source_chain": _compact_list(strategy_evidence.get("decision_source_chain"), max_items=10),
-        "role_coverage_matrix": _compact_mapping(
-            _as_mapping(strategy_evidence.get("role_coverage_matrix")),
-            max_items=12,
-        ),
-        "evidence_missing": _compact_list(strategy_evidence.get("evidence_missing"), max_items=12),
-        "strategy_conflict_summary": _compact_list(
-            strategy_evidence.get("strategy_conflict_summary"),
-            max_items=10,
-        ),
-        "risk_gate_summary": _compact_mapping(_as_mapping(strategy_evidence.get("risk_gate_summary")), max_items=12),
-        "model_review_focus": _compact_list(strategy_evidence.get("model_review_focus"), max_items=12)
-        or _compact_mapping(_as_mapping(strategy_evidence.get("model_review_focus")), max_items=12),
-        "kline_window_summary": _compact_mapping(_as_mapping(material_json.get("kline_window_summary")), max_items=8),
-        "market_material_summary": _compact_mapping(
-            {
-                "swing": material_json.get("swing"),
-                "volatility": material_json.get("volatility"),
-                "support_resistance": material_json.get("support_resistance"),
-            },
-            max_items=8,
-        ),
-        "material_summary": _compact_mapping(_high_level_summary(summary_json)),
-        "review_questions": _compact_list(question_json.get("questions", []) if isinstance(question_json, dict) else []),
-        "validation_focus": _compact_mapping(validation_plan_json),
-        "not_trading_advice": True,
-    }
-    prompt_input = {
-        "instructions": REVIEW_INSTRUCTIONS,
-        "allowed_enum_values": REVIEW_OUTPUT_ALLOWED_ENUM_VALUES,
-        "review_decision_semantic_rules": REVIEW_DECISION_SEMANTIC_RULES,
-        "required_output_json_skeleton": REVIEW_OUTPUT_JSON_SKELETON,
-        "input_summary": _prompt_input_summary(input_summary),
-    }
-    prompt_text = json.dumps(
-        prompt_input,
-        ensure_ascii=False,
-        sort_keys=True,
-        default=str,
-        separators=(",", ":"),
+    input_summary = build_compacted_model_review_input_summary(
+        material_pack=material_pack,
+        material_json=material_json,
+        summary_json=summary_json,
+        question_json=question_json,
+        validation_plan_json=validation_plan_json,
+        strategy_evidence=strategy_evidence,
+        time_anchors=time_anchors,
+        strategy_summaries=strategy_summaries,
+        truncated_strategy_count=truncated_strategy_count,
+        original_material_json_char_count=original_material_json_char_count,
+        original_strategy_evidence_char_count=original_strategy_evidence_char_count,
+        aggressive=False,
     )
+    prompt_text = _render_prompt_text(input_summary)
+    if len(prompt_text) > PROMPT_TARGET_CHAR_LIMIT:
+        input_summary = build_compacted_model_review_input_summary(
+            material_pack=material_pack,
+            material_json=material_json,
+            summary_json=summary_json,
+            question_json=question_json,
+            validation_plan_json=validation_plan_json,
+            strategy_evidence=strategy_evidence,
+            time_anchors=time_anchors,
+            strategy_summaries=strategy_summaries,
+            truncated_strategy_count=truncated_strategy_count,
+            original_material_json_char_count=original_material_json_char_count,
+            original_strategy_evidence_char_count=original_strategy_evidence_char_count,
+            aggressive=True,
+        )
+        prompt_text = _render_prompt_text(input_summary)
+    if len(prompt_text) > PROMPT_TARGET_CHAR_LIMIT:
+        input_summary = build_compacted_model_review_input_summary(
+            material_pack=material_pack,
+            material_json=material_json,
+            summary_json=summary_json,
+            question_json=question_json,
+            validation_plan_json=validation_plan_json,
+            strategy_evidence=strategy_evidence,
+            time_anchors=time_anchors,
+            strategy_summaries=strategy_summaries,
+            truncated_strategy_count=truncated_strategy_count,
+            original_material_json_char_count=original_material_json_char_count,
+            original_strategy_evidence_char_count=original_strategy_evidence_char_count,
+            aggressive=True,
+            emergency=True,
+        )
+        prompt_text = _render_prompt_text(input_summary)
     input_hash = hashlib.sha256(
         json.dumps(input_summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -364,9 +355,9 @@ def _compact_strategy_item(value: Mapping[str, Any], *, max_reason_items: int) -
     for key in STRATEGY_SUMMARY_KEYS:
         raw_value = value.get(key)
         if key in {"reason_codes", "missing_evidence"}:
-            compact_value = _compact_list(raw_value, max_items=max_reason_items)
+            compact_value = compact_list(raw_value, max_items=max_reason_items)
         else:
-            compact_value = _compact_scalar(raw_value)
+            compact_value = compact_scalar(raw_value)
         if key == "enabled" and compact_value is True:
             continue
         if key == "status" and compact_value == "success":
@@ -376,10 +367,55 @@ def _compact_strategy_item(value: Mapping[str, Any], *, max_reason_items: int) -
     return compact
 
 
+def _render_prompt_text(input_summary: Mapping[str, Any]) -> str:
+    compaction = input_summary.get("input_compaction")
+    emergency_mode = isinstance(compaction, Mapping) and compaction.get("mode") == "emergency"
+    prompt_input = {
+        "instructions": REVIEW_INSTRUCTIONS,
+        "allowed_enum_values": _core_allowed_enum_values() if emergency_mode else REVIEW_OUTPUT_ALLOWED_ENUM_VALUES,
+        "review_decision_semantic_rules": REVIEW_DECISION_SEMANTIC_RULES,
+        "required_output_json_skeleton": REVIEW_OUTPUT_JSON_SKELETON,
+        "input_summary": _prompt_input_summary(input_summary),
+    }
+    return json.dumps(
+        prompt_input,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+
+
+def _core_allowed_enum_values() -> dict[str, list[str]]:
+    """Return a shorter enum guide for emergency-compacted prompt input."""
+
+    return {
+        key: REVIEW_OUTPUT_ALLOWED_ENUM_VALUES[key]
+        for key in (
+            "review_decision",
+            "agreement_with_23f",
+            "recommendation_to_advice_layer",
+            "discipline_check_value",
+            "confidence",
+            "evidence_quality",
+            "logic_consistency",
+            "risk_acceptability",
+            "strategy_conflict_level",
+        )
+        if key in REVIEW_OUTPUT_ALLOWED_ENUM_VALUES
+    }
+
+
 def _prompt_input_summary(input_summary: Mapping[str, Any]) -> dict[str, Any]:
     """Return a prompt-only summary that keeps persisted input_summary unchanged."""
 
     compact = dict(input_summary)
+    compaction = compact.get("input_compaction")
+    if isinstance(compaction, Mapping) and compaction.get("mode") == "emergency":
+        for duplicate_key in ("strategy_summaries", "risk_gate_summary", "evidence_missing", "model_review_focus"):
+            compact.pop(duplicate_key, None)
+        compact["prompt_emergency_compaction"] = "deduped"
+        return compact
     strategy_summaries = input_summary.get("strategy_summaries", [])
     if isinstance(strategy_summaries, list):
         prompt_strategy_summaries = strategy_summaries[:12]
@@ -396,86 +432,6 @@ def _prompt_strategy_item(item: Mapping[str, Any]) -> dict[str, Any]:
         PROMPT_STRATEGY_KEY_ALIASES.get(str(key), str(key)): value
         for key, value in item.items()
     }
-
-
-def _compact_strategy_evidence(strategy_evidence: Mapping[str, Any]) -> dict[str, Any]:
-    """Return bounded public 23F evidence without private strategy payloads."""
-
-    keys = (
-        "source",
-        "aggregation_id",
-        "strategy_signal_run_id",
-        "status",
-        "candidate_bias",
-        "candidate_confidence",
-        "decision_readiness",
-        "strategy_evidence_summary",
-        "decision_source_chain",
-        "role_coverage_matrix",
-        "evidence_missing",
-        "strategy_conflict_summary",
-        "participation_summary",
-        "observe_only_summary",
-        "risk_gate_summary",
-        "model_review_focus",
-    )
-    compact: dict[str, Any] = {}
-    for key in keys:
-        value = strategy_evidence.get(key)
-        if isinstance(value, Mapping):
-            compact[key] = _compact_mapping(value, max_items=12)
-        elif isinstance(value, list):
-            compact[key] = _compact_list(value, max_items=10)
-        else:
-            compact[key] = _compact_scalar(value)
-    return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
-
-
-def _high_level_summary(value: Mapping[str, Any]) -> dict[str, Any]:
-    skipped = {"strategy_summaries", "strategies", "strategy_results"}
-    return {str(key): raw_value for key, raw_value in value.items() if str(key) not in skipped}
-
-
-def _compact_mapping(value: Mapping[str, Any], *, max_items: int = 12) -> dict[str, Any]:
-    compact: dict[str, Any] = {}
-    for index, (key, raw_value) in enumerate(value.items()):
-        if index >= max_items:
-            compact["truncated"] = True
-            break
-        if isinstance(raw_value, Mapping):
-            compact[str(key)] = _compact_mapping(raw_value, max_items=6)
-        elif isinstance(raw_value, list):
-            compact[str(key)] = _compact_list(raw_value, max_items=6)
-        else:
-            compact[str(key)] = _compact_scalar(raw_value)
-    return compact
-
-
-def _compact_list(value: Any, *, max_items: int = 5) -> list[Any]:
-    if not isinstance(value, list):
-        return []
-    result: list[Any] = []
-    for item in value[:max_items]:
-        if isinstance(item, Mapping):
-            result.append(_compact_mapping(item, max_items=6))
-        elif isinstance(item, list):
-            result.append(_compact_list(item, max_items=max_items))
-        else:
-            result.append(_compact_scalar(item))
-    return result
-
-
-def _compact_scalar(value: Any, *, max_chars: int = 300) -> Any:
-    if isinstance(value, (bool, int, float)) or value is None:
-        return value
-    text = str(value)
-    if len(text) <= max_chars:
-        return text
-    return f"{text[:max_chars]}...[truncated]"
-
-
-def _as_mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
 
 
 __all__ = [
