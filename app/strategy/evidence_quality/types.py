@@ -234,8 +234,23 @@ class StrategyEvidenceQualityQueryReport:
     exit_code: int
 
 
-def build_quality_check_id(*, evidence_aggregation_id: str, trace_id: str) -> str:
-    """Build a deterministic, bounded business id for one 26B quality check."""
+def build_quality_check_id(
+    *,
+    pipeline_run_id: str | None,
+    evidence_aggregation_id: str,
+    trace_id: str,
+) -> str:
+    """Build a bounded business id for one 26B quality check.
+
+    Pipeline-triggered 26B checks are audited per `pipeline_run_id`, because a
+    later pipeline may legitimately reuse the same SEA. CLI/non-pipeline
+    callers fall back to the older SEA + trace shape when no pipeline id exists.
+    """
+
+    pipeline_text = str(pipeline_run_id or "").strip()
+    if pipeline_text:
+        pipeline_part = "".join(ch if ch.isalnum() else "-" for ch in pipeline_text)[:140]
+        return f"EQC-{pipeline_part}"
 
     evidence_part = "".join(ch if ch.isalnum() else "-" for ch in evidence_aggregation_id.strip())[:96]
     trace_part = "".join(ch for ch in trace_id if ch.isalnum())[:16] or uuid4().hex[:16]

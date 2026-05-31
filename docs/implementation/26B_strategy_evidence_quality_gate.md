@@ -143,11 +143,16 @@ maturity_stage=active
 唯一键：
 
 - `quality_check_id`
-- `(evidence_aggregation_id, trigger_source)`
+- `(pipeline_run_id, trigger_source)`
 
 幂等规则：
 
-同一个 SEA 在 `trigger_source=pipeline` 下重复运行时更新已有 26B 行，不重复创建质量结果。
+26B pipeline 场景以 `pipeline_run_id` 作为每次运行的幂等维度。
+
+- 同一个 `pipeline_run_id` 重复运行时，更新同一条 26B 质量记录。
+- 不同 `pipeline_run_id` 即使复用同一个 `evidence_aggregation_id`，也必须创建不同的 26B 质量记录。
+- pipeline 场景的 `quality_check_id` 由当前 `pipeline_run_id` 派生，避免旧 pipeline 的 passed/failed 记录被新 pipeline 覆盖。
+- `evidence_aggregation_id` 仍作为审计关联字段保存，但不再作为 pipeline 质量记录的唯一幂等键。
 
 JSON 字段只保存紧凑摘要、失败字段和配置快照，不保存完整 K线窗口、完整策略上下文、完整模型输入或输出。
 

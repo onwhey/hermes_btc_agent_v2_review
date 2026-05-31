@@ -134,6 +134,7 @@ class StrategyEvidenceQualityGateService:
         )
         existing_quality = self._repository.get_existing_quality_check(
             db_session,
+            pipeline_run_id=request.pipeline_run_id,
             evidence_aggregation_id=request.strategy_evidence_aggregation_id,
             trigger_source=request.trigger_source,
         )
@@ -256,10 +257,13 @@ class StrategyEvidenceQualityGateService:
         existing_quality: Any | None,
     ) -> StrategyEvidenceQualityGateResult:
         should_block = bool(failed_checks)
-        quality_check_id = existing_quality_check_id(existing_quality) or build_quality_check_id(
+        built_quality_check_id = build_quality_check_id(
+            pipeline_run_id=request.pipeline_run_id,
             evidence_aggregation_id=request.strategy_evidence_aggregation_id,
             trace_id=request.trace_id,
         )
+        existing_id = existing_quality_check_id(existing_quality)
+        quality_check_id = existing_id if existing_id == built_quality_check_id else built_quality_check_id
         alert_status_value = "pending" if should_block else "not_required"
         existing_alert_status = str(getattr(existing_quality, "alert_status", "") or "")
         existing_alert_message_id = int_or_none(getattr(existing_quality, "alert_message_id", None))
@@ -309,6 +313,7 @@ class StrategyEvidenceQualityGateService:
         return StrategyEvidenceQualityGateResult(
             status=StrategyEvidenceQualityStatus.WARNING,
             quality_check_id=build_quality_check_id(
+                pipeline_run_id=request.pipeline_run_id,
                 evidence_aggregation_id=request.strategy_evidence_aggregation_id,
                 trace_id=request.trace_id,
             ),

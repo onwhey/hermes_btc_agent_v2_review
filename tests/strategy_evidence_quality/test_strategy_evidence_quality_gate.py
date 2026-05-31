@@ -78,6 +78,7 @@ class FakeQualityRepository:
         self.existing_quality = existing_quality
         self.query_rows = query_rows
         self.persisted_payloads: list[Any] = []
+        self.persisted_rows: dict[tuple[str | None, str], Any] = {}
         self.alert_updates: list[tuple[str, int | None]] = []
 
     def get_strategy_signal_run(self, db_session: Any, *, run_id: str) -> Any | None:
@@ -89,18 +90,32 @@ class FakeQualityRepository:
     def list_strategy_signal_results(self, db_session: Any, *, run_id: str) -> tuple[Any, ...]:
         return self.rows
 
-    def get_existing_quality_check(self, db_session: Any, *, evidence_aggregation_id: str, trigger_source: str) -> Any:
-        return self.existing_quality
+    def get_existing_quality_check(
+        self,
+        db_session: Any,
+        *,
+        pipeline_run_id: str | None,
+        evidence_aggregation_id: str | None = None,
+        trigger_source: str,
+    ) -> Any:
+        if self.existing_quality is not None:
+            return self.existing_quality
+        return self.persisted_rows.get((pipeline_run_id, trigger_source))
 
     def upsert_quality_check_result(self, db_session: Any, *, payload: Any) -> tuple[Any, str]:
         self.persisted_payloads.append(payload)
+        key = (payload.pipeline_run_id, payload.trigger_source)
+        action = "updated" if key in self.persisted_rows else "created"
+        row = self.persisted_rows.get(key) or SimpleNamespace()
+        for name, value in payload.__dict__.items():
+            setattr(row, name, value)
+        row.quality_check_id = payload.quality_check_id
+        row.alert_status = payload.alert_status
+        row.alert_message_id = payload.alert_message_id
+        self.persisted_rows[key] = row
         return (
-            SimpleNamespace(
-                quality_check_id=payload.quality_check_id,
-                alert_status=payload.alert_status,
-                alert_message_id=payload.alert_message_id,
-            ),
-            "created",
+            row,
+            action,
         )
 
     def update_quality_alert_status(
@@ -295,6 +310,105 @@ def test_gate_disabled_records_skipped_and_does_not_block_or_alert() -> None:
     assert alert.calls == []
 
 
+def test_same_sea_different_pipeline_ids_create_independent_quality_records() -> None:
+    repo = FakeQualityRepository()
+
+    passed_result, _, _ = _run_gate(
+        active=(),
+        rows=(),
+        required_roles=(),
+        repo=repo,
+        pipeline_run_id="SP-pass",
+    )
+    failed_result, _, _ = _run_gate(
+        active=(_strategy("market_direction_regime", "context"),),
+        rows=(),
+        repo=repo,
+        pipeline_run_id="SP-failed",
+    )
+
+    assert passed_result.status == StrategyEvidenceQualityStatus.PASSED
+    assert failed_result.status == StrategyEvidenceQualityStatus.FAILED
+    assert len(repo.persisted_rows) == 2
+    assert repo.persisted_rows[("SP-pass", "pipeline")].status == "passed"
+    assert repo.persisted_rows[("SP-failed", "pipeline")].status == "failed"
+    assert passed_result.quality_check_id == "EQC-SP-pass"
+    assert failed_result.quality_check_id == "EQC-SP-failed"
+
+
+def test_quality_check_id_uses_current_pipeline_run_id_when_sea_is_reused() -> None:
+    repo = FakeQualityRepository()
+
+    first_result, _, _ = _run_gate(
+        active=(),
+        rows=(),
+        required_roles=(),
+        repo=repo,
+        pipeline_run_id="SP-BTCUSDT-4H-1D-first",
+    )
+    second_result, _, _ = _run_gate(
+        active=(),
+        rows=(),
+        required_roles=(),
+        repo=repo,
+        pipeline_run_id="SP-BTCUSDT-4H-1D-second",
+    )
+
+    assert first_result.strategy_evidence_aggregation_id == "SEA-test"
+    assert second_result.strategy_evidence_aggregation_id == "SEA-test"
+    assert first_result.quality_check_id == "EQC-SP-BTCUSDT-4H-1D-first"
+    assert second_result.quality_check_id == "EQC-SP-BTCUSDT-4H-1D-second"
+    assert first_result.quality_check_id != second_result.quality_check_id
+
+
+def test_same_pipeline_run_id_reuses_one_quality_record_idempotently() -> None:
+    repo = FakeQualityRepository()
+
+    first_result, _, _ = _run_gate(
+        active=(),
+        rows=(),
+        required_roles=(),
+        repo=repo,
+        pipeline_run_id="SP-repeat",
+        trace_id="trace-first",
+    )
+    second_result, _, _ = _run_gate(
+        active=(),
+        rows=(),
+        required_roles=(),
+        repo=repo,
+        pipeline_run_id="SP-repeat",
+        trace_id="trace-second",
+    )
+
+    assert len(repo.persisted_rows) == 1
+    assert first_result.quality_check_id == "EQC-SP-repeat"
+    assert second_result.quality_check_id == "EQC-SP-repeat"
+    assert first_result.database_action == "created"
+    assert second_result.database_action == "updated"
+
+
+def test_existing_legacy_quality_check_id_is_corrected_to_current_pipeline_id() -> None:
+    repo = FakeQualityRepository()
+    repo.persisted_rows[("SP-current", "pipeline")] = SimpleNamespace(
+        quality_check_id="EQC-SP-old",
+        alert_status="not_required",
+        alert_message_id=None,
+    )
+
+    result, _, _ = _run_gate(
+        active=(),
+        rows=(),
+        required_roles=(),
+        repo=repo,
+        pipeline_run_id="SP-current",
+    )
+
+    assert result.database_action == "updated"
+    assert result.quality_check_id == "EQC-SP-current"
+    assert repo.persisted_rows[("SP-current", "pipeline")].quality_check_id == "EQC-SP-current"
+
+
 def test_cli_is_read_only_query_and_does_not_write_or_send_hermes(capsys: Any) -> None:
     row = StrategyEvidenceQualityRowSummary(
         quality_check_id="EQC-1",
@@ -351,32 +465,38 @@ def _run_gate(
     settings: AppSettings | None = None,
     session: FakeSession | None = None,
     alert: FakeAlertDispatcher | None = None,
+    repo: FakeQualityRepository | None = None,
+    pipeline_run_id: str = "SP-test",
+    strategy_evidence_aggregation_id: str = "SEA-test",
+    trace_id: str = "trace-test",
 ) -> tuple[Any, FakeQualityRepository, FakeAlertDispatcher]:
     active_alert = alert or FakeAlertDispatcher()
-    repo = FakeQualityRepository(aggregation=aggregation, rows=rows)
+    active_repo = repo or FakeQualityRepository(aggregation=aggregation, rows=rows)
+    active_repo.aggregation = aggregation or active_repo.aggregation
+    active_repo.rows = rows
     service = StrategyEvidenceQualityGateService(
         settings=settings or AppSettings(
             strategy_evidence_quality_gate_enabled=True,
             strategy_evidence_quality_gate_alert_enabled=True,
         ),
-        repository=repo,
+        repository=active_repo,
         config_provider=FakeConfigProvider(active=active, required_roles=required_roles),
         alert_dispatcher=active_alert,
     )
     result = service.run_strategy_evidence_quality_gate(
         session or FakeSession(),
         request=StrategyEvidenceQualityGateRequest(
-            pipeline_run_id="SP-test",
+            pipeline_run_id=pipeline_run_id,
             strategy_signal_run_id="SSR-test",
-            strategy_evidence_aggregation_id="SEA-test",
+            strategy_evidence_aggregation_id=strategy_evidence_aggregation_id,
             symbol="BTCUSDT",
             base_interval="4h",
             higher_interval="1d",
             kline_slot_utc=SLOT,
-            trace_id="trace-test",
+            trace_id=trace_id,
         ),
     )
-    return result, repo, active_alert
+    return result, active_repo, active_alert
 
 
 def _strategy(

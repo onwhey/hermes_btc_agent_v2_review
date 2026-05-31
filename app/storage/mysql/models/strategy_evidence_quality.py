@@ -45,9 +45,9 @@ if mapped_column is not None:
         __table_args__ = (
             UniqueConstraint("quality_check_id", name="uq_strategy_evidence_quality_check_id"),
             UniqueConstraint(
-                "evidence_aggregation_id",
+                "pipeline_run_id",
                 "trigger_source",
-                name="uq_strategy_evidence_quality_evidence_trigger",
+                name="uq_strategy_evidence_quality_pipeline_trigger",
             ),
             Index("idx_strategy_evidence_quality_pipeline", "pipeline_run_id"),
             Index("idx_strategy_evidence_quality_signal", "strategy_signal_run_id"),

@@ -80,17 +80,26 @@ class StrategyEvidenceQualityRepository:
         self,
         db_session: Any,
         *,
-        evidence_aggregation_id: str,
+        pipeline_run_id: str | None,
+        evidence_aggregation_id: str | None = None,
         trigger_source: str,
     ) -> Any | None:
-        """Return an existing 26B row for idempotent pipeline retries."""
+        """Return an existing 26B row for idempotent retries.
+
+        Pipeline runs are the primary idempotency boundary. The SEA fallback is
+        retained only for non-pipeline callers that do not have a pipeline id.
+        """
 
         _require_sqlalchemy()
-        stmt = (
-            select(StrategyEvidenceQualityCheckResult)
-            .where(StrategyEvidenceQualityCheckResult.evidence_aggregation_id == evidence_aggregation_id)
-            .where(StrategyEvidenceQualityCheckResult.trigger_source == trigger_source)
+        stmt = select(StrategyEvidenceQualityCheckResult).where(
+            StrategyEvidenceQualityCheckResult.trigger_source == trigger_source
         )
+        if pipeline_run_id:
+            stmt = stmt.where(StrategyEvidenceQualityCheckResult.pipeline_run_id == pipeline_run_id)
+        elif evidence_aggregation_id:
+            stmt = stmt.where(StrategyEvidenceQualityCheckResult.evidence_aggregation_id == evidence_aggregation_id)
+        else:
+            return None
         return db_session.execute(stmt).scalars().first()
 
     def upsert_quality_check_result(
@@ -101,15 +110,17 @@ class StrategyEvidenceQualityRepository:
     ) -> tuple[Any, str]:
         """Insert or update a compact 26B quality result row.
 
-        Idempotency key: `(evidence_aggregation_id, trigger_source)`. This
-        prevents repeated pipeline retries from creating multiple quality rows
-        for the same SEA in the same invocation channel.
+        Idempotency key: `(pipeline_run_id, trigger_source)` for pipeline
+        checks. This keeps different pipeline runs independent even when they
+        reuse the same SEA, while allowing a repeated pipeline run to update the
+        same quality row.
         """
 
         _require_sqlalchemy()
         now = now_utc()
         row = self.get_existing_quality_check(
             db_session,
+            pipeline_run_id=payload.pipeline_run_id,
             evidence_aggregation_id=payload.evidence_aggregation_id,
             trigger_source=payload.trigger_source,
         )
@@ -122,6 +133,7 @@ class StrategyEvidenceQualityRepository:
             db_session.add(row)
             action = "created"
 
+        row.quality_check_id = payload.quality_check_id
         row.pipeline_run_id = payload.pipeline_run_id
         row.strategy_signal_run_id = payload.strategy_signal_run_id
         row.evidence_aggregation_id = payload.evidence_aggregation_id
