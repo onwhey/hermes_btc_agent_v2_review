@@ -1,11 +1,11 @@
-"""SQLAlchemy models for 27A weak model / factor layer.
+"""SQLAlchemy models for 27A/27B weak model / factor layer.
 
 本文件属于 `app/storage/mysql/models` 存储层，负责定义 `weak_model_run`、
-`weak_model_result`、`weak_model_aggregation` 三张表。
+`weak_model_result`、`weak_model_aggregation` 和 `weak_model_quality_check` 表。
 本文件不负责运行弱模型，不请求 Binance，不发送 Hermes，不读写 Redis，
 不调用 DeepSeek/GPT/Claude，不读取账户或仓位，不生成订单，不自动交易。
 数据库影响：仅定义 ORM metadata；实际写入由 27A repository 在 caller-owned
-session 中完成。
+session 中完成，27B 只在 confirm-write 时写入质量检查结果。
 """
 
 from __future__ import annotations
@@ -163,6 +163,47 @@ if mapped_column is not None:
         created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
         details_json: Mapped[str] = mapped_column(Text, nullable=False)
 
+
+    class WeakModelQualityCheck(Base):
+        """ORM mapping for one 27B output quality check result."""
+
+        __tablename__ = "weak_model_quality_check"
+        __table_args__ = (
+            UniqueConstraint("quality_check_id", name="uq_weak_model_quality_check_id"),
+            UniqueConstraint("weak_model_run_id", name="uq_weak_model_quality_check_run"),
+            Index("idx_weak_model_quality_check_aggregation", "weak_model_aggregation_id"),
+            Index("idx_weak_model_quality_check_scope_slot", "symbol", "base_interval", "higher_interval", "kline_slot_utc"),
+            Index("idx_weak_model_quality_check_status", "status", "severity", "created_at_utc"),
+        )
+
+        id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+        quality_check_id: Mapped[str] = mapped_column(String(180), nullable=False)
+        weak_model_run_id: Mapped[str] = mapped_column(
+            String(180),
+            ForeignKey("weak_model_run.weak_model_run_id"),
+            nullable=False,
+        )
+        weak_model_aggregation_id: Mapped[str | None] = mapped_column(String(180), nullable=True)
+        strategy_signal_run_id: Mapped[str] = mapped_column(String(128), nullable=False)
+        snapshot_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+        symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+        base_interval: Mapped[str] = mapped_column(String(16), nullable=False)
+        higher_interval: Mapped[str] = mapped_column(String(16), nullable=False)
+        kline_slot_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+        status: Mapped[str] = mapped_column(String(32), nullable=False)
+        severity: Mapped[str] = mapped_column(String(32), nullable=False)
+        issue_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+        warning_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+        critical_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+        should_block_pipeline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+        issues_json: Mapped[str] = mapped_column(Text, nullable=False)
+        checked_models_json: Mapped[str] = mapped_column(Text, nullable=False)
+        summary_text: Mapped[str] = mapped_column(Text, nullable=False)
+        trace_id: Mapped[str] = mapped_column(String(128), nullable=False)
+        created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+        updated_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+        details_json: Mapped[str] = mapped_column(Text, nullable=False)
+
 else:
 
     @dataclass
@@ -228,4 +269,17 @@ else:
         veto_factors_json: str = "[]"
 
 
-__all__ = ["WeakModelAggregation", "WeakModelResult", "WeakModelRun"]
+    @dataclass
+    class WeakModelQualityCheck:  # type: ignore[no-redef]
+        """Fallback value object used only when SQLAlchemy is unavailable."""
+
+        id: int | None = None
+        quality_check_id: str = ""
+        weak_model_run_id: str = ""
+        weak_model_aggregation_id: str | None = None
+        status: str = ""
+        severity: str = ""
+        issues_json: str = "[]"
+
+
+__all__ = ["WeakModelAggregation", "WeakModelQualityCheck", "WeakModelResult", "WeakModelRun"]
