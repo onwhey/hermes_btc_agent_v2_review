@@ -51,6 +51,7 @@ if mapped_column is not None:
             ),
             Index("idx_strategy_evidence_quality_pipeline", "pipeline_run_id"),
             Index("idx_strategy_evidence_quality_signal", "strategy_signal_run_id"),
+            Index("idx_strategy_evidence_quality_evidence_aggregation_id", "evidence_aggregation_id"),
             Index("idx_strategy_evidence_quality_status_created", "status", "created_at_utc"),
             Index("idx_strategy_evidence_quality_alert", "alert_status"),
             Index("idx_strategy_evidence_quality_trace_id", "trace_id"),

@@ -4,6 +4,7 @@ import json
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -407,6 +408,29 @@ def test_existing_legacy_quality_check_id_is_corrected_to_current_pipeline_id() 
     assert result.database_action == "updated"
     assert result.quality_check_id == "EQC-SP-current"
     assert repo.persisted_rows[("SP-current", "pipeline")].quality_check_id == "EQC-SP-current"
+
+
+def test_26b_pipeline_idempotency_migration_preserves_fk_supporting_index_order() -> None:
+    migration_text = Path(
+        "migrations/versions/20260605_26b_quality_check_pipeline_idempotency.py"
+    ).read_text(encoding="utf-8")
+    upgrade_text = migration_text.split("def downgrade", maxsplit=1)[0]
+    downgrade_text = migration_text.split("def downgrade", maxsplit=1)[1]
+
+    evidence_index_name = "idx_strategy_evidence_quality_evidence_aggregation_id"
+    old_unique_name = "uq_strategy_evidence_quality_evidence_trigger"
+    new_unique_name = "uq_strategy_evidence_quality_pipeline_trigger"
+
+    assert upgrade_text.index(evidence_index_name) < upgrade_text.index(old_unique_name)
+    assert upgrade_text.index(old_unique_name) < upgrade_text.index(new_unique_name)
+    assert downgrade_text.index(new_unique_name) < downgrade_text.index(old_unique_name)
+    assert downgrade_text.index(old_unique_name) < downgrade_text.rindex(evidence_index_name)
+
+
+def test_26b_model_declares_evidence_aggregation_plain_index() -> None:
+    model_text = Path("app/storage/mysql/models/strategy_evidence_quality.py").read_text(encoding="utf-8")
+
+    assert 'Index("idx_strategy_evidence_quality_evidence_aggregation_id", "evidence_aggregation_id")' in model_text
 
 
 def test_cli_is_read_only_query_and_does_not_write_or_send_hermes(capsys: Any) -> None:

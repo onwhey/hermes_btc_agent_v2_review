@@ -23,6 +23,11 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     """Replace SEA-level 26B uniqueness with pipeline-level uniqueness."""
 
+    op.create_index(
+        "idx_strategy_evidence_quality_evidence_aggregation_id",
+        "strategy_evidence_quality_check_result",
+        ["evidence_aggregation_id"],
+    )
     op.drop_constraint(
         "uq_strategy_evidence_quality_evidence_trigger",
         "strategy_evidence_quality_check_result",
@@ -47,4 +52,8 @@ def downgrade() -> None:
         "uq_strategy_evidence_quality_evidence_trigger",
         "strategy_evidence_quality_check_result",
         ["evidence_aggregation_id", "trigger_source"],
+    )
+    op.drop_index(
+        "idx_strategy_evidence_quality_evidence_aggregation_id",
+        table_name="strategy_evidence_quality_check_result",
     )
