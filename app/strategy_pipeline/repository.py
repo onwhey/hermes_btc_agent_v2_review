@@ -20,7 +20,7 @@ from typing import Any
 from app.core.time_utils import ensure_utc_aware, now_utc
 from app.market_data.kline_constants import KLINE_4H_INTERVAL_VALUE
 from app.storage.mysql.models.market_kline_4h import MarketKline4h
-from app.storage.mysql.models.strategy_aggregation import StrategyEvidenceAggregationResult
+from app.storage.mysql.models.strategy_aggregation import AnalysisMaterialPack, StrategyEvidenceAggregationResult
 from app.storage.mysql.models.strategy_pipeline import StrategyPipelineEventLog
 from app.storage.mysql.models.strategy_signal import StrategySignalRun
 from app.storage.mysql.models.strategy_signal_scheduler_event import StrategySignalSchedulerEventLog
@@ -79,6 +79,58 @@ class StrategyPipelineRepository:
         stmt = (
             select(StrategyEvidenceAggregationResult)
             .where(StrategyEvidenceAggregationResult.strategy_signal_run_id == strategy_signal_run_id)
+            .limit(1)
+        )
+        return db_session.execute(stmt).scalar_one_or_none()
+
+    def get_latest_reusable_material_pack_for_strategy_run(
+        self,
+        db_session: Any,
+        *,
+        strategy_signal_run_id: str,
+        symbol: str,
+        base_interval: str,
+        higher_interval: str,
+    ) -> Any | None:
+        """Return the latest successful/partial-success stage-18 material pack.
+
+        This is a recovery path for stage-18 `already_exists` skips. It only
+        reads `analysis_material_pack`; it never creates, mutates, or reruns a
+        material pack.
+        """
+
+        _require_sqlalchemy()
+        stmt = (
+            select(AnalysisMaterialPack)
+            .where(AnalysisMaterialPack.strategy_signal_run_id == strategy_signal_run_id)
+            .where(AnalysisMaterialPack.symbol == symbol)
+            .where(AnalysisMaterialPack.base_interval == base_interval)
+            .where(AnalysisMaterialPack.higher_interval == higher_interval)
+            .where(AnalysisMaterialPack.status.in_(("success", "partial_success")))
+            .order_by(AnalysisMaterialPack.created_at_utc.desc(), AnalysisMaterialPack.id.desc())
+            .limit(1)
+        )
+        return db_session.execute(stmt).scalar_one_or_none()
+
+    def get_latest_material_pack_for_strategy_run(
+        self,
+        db_session: Any,
+        *,
+        strategy_signal_run_id: str,
+        symbol: str,
+        base_interval: str,
+        higher_interval: str,
+    ) -> Any | None:
+        """Return the latest material pack for diagnostics without reusing it."""
+
+        _require_sqlalchemy()
+        stmt = (
+            select(AnalysisMaterialPack)
+            .where(AnalysisMaterialPack.strategy_signal_run_id == strategy_signal_run_id)
+            .where(AnalysisMaterialPack.symbol == symbol)
+            .where(AnalysisMaterialPack.base_interval == base_interval)
+            .where(AnalysisMaterialPack.higher_interval == higher_interval)
+            .order_by(AnalysisMaterialPack.created_at_utc.desc(), AnalysisMaterialPack.id.desc())
             .limit(1)
         )
         return db_session.execute(stmt).scalar_one_or_none()

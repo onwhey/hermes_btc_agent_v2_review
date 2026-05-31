@@ -25,7 +25,11 @@ from app.strategy_advice.scheduler_schema import (
 )
 from app.strategy_pipeline.locks import StrategyPipelineLock
 from app.strategy_pipeline.service import StrategyPipelineService
-from app.strategy_pipeline.types import StrategyPipelineRequest, StrategyPipelineStatus
+from app.strategy_pipeline.types import (
+    StrategyPipelineRequest,
+    StrategyPipelineStatus,
+    format_strategy_pipeline_result_lines,
+)
 
 
 SLOT = datetime(2026, 5, 30, 4, 0, tzinfo=timezone.utc)
@@ -67,6 +71,19 @@ class FakeStrategySignalRun:
     status: str
 
 
+@dataclass
+class FakeMaterialPack:
+    material_pack_id: str
+    aggregation_run_id: str = "SAR-existing"
+    strategy_signal_run_id: str = "SSR-test"
+    symbol: str = "BTCUSDT"
+    base_interval: str = "4h"
+    higher_interval: str = "1d"
+    status: str = "success"
+    created_at_utc: datetime = SLOT
+    id: int = 1
+
+
 class FakeRepository:
     def __init__(
         self,
@@ -75,12 +92,14 @@ class FakeRepository:
         existing_evidence: FakeEvidenceAggregation | None = None,
         stage17_events: list[FakeStage17Event] | None = None,
         strategy_signal_runs: dict[str, FakeStrategySignalRun] | None = None,
+        material_packs: list[FakeMaterialPack] | None = None,
     ) -> None:
         self.order = order if order is not None else []
         self.latest_slot = latest_slot
         self.existing_evidence = existing_evidence
         self.stage17_events = stage17_events or []
         self.strategy_signal_runs = strategy_signal_runs or {}
+        self.material_packs = material_packs or []
         self.created_events: list[Any] = []
         self.updated_events: list[Any] = []
 
@@ -99,6 +118,51 @@ class FakeRepository:
     def get_strategy_signal_run_by_run_id(self, db_session: Any, *, run_id: str) -> FakeStrategySignalRun | None:
         self.order.append("strategy_run_lookup")
         return self.strategy_signal_runs.get(run_id)
+
+    def get_latest_reusable_material_pack_for_strategy_run(
+        self,
+        db_session: Any,
+        *,
+        strategy_signal_run_id: str,
+        symbol: str,
+        base_interval: str,
+        higher_interval: str,
+    ) -> FakeMaterialPack | None:
+        self.order.append("18_material_reuse_lookup")
+        reusable = [
+            pack
+            for pack in self.material_packs
+            if pack.strategy_signal_run_id == strategy_signal_run_id
+            and pack.symbol == symbol
+            and pack.base_interval == base_interval
+            and pack.higher_interval == higher_interval
+            and pack.status in {"success", "partial_success"}
+        ]
+        if not reusable:
+            return None
+        return sorted(reusable, key=lambda pack: (pack.created_at_utc, pack.id), reverse=True)[0]
+
+    def get_latest_material_pack_for_strategy_run(
+        self,
+        db_session: Any,
+        *,
+        strategy_signal_run_id: str,
+        symbol: str,
+        base_interval: str,
+        higher_interval: str,
+    ) -> FakeMaterialPack | None:
+        self.order.append("18_material_latest_lookup")
+        matches = [
+            pack
+            for pack in self.material_packs
+            if pack.strategy_signal_run_id == strategy_signal_run_id
+            and pack.symbol == symbol
+            and pack.base_interval == base_interval
+            and pack.higher_interval == higher_interval
+        ]
+        if not matches:
+            return None
+        return sorted(matches, key=lambda pack: (pack.created_at_utc, pack.id), reverse=True)[0]
 
     def get_latest_reusable_stage17_scheduler_event(
         self,
@@ -279,19 +343,40 @@ class FakeStage16:
 
 
 class FakeStage18:
-    def __init__(self, order: list[str]) -> None:
+    def __init__(
+        self,
+        order: list[str],
+        *,
+        status: StrategyAggregationStatus = StrategyAggregationStatus.SUCCESS,
+        material_pack_id: str | None = "AMP-test",
+        aggregation_run_id: str = "SAR-test",
+        message: str = "stage18 ok",
+        error_code: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         self.order = order
+        self.status = status
+        self.material_pack_id = material_pack_id
+        self.aggregation_run_id = aggregation_run_id
+        self.message = message
+        self.error_code = error_code
+        self.details = details or {}
+        self.calls = 0
 
     def run_strategy_aggregation(self, db_session: Any, *, request: Any) -> StrategyAggregationResult:
+        self.calls += 1
         self.order.append("18")
+        success = self.status in {StrategyAggregationStatus.SUCCESS, StrategyAggregationStatus.PARTIAL_SUCCESS}
         return StrategyAggregationResult(
-            status=StrategyAggregationStatus.SUCCESS,
-            exit_code=0,
-            aggregation_run_id="SAR-test",
-            material_pack_id="AMP-test",
+            status=self.status,
+            exit_code=0 if success else 4,
+            aggregation_run_id=self.aggregation_run_id,
+            material_pack_id=self.material_pack_id,
             strategy_signal_run_id=request.strategy_signal_run_id,
             trace_id=request.trace_id,
-            message="stage18 ok",
+            message=self.message,
+            error_code=self.error_code,
+            details=self.details,
         )
 
 
@@ -430,6 +515,160 @@ def test_confirm_write_calls_existing_stage_services_in_pipeline_order() -> None
     assert result.review_aggregation_run_id == "MRAG-test"
     assert result.advice_id == "ADV-test"
     assert result.review_id == "ADVR-test"
+
+
+def test_pipeline_reuses_existing_success_material_pack_after_stage18_already_exists() -> None:
+    order: list[str] = []
+    stage18 = FakeStage18(
+        order,
+        status=StrategyAggregationStatus.SKIPPED,
+        material_pack_id=None,
+        aggregation_run_id="SAR-existing",
+        message="Stage-18 aggregation skipped: already_exists existing status=success.",
+        error_code="skipped",
+        details={"skip_reason": "already_exists"},
+    )
+    worker = FakeStage20Worker(order)
+    repository = FakeRepository(
+        order=order,
+        material_packs=[
+            FakeMaterialPack(
+                material_pack_id="AMP-existing-success",
+                aggregation_run_id="SAR-existing",
+                status="success",
+            )
+        ],
+    )
+    service = _build_full_success_service(
+        order=order,
+        repository=repository,
+        stage18_service=stage18,
+        stage20_worker=worker,
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.SUCCESS
+    assert result.material_pack_id == "AMP-existing-success"
+    assert worker.requests[0].material_pack_id == "AMP-existing-success"
+    assert stage18.calls == 1
+    assert order == [
+        "17",
+        "23f_lookup",
+        "23f_create",
+        "18",
+        "18_material_reuse_lookup",
+        "20c",
+        "20a",
+        "21c",
+    ]
+    assert result.details["stage18_reused_existing_material_pack"] is True
+    assert result.details["stage18_reused_material_pack_id"] == "AMP-existing-success"
+    assert result.details["stage18_reused_aggregation_run_id"] == "SAR-existing"
+    assert result.details["stage18_reused_material_pack_status"] == "success"
+    assert "material_pack_id=AMP-existing-success" in format_strategy_pipeline_result_lines(result)
+
+
+def test_pipeline_reuses_existing_partial_success_material_pack_after_stage18_already_exists() -> None:
+    order: list[str] = []
+    stage18 = FakeStage18(
+        order,
+        status=StrategyAggregationStatus.SKIPPED,
+        material_pack_id=None,
+        aggregation_run_id="SAR-existing-partial",
+        message="Stage-18 aggregation skipped: already_exists existing status=partial_success.",
+        error_code="skipped",
+        details={"skip_reason": "already_exists"},
+    )
+    worker = FakeStage20Worker(order)
+    repository = FakeRepository(
+        order=order,
+        material_packs=[
+            FakeMaterialPack(
+                material_pack_id="AMP-existing-partial",
+                aggregation_run_id="SAR-existing-partial",
+                status="partial_success",
+            )
+        ],
+    )
+    service = _build_full_success_service(
+        order=order,
+        repository=repository,
+        stage18_service=stage18,
+        stage20_worker=worker,
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.SUCCESS
+    assert result.material_pack_id == "AMP-existing-partial"
+    assert worker.requests[0].material_pack_id == "AMP-existing-partial"
+    assert result.details["stage18_reused_material_pack_status"] == "partial_success"
+
+
+def test_pipeline_blocks_stage18_already_exists_when_existing_material_pack_failed() -> None:
+    order: list[str] = []
+    stage18 = FakeStage18(
+        order,
+        status=StrategyAggregationStatus.SKIPPED,
+        material_pack_id=None,
+        message="Stage-18 aggregation skipped: already_exists existing status=failed.",
+        error_code="skipped",
+        details={"skip_reason": "already_exists"},
+    )
+    repository = FakeRepository(
+        order=order,
+        material_packs=[FakeMaterialPack(material_pack_id="AMP-failed", status="failed")],
+    )
+    service = _build_full_success_service(order=order, repository=repository, stage18_service=stage18)
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.BLOCKED
+    assert result.current_step == "18_material_pack"
+    assert result.error_code == "stage18_existing_material_pack_not_reusable"
+    assert result.material_pack_id is None
+    assert result.details["stage18_existing_material_pack_status"] == "failed"
+    assert "20c" not in order
+
+
+def test_pipeline_blocks_stage18_already_exists_when_reusable_material_pack_not_found() -> None:
+    order: list[str] = []
+    stage18 = FakeStage18(
+        order,
+        status=StrategyAggregationStatus.SKIPPED,
+        material_pack_id=None,
+        message="Stage-18 aggregation skipped: already_exists existing status=partial_success.",
+        error_code="skipped",
+        details={"skip_reason": "already_exists"},
+    )
+    service = _build_full_success_service(
+        order=order,
+        repository=FakeRepository(order=order),
+        stage18_service=stage18,
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.BLOCKED
+    assert result.current_step == "18_material_pack"
+    assert result.error_code == "stage18_existing_material_pack_not_found"
+    assert result.material_pack_id is None
+    assert "18_material_reuse_lookup" in order
+    assert "18_material_latest_lookup" in order
+    assert "20c" not in order
 
 
 def test_pipeline_reuses_successful_stage17_event_after_duplicate_skip() -> None:
@@ -1254,6 +1493,7 @@ def _build_full_success_service(
     stage16_service: FakeStage16 | None = None,
     stage17_service: FakeStage17 | None = None,
     stage23f_service: FakeStage23F | None = None,
+    stage18_service: FakeStage18 | None = None,
     stage20_worker: FakeStage20Worker | None = None,
     stage20a_service: FakeStage20A | None = None,
     settings: AppSettings | None = None,
@@ -1268,7 +1508,7 @@ def _build_full_success_service(
         stage16_service=stage16_service,
         stage17_service=stage17_service or FakeStage17(order),
         stage23f_service=stage23f_service or FakeStage23F(order),
-        stage18_service=FakeStage18(order),
+        stage18_service=stage18_service or FakeStage18(order),
         stage20_worker=stage20_worker or FakeStage20Worker(order),
         stage20a_service=stage20a_service or FakeStage20A(order),
         stage21_service=FakeStage21(order),

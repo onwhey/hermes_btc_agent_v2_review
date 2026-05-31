@@ -257,19 +257,24 @@ class StrategyPipelineService:
         self._update_event_progress(db_session, event_row=event_row, request=request, state=state)
 
         stage18 = self._run_stage18(db_session, request=request, state=state)
-        if stage18.status not in (StrategyAggregationStatus.SUCCESS, StrategyAggregationStatus.PARTIAL_SUCCESS):
+        stage18_failure = self._apply_stage18_result_or_reusable_material_pack(
+            db_session,
+            request=request,
+            state=state,
+            stage18=stage18,
+        )
+        if stage18_failure is not None:
+            message, error_code, error_message = stage18_failure
             return self._finish_from_stage_failure(
                 db_session,
                 event_row=event_row,
                 request=request,
                 state=state,
                 current_step=PIPELINE_STEP_STAGE18,
-                message=stage18.message,
-                error_code=stage18.error_code or status_value(stage18.status),
-                error_message=stage18.error_message,
+                message=message,
+                error_code=error_code,
+                error_message=error_message,
             )
-        state.material_pack_id = stage18.material_pack_id
-        state.details["stage18_result"] = compact_object(stage18)
         self._update_event_progress(db_session, event_row=event_row, request=request, state=state)
 
         model_result = self._run_stage20(db_session, request=request, state=state)
@@ -381,6 +386,85 @@ class StrategyPipelineService:
         if hasattr(service, "run_strategy_aggregation"):
             return service.run_strategy_aggregation(db_session, request=aggregation_request)
         return service(db_session=db_session, request=aggregation_request)
+
+    def _apply_stage18_result_or_reusable_material_pack(
+        self,
+        db_session: Any,
+        *,
+        request: StrategyPipelineRequest,
+        state: PipelineState,
+        stage18: Any,
+    ) -> tuple[str, str | None, str | None] | None:
+        """Apply a successful stage-18 result or reuse an existing material pack.
+
+        Stage-18 may return `skipped/already_exists` when a final material pack
+        row already exists for the same strategy run. In that case 25A must
+        reuse the latest success/partial_success `analysis_material_pack`
+        instead of blocking the whole pipeline.
+        """
+
+        stage18_status = status_value(getattr(stage18, "status", ""))
+        state.details["stage18_result"] = compact_object(stage18)
+        state.details["stage18_aggregation_run_id"] = text_or_none(getattr(stage18, "aggregation_run_id", None))
+        if stage18_status in {
+            StrategyAggregationStatus.SUCCESS.value,
+            StrategyAggregationStatus.PARTIAL_SUCCESS.value,
+        }:
+            state.material_pack_id = text_or_none(getattr(stage18, "material_pack_id", None))
+            return None
+
+        if not _is_stage18_already_exists_skip(stage18):
+            return (
+                str(getattr(stage18, "message", "") or "Stage-18 aggregation did not produce a material pack."),
+                getattr(stage18, "error_code", None) or stage18_status,
+                getattr(stage18, "error_message", None),
+            )
+
+        state.details["stage18_already_exists_reuse_attempted"] = True
+        reusable = self._repository.get_latest_reusable_material_pack_for_strategy_run(
+            db_session,
+            strategy_signal_run_id=str(state.strategy_signal_run_id or ""),
+            symbol=request.symbol,
+            base_interval=request.base_interval,
+            higher_interval=request.higher_interval,
+        )
+        if reusable is not None:
+            state.material_pack_id = text_or_none(getattr(reusable, "material_pack_id", None))
+            state.details["stage18_reused_existing_material_pack"] = True
+            state.details["stage18_reused_material_pack_id"] = state.material_pack_id
+            state.details["stage18_reused_aggregation_run_id"] = text_or_none(
+                getattr(reusable, "aggregation_run_id", None)
+            )
+            state.details["stage18_reused_material_pack_status"] = text_or_none(getattr(reusable, "status", None))
+            return None
+
+        latest = self._repository.get_latest_material_pack_for_strategy_run(
+            db_session,
+            strategy_signal_run_id=str(state.strategy_signal_run_id or ""),
+            symbol=request.symbol,
+            base_interval=request.base_interval,
+            higher_interval=request.higher_interval,
+        )
+        if latest is not None:
+            latest_status = text_or_none(getattr(latest, "status", None))
+            state.details["stage18_existing_material_pack_status"] = latest_status
+            state.details["stage18_existing_material_pack_id"] = text_or_none(
+                getattr(latest, "material_pack_id", None)
+            )
+            state.details["stage18_existing_aggregation_run_id"] = text_or_none(
+                getattr(latest, "aggregation_run_id", None)
+            )
+            return (
+                f"Stage-18 aggregation skipped: existing material pack status={latest_status} is not reusable.",
+                "stage18_existing_material_pack_not_reusable",
+                None,
+            )
+
+        return (
+            "Stage-18 aggregation skipped: already_exists but reusable analysis material pack was not found.",
+            "stage18_existing_material_pack_not_found",
+            None,
+        )
 
     def _run_stage20(
         self,
@@ -832,6 +916,19 @@ class StrategyPipelineService:
             trace_id=request.trace_id,
             details=dict(state.details),
         )
+
+
+def _is_stage18_already_exists_skip(stage18: Any) -> bool:
+    """Return whether stage-18 skipped because an existing material pack won."""
+
+    if status_value(getattr(stage18, "status", "")) != StrategyAggregationStatus.SKIPPED.value:
+        return False
+    details = getattr(stage18, "details", {}) or {}
+    skip_reason = details.get("skip_reason") if isinstance(details, dict) else None
+    error_code = str(getattr(stage18, "error_code", "") or "")
+    message = str(getattr(stage18, "message", "") or "")
+    return skip_reason == "already_exists" or error_code == "already_exists" or "already_exists" in message
+
 
 def run_strategy_pipeline(
     *,
