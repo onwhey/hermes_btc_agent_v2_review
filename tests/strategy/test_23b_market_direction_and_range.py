@@ -24,6 +24,7 @@ from app.strategy.types import (
     StrategySignalRunRequest,
     StrategySignalStatus,
 )
+from tests.strategy import NoOpEvidenceAggregationHook
 
 
 class FakeSession:
@@ -312,6 +313,7 @@ def test_run_strategy_signals_persists_23b_contract_fields_without_private_leaka
         input_builder=FakeInputBuilder(strategy_input()),
         runner=runner,
         result_repository=StrategySignalResultRepository(),
+        auto_evidence_aggregation_hook=NoOpEvidenceAggregationHook(),
     )
 
     result = service.run_strategy_signals(

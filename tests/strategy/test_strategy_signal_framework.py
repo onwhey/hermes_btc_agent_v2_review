@@ -57,6 +57,7 @@ from app.strategy.types import (
     StrategySignalStatus,
 )
 from scripts import run_strategy_signals as strategy_cli
+from tests.strategy import NoOpEvidenceAggregationHook
 
 CURRENT_TIME_MS = int(datetime(2026, 5, 16, 8, 10, tzinfo=timezone.utc).timestamp() * 1000)
 EXPECTED_4H_LATEST_MS = int(datetime(2026, 5, 16, 4, 0, tzinfo=timezone.utc).timestamp() * 1000)
@@ -747,6 +748,7 @@ def test_signal_service_confirm_write_persists_run_and_independent_results() -> 
         input_builder=FakeInputBuilder(),
         runner=FakeRunner(),
         result_repository=StrategySignalResultRepository(),
+        auto_evidence_aggregation_hook=NoOpEvidenceAggregationHook(),
     )
 
     result = service.run_strategy_signals(
