@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.core.config import AppSettings
@@ -123,6 +123,47 @@ class FakeRepository:
             event
             for event in self.stage17_events
             if event.target_base_open_time_utc == target_base_open_time_utc
+        ]
+        if not matches:
+            return None
+        return sorted(matches, key=lambda event: event.created_at_utc, reverse=True)[0]
+
+    def get_latest_retryable_failed_stage17_scheduler_event_for_slot(
+        self,
+        db_session: Any,
+        *,
+        symbol: str,
+        base_interval: str,
+        higher_interval: str,
+        target_base_open_time_utc: datetime,
+    ) -> FakeStage17Event | None:
+        self.order.append("17_retryable_lookup")
+        matches = [
+            event
+            for event in self.stage17_events
+            if event.target_base_open_time_utc == target_base_open_time_utc
+            and event.status in {"failed", "blocked"}
+            and not event.run_id
+        ]
+        if not matches:
+            return None
+        return sorted(matches, key=lambda event: event.created_at_utc, reverse=True)[0]
+
+    def get_latest_in_progress_stage17_scheduler_event_for_slot(
+        self,
+        db_session: Any,
+        *,
+        symbol: str,
+        base_interval: str,
+        higher_interval: str,
+        target_base_open_time_utc: datetime,
+    ) -> FakeStage17Event | None:
+        self.order.append("17_in_progress_lookup")
+        matches = [
+            event
+            for event in self.stage17_events
+            if event.target_base_open_time_utc == target_base_open_time_utc
+            and event.status in {"running", "waiting_upstream"}
         ]
         if not matches:
             return None
@@ -503,6 +544,13 @@ def test_pipeline_retry_failed_stage17_reruns_stage16_and_continues_to_23f() -> 
                 status="blocked",
                 run_id=None,
                 error_code="strategy_registry_config_error",
+                created_at_utc=SLOT,
+            ),
+            FakeStage17Event(
+                event_id="SSS-skipped-latest",
+                status="skipped",
+                run_id=None,
+                created_at_utc=SLOT + timedelta(minutes=1),
             )
         ],
     )
@@ -531,11 +579,12 @@ def test_pipeline_retry_failed_stage17_reruns_stage16_and_continues_to_23f() -> 
     assert stage17.calls == 1
     assert stage16.calls == 1
     assert stage23f.requests[0].strategy_signal_run_id == "SSR-retry"
-    assert order[:6] == [
+    assert order[:7] == [
         "17_reuse_lookup",
         "17",
         "17_reuse_lookup",
-        "17_latest_lookup",
+        "17_in_progress_lookup",
+        "17_retryable_lookup",
         "16_retry",
         "23f_lookup",
     ]
@@ -548,6 +597,60 @@ def test_pipeline_retry_failed_stage17_reruns_stage16_and_continues_to_23f() -> 
     assert finished is True
     assert final_payload.details["retry_failed_stage17"] is True
     assert final_payload.details["previous_stage17_event_id"] == "SSS-blocked"
+
+
+def test_pipeline_retry_failed_stage17_uses_old_failed_when_latest_event_is_skipped_duplicate() -> None:
+    order: list[str] = []
+    stage16 = FakeStage16(order, run_id="SSR-retry-failed-old")
+    repository = FakeRepository(
+        order=order,
+        stage17_events=[
+            FakeStage17Event(
+                event_id="SSS-failed-old",
+                status="failed",
+                run_id=None,
+                error_code="stage17_config_failed",
+                created_at_utc=SLOT,
+            ),
+            FakeStage17Event(
+                event_id="SSS-skipped-new",
+                status="skipped",
+                run_id=None,
+                created_at_utc=SLOT + timedelta(minutes=2),
+            ),
+        ],
+    )
+    stage23f = FakeStage23F(order)
+    service = _build_full_success_service(
+        order=order,
+        repository=repository,
+        stage16_service=stage16,
+        stage17_service=FakeStage17(
+            order,
+            status=StrategySignalSchedulerStatus.SKIPPED,
+            run_id=None,
+            message="Stage-17 strategy signal scheduler skipped a duplicate target event.",
+        ),
+        stage23f_service=stage23f,
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(
+            kline_slot_utc=SLOT,
+            dry_run=False,
+            confirm_write=True,
+            retry_failed_stage17=True,
+        ),
+    )
+
+    assert result.status == StrategyPipelineStatus.SUCCESS
+    assert result.strategy_signal_run_id == "SSR-retry-failed-old"
+    assert stage16.calls == 1
+    assert stage23f.requests[0].strategy_signal_run_id == "SSR-retry-failed-old"
+    assert result.details["retry_failed_stage17"] is True
+    assert result.details["previous_stage17_event_id"] == "SSS-failed-old"
+    assert result.details["previous_stage17_status"] == "failed"
 
 
 def test_pipeline_retry_failed_stage17_failure_stops_before_23f() -> None:
@@ -589,6 +692,7 @@ def test_pipeline_retry_failed_stage17_failure_stops_before_23f() -> None:
     assert result.error_message == "strategy retry error"
     assert "17" in order
     assert stage16.calls == 1
+    assert "17_retryable_lookup" in order
     assert "23f_lookup" not in order
     assert "18" not in order
     assert result.details["retry_failed_stage17"] is True
@@ -596,6 +700,89 @@ def test_pipeline_retry_failed_stage17_failure_stops_before_23f() -> None:
     final_payload, finished = repository.updated_events[-1]
     assert finished is True
     assert final_payload.details["retry_failed_stage17"] is True
+
+
+def test_pipeline_retry_failed_stage17_blocks_when_only_skipped_duplicate_exists() -> None:
+    order: list[str] = []
+    stage16 = FakeStage16(order)
+    repository = FakeRepository(
+        order=order,
+        stage17_events=[FakeStage17Event(event_id="SSS-skipped-only", status="skipped", run_id=None)],
+    )
+    service = _build_full_success_service(
+        order=order,
+        repository=repository,
+        stage16_service=stage16,
+        stage17_service=FakeStage17(
+            order,
+            status=StrategySignalSchedulerStatus.SKIPPED,
+            run_id=None,
+            message="Stage-17 strategy signal scheduler skipped a duplicate target event.",
+        ),
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(
+            kline_slot_utc=SLOT,
+            dry_run=False,
+            confirm_write=True,
+            retry_failed_stage17=True,
+        ),
+    )
+
+    assert result.status == StrategyPipelineStatus.BLOCKED
+    assert result.error_code == "stage17_duplicate_reusable_run_not_found"
+    assert stage16.calls == 0
+    assert "17_retryable_lookup" in order
+    assert "23f_lookup" not in order
+    assert result.details.get("retry_failed_stage17") is not True
+
+
+def test_pipeline_retry_failed_stage17_blocks_when_stage17_event_is_in_progress() -> None:
+    order: list[str] = []
+    stage16 = FakeStage16(order)
+    repository = FakeRepository(
+        order=order,
+        stage17_events=[
+            FakeStage17Event(event_id="SSS-failed-old", status="failed", run_id=None, created_at_utc=SLOT),
+            FakeStage17Event(
+                event_id="SSS-running-new",
+                status="running",
+                run_id=None,
+                created_at_utc=SLOT + timedelta(minutes=3),
+            ),
+        ],
+    )
+    service = _build_full_success_service(
+        order=order,
+        repository=repository,
+        stage16_service=stage16,
+        stage17_service=FakeStage17(
+            order,
+            status=StrategySignalSchedulerStatus.SKIPPED,
+            run_id=None,
+            message="Stage-17 strategy signal scheduler skipped a duplicate target event.",
+        ),
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(
+            kline_slot_utc=SLOT,
+            dry_run=False,
+            confirm_write=True,
+            retry_failed_stage17=True,
+        ),
+    )
+
+    assert result.status == StrategyPipelineStatus.BLOCKED
+    assert result.error_code == "stage17_event_in_progress"
+    assert stage16.calls == 0
+    assert "17_retryable_lookup" not in order
+    assert "23f_lookup" not in order
+    assert result.details["stage17_retry_blocked_by_in_progress"] is True
+    assert result.details["stage17_in_progress_event_id"] == "SSS-running-new"
 
 
 def test_pipeline_blocks_duplicate_skip_when_success_event_has_empty_run_id() -> None:

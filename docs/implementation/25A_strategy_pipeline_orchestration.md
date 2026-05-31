@@ -307,5 +307,18 @@ pipeline event log 的 `details_json` 会记录：
 - `previous_stage17_error_code`
 - `new_strategy_signal_run_id`
 
+## 12. 2026-05-31 补充修复：retry 查询不再被 skipped duplicate 挡住
+
+`--retry-failed-stage17` 的判断不再使用“同一 slot 最新任意 Stage-17 event”作为可重试依据。
+
+新的查询顺序：
+
+1. `get_latest_reusable_stage17_scheduler_event()`：先查 `success / partial_success + run_id`，存在则复用旧 SSR。
+2. `get_latest_in_progress_stage17_scheduler_event_for_slot()`：如果存在 `running / waiting_upstream`，阻断 retry。
+3. `get_latest_retryable_failed_stage17_scheduler_event_for_slot()`：只查询 `failed / blocked` 且 `run_id IS NULL OR run_id = ''` 的历史事件。
+
+因此，即使同一 slot 后续出现了 skipped duplicate 记录，也不会挡住更早的 failed/blocked 事件重试判断。
+成功 SSR 仍然优先复用；没有 retryable failed/blocked 事件时仍然 blocked。
+
 本次没有修改 scheduler runner 自动链路；25A 仍是手动统一入口。该重试能力不请求 Binance、不读取账户或持仓、
 不调用大模型、不发送 Hermes、不生成 advice、不涉及自动交易。

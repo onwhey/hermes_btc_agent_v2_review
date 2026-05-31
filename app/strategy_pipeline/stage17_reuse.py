@@ -128,17 +128,24 @@ def resolve_stage17_result_or_reusable_duplicate(
     run_id = text_or_none(getattr(reusable_event, "run_id", None)) if reusable_event is not None else None
     if not run_id:
         if request.retry_failed_stage17:
-            previous_event = repository.get_latest_stage17_scheduler_event_for_slot(
+            in_progress_event = repository.get_latest_in_progress_stage17_scheduler_event_for_slot(
                 db_session,
                 symbol=request.symbol,
                 base_interval=request.base_interval,
                 higher_interval=request.higher_interval,
                 target_base_open_time_utc=slot,
             )
-            if previous_event is not None:
-                retry_outcome = _build_retry_outcome_from_previous_event(state, previous_event)
-                if retry_outcome.should_retry_failed_stage17:
-                    return retry_outcome
+            if in_progress_event is not None:
+                return _build_in_progress_blocked_outcome(state, in_progress_event)
+            retryable_event = repository.get_latest_retryable_failed_stage17_scheduler_event_for_slot(
+                db_session,
+                symbol=request.symbol,
+                base_interval=request.base_interval,
+                higher_interval=request.higher_interval,
+                target_base_open_time_utc=slot,
+            )
+            if retryable_event is not None:
+                return _build_retry_outcome_from_previous_event(state, retryable_event)
         return Stage17ResolutionOutcome(
             should_continue=False,
             status=StrategyPipelineStatus.BLOCKED,
@@ -186,6 +193,24 @@ def _record_reused_stage17_event(state: PipelineState, reusable_event: Any) -> N
                 "target_base_open_time_utc": getattr(reusable_event, "target_base_open_time_utc", None),
             },
         }
+    )
+
+
+def _build_in_progress_blocked_outcome(state: PipelineState, event: Any) -> Stage17ResolutionOutcome:
+    event_id = text_or_none(getattr(event, "event_id", None))
+    event_status = status_value(getattr(event, "status", ""))
+    state.details.update(
+        {
+            "stage17_retry_blocked_by_in_progress": True,
+            "stage17_in_progress_event_id": event_id,
+            "stage17_in_progress_status": event_status,
+        }
+    )
+    return Stage17ResolutionOutcome(
+        should_continue=False,
+        status=StrategyPipelineStatus.BLOCKED,
+        message="Manual retry is blocked because an existing stage-17 event is still running or waiting.",
+        error_code="stage17_event_in_progress",
     )
 
 

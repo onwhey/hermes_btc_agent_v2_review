@@ -145,6 +145,66 @@ class StrategyPipelineRepository:
         )
         return db_session.execute(stmt).scalar_one_or_none()
 
+    def get_latest_retryable_failed_stage17_scheduler_event_for_slot(
+        self,
+        db_session: Any,
+        *,
+        symbol: str,
+        base_interval: str,
+        higher_interval: str,
+        target_base_open_time_utc: datetime,
+    ) -> Any | None:
+        """Return the latest failed/blocked stage-17 event that can be retried."""
+
+        _require_sqlalchemy()
+        slot = ensure_utc_aware(target_base_open_time_utc)
+        run_id_empty = (StrategySignalSchedulerEventLog.run_id.is_(None)) | (
+            StrategySignalSchedulerEventLog.run_id == ""
+        )
+        stmt = (
+            select(StrategySignalSchedulerEventLog)
+            .where(StrategySignalSchedulerEventLog.symbol == symbol)
+            .where(StrategySignalSchedulerEventLog.base_interval == base_interval)
+            .where(StrategySignalSchedulerEventLog.higher_interval == higher_interval)
+            .where(StrategySignalSchedulerEventLog.target_base_open_time_utc == slot)
+            .where(StrategySignalSchedulerEventLog.status.in_(("failed", "blocked")))
+            .where(run_id_empty)
+            .order_by(
+                StrategySignalSchedulerEventLog.created_at_utc.desc(),
+                StrategySignalSchedulerEventLog.id.desc(),
+            )
+            .limit(1)
+        )
+        return db_session.execute(stmt).scalar_one_or_none()
+
+    def get_latest_in_progress_stage17_scheduler_event_for_slot(
+        self,
+        db_session: Any,
+        *,
+        symbol: str,
+        base_interval: str,
+        higher_interval: str,
+        target_base_open_time_utc: datetime,
+    ) -> Any | None:
+        """Return a running/waiting stage-17 event that blocks manual retry."""
+
+        _require_sqlalchemy()
+        slot = ensure_utc_aware(target_base_open_time_utc)
+        stmt = (
+            select(StrategySignalSchedulerEventLog)
+            .where(StrategySignalSchedulerEventLog.symbol == symbol)
+            .where(StrategySignalSchedulerEventLog.base_interval == base_interval)
+            .where(StrategySignalSchedulerEventLog.higher_interval == higher_interval)
+            .where(StrategySignalSchedulerEventLog.target_base_open_time_utc == slot)
+            .where(StrategySignalSchedulerEventLog.status.in_(("running", "waiting_upstream")))
+            .order_by(
+                StrategySignalSchedulerEventLog.created_at_utc.desc(),
+                StrategySignalSchedulerEventLog.id.desc(),
+            )
+            .limit(1)
+        )
+        return db_session.execute(stmt).scalar_one_or_none()
+
     def create_pipeline_event_log(
         self,
         db_session: Any,
