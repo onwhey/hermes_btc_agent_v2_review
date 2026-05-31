@@ -1,0 +1,19 @@
+model_key: volatility_risk_gate
+model_name: Volatility Risk Gate
+enabled: true
+maturity_stage: active
+model_role: risk
+model_version: v1
+config_version: 27a_v1
+config_hash: auto
+input_intervals:
+  - 4h
+  - 1d
+input_window:
+  base_interval_limit: 180
+  higher_interval_limit: 365
+static_weight: 0.10
+description: Rule-based risk gate from ATR percentage and range expansion.
+params:
+  atr_period: 14
+  can_veto: true

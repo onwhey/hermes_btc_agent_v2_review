@@ -38,6 +38,7 @@ from app.storage.mysql.models import strategy_pipeline as _strategy_pipeline_mod
 from app.storage.mysql.models import strategy_pipeline_observation as _strategy_pipeline_observation_model  # noqa: F401
 from app.storage.mysql.models import strategy_signal as _strategy_signal_model  # noqa: F401
 from app.storage.mysql.models import strategy_signal_scheduler_event as _strategy_signal_scheduler_event_model  # noqa: F401
+from app.storage.mysql.models import weak_model as _weak_model_model  # noqa: F401
 
 target_metadata = Base.metadata
 

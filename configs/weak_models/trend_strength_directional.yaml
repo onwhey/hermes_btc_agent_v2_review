@@ -1,0 +1,20 @@
+model_key: trend_strength_directional
+model_name: Trend Strength Directional
+enabled: true
+maturity_stage: active
+model_role: directional
+model_version: v1
+config_version: 27a_v1
+config_hash: auto
+input_intervals:
+  - 4h
+  - 1d
+input_window:
+  base_interval_limit: 180
+  higher_interval_limit: 365
+static_weight: 0.10
+description: Rule-based directional factor from moving-average relation and slope.
+params:
+  ma_fast: 20
+  ma_slow: 60
+  slope_window: 10

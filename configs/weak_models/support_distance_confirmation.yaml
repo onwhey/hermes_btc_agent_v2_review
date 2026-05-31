@@ -1,0 +1,19 @@
+model_key: support_distance_confirmation
+model_name: Support Distance Confirmation
+enabled: true
+maturity_stage: active
+model_role: confirmation
+model_version: v1
+config_version: 27a_v1
+config_hash: auto
+input_intervals:
+  - 4h
+  - 1d
+input_window:
+  base_interval_limit: 180
+  higher_interval_limit: 365
+static_weight: 0.10
+description: Rule-based confirmation factor from distance to recent support and resistance.
+params:
+  lookback: 48
+  near_level_pct: 0.012

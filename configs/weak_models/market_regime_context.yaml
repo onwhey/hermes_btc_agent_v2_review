@@ -1,0 +1,18 @@
+model_key: market_regime_context
+model_name: Market Regime Context
+enabled: true
+maturity_stage: observe_only
+model_role: context
+model_version: v1
+config_version: 27a_v1
+config_hash: auto
+input_intervals:
+  - 4h
+  - 1d
+input_window:
+  base_interval_limit: 180
+  higher_interval_limit: 365
+static_weight: 0.0
+description: Observe-only context factor from multi-window trend and range state.
+params:
+  lookback: 60
