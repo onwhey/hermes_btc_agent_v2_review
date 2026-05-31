@@ -35,6 +35,7 @@ from app.storage.mysql.models import strategy_advice as _strategy_advice_model  
 from app.storage.mysql.models import strategy_aggregation as _strategy_aggregation_model  # noqa: F401
 from app.storage.mysql.models import strategy_evidence_quality as _strategy_evidence_quality_model  # noqa: F401
 from app.storage.mysql.models import strategy_pipeline as _strategy_pipeline_model  # noqa: F401
+from app.storage.mysql.models import strategy_pipeline_observation as _strategy_pipeline_observation_model  # noqa: F401
 from app.storage.mysql.models import strategy_signal as _strategy_signal_model  # noqa: F401
 from app.storage.mysql.models import strategy_signal_scheduler_event as _strategy_signal_scheduler_event_model  # noqa: F401
 

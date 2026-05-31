@@ -14,6 +14,7 @@ plus stage-19 model review-gate
 attempt/result tables, stage-20A model review aggregation output tables,
 stage-20B model review chain state tables, stage-21 strategy advice
 lifecycle/scheduler tables, stage-22A manual execution feedback tables, and
-stage-22B manual execution confirmation-intent tables, plus stage-25A manual
-strategy pipeline event logs.
+stage-22B manual execution confirmation-intent tables, stage-25A manual
+strategy pipeline event logs, and stage-26C strategy pipeline observation
+index rows.
 """
