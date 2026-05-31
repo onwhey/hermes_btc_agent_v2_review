@@ -20,6 +20,7 @@ from app.scheduler.config import build_scheduler_runtime_config
 from app.scheduler.strategy_signal_scheduler_service import StrategySignalSchedulerService
 from app.strategy.aggregation.evidence_service import StrategyEvidenceAggregationService
 from app.strategy.aggregation.service import StrategyAggregationService
+from app.strategy.signal_service import StrategySignalService
 from app.strategy_advice.scheduler_service import StrategyAdviceSchedulerService
 from app.strategy_pipeline.types import StrategyPipelineRequest
 
@@ -52,6 +53,12 @@ def create_pipeline_stage23f_service() -> StrategyEvidenceAggregationService:
     """Create the existing 23F evidence aggregation service for explicit 25A use."""
 
     return StrategyEvidenceAggregationService()
+
+
+def create_pipeline_stage16_service() -> StrategySignalService:
+    """Create the existing stage-16 strategy signal service for manual retry."""
+
+    return StrategySignalService()
 
 
 def create_pipeline_stage20_worker(
@@ -99,6 +106,7 @@ def create_pipeline_stage21_service(
 
 
 __all__ = [
+    "create_pipeline_stage16_service",
     "create_pipeline_stage17_service",
     "create_pipeline_stage18_service",
     "create_pipeline_stage23f_service",

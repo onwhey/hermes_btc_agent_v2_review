@@ -70,6 +70,7 @@ class StrategyPipelineRequest:
     use_real_model: bool = False
     confirm_real_model_cost: bool = False
     send_real_hermes: bool = False
+    retry_failed_stage17: bool = False
     created_by: str = "cli"
     trace_id: str = field(default_factory=lambda: uuid4().hex)
 
@@ -191,6 +192,10 @@ def format_strategy_pipeline_result_lines(result: StrategyPipelineResult) -> lis
         f"model_review_reused={str(result.model_review_reused).lower()}",
         f"real_model_called={str(result.real_model_called).lower()}",
         f"hermes_real_sent={str(result.hermes_real_sent).lower()}",
+        f"retry_failed_stage17={str(bool(_detail_value(result.details, 'retry_failed_stage17'))).lower()}",
+        f"previous_stage17_event_id={_detail_value(result.details, 'previous_stage17_event_id') or ''}",
+        f"previous_stage17_status={_detail_value(result.details, 'previous_stage17_status') or ''}",
+        f"new_strategy_signal_run_id={_detail_value(result.details, 'new_strategy_signal_run_id') or ''}",
         f"is_final_trading_advice={str(result.is_final_trading_advice).lower()}",
         f"is_trading_signal={str(result.is_trading_signal).lower()}",
         f"is_executable={str(result.is_executable).lower()}",
@@ -201,6 +206,10 @@ def format_strategy_pipeline_result_lines(result: StrategyPipelineResult) -> lis
         f"error_code={result.error_code or ''}",
         f"error_message={result.error_message or ''}",
     ]
+
+
+def _detail_value(details: Mapping[str, Any], key: str) -> Any:
+    return details.get(key) if isinstance(details, Mapping) else None
 
 
 __all__ = [
@@ -223,4 +232,3 @@ __all__ = [
     "format_strategy_pipeline_result_lines",
     "status_value",
 ]
-

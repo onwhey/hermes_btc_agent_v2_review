@@ -11,6 +11,7 @@ from app.scheduler.strategy_signal_scheduler_types import (
     StrategySignalSchedulerResult,
     StrategySignalSchedulerStatus,
 )
+from app.strategy.types import StrategyRunStatus, StrategySignalRunResult
 from app.strategy.aggregation.evidence_types import (
     CandidateBias,
     DecisionReadiness,
@@ -55,6 +56,7 @@ class FakeStage17Event:
     event_id: str = "SSS-reused"
     status: str = "success"
     run_id: str | None = "SSR-reused"
+    error_code: str | None = None
     target_base_open_time_utc: datetime = SLOT
     created_at_utc: datetime = SLOT
 
@@ -106,6 +108,25 @@ class FakeRepository:
         if not reusable:
             return None
         return sorted(reusable, key=lambda event: event.created_at_utc, reverse=True)[0]
+
+    def get_latest_stage17_scheduler_event_for_slot(
+        self,
+        db_session: Any,
+        *,
+        symbol: str,
+        base_interval: str,
+        higher_interval: str,
+        target_base_open_time_utc: datetime,
+    ) -> FakeStage17Event | None:
+        self.order.append("17_latest_lookup")
+        matches = [
+            event
+            for event in self.stage17_events
+            if event.target_base_open_time_utc == target_base_open_time_utc
+        ]
+        if not matches:
+            return None
+        return sorted(matches, key=lambda event: event.created_at_utc, reverse=True)[0]
 
     def create_pipeline_event_log(self, db_session: Any, *, payload: Any) -> dict[str, Any]:
         row: dict[str, Any] = {"payload": payload}
@@ -163,6 +184,45 @@ class FakeStage17:
             snapshot_id="MCS-test" if self.run_id else None,
             strategy_count=4 if self.run_id else 0,
             success_count=4 if self.run_id else 0,
+        )
+
+
+class FakeStage16:
+    def __init__(
+        self,
+        order: list[str],
+        *,
+        status: StrategyRunStatus = StrategyRunStatus.SUCCESS,
+        run_id: str = "SSR-retry",
+        message: str = "stage16 retry ok",
+        blocked_reason: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        self.order = order
+        self.status = status
+        self.run_id = run_id
+        self.message = message
+        self.blocked_reason = blocked_reason
+        self.error_message = error_message
+        self.calls = 0
+        self.requests: list[Any] = []
+
+    def run_strategy_signals(self, db_session: Any, *, request: Any) -> StrategySignalRunResult:
+        self.calls += 1
+        self.requests.append(request)
+        self.order.append("16_retry")
+        success = self.status in {StrategyRunStatus.SUCCESS, StrategyRunStatus.PARTIAL_SUCCESS}
+        return StrategySignalRunResult(
+            status=self.status,
+            exit_code=0 if success else 4,
+            run_id=self.run_id if success else "",
+            trace_id=request.trace_id,
+            snapshot_id="MCS-retry" if success else None,
+            message=self.message,
+            blocked_reason=self.blocked_reason,
+            error_message=self.error_message,
+            strategy_count=4 if success else 0,
+            success_count=4 if success else 0,
         )
 
 
@@ -368,7 +428,7 @@ def test_pipeline_blocks_duplicate_skip_when_only_failed_stage17_events_exist() 
     )
     repository = FakeRepository(
         order=order,
-        stage17_events=[FakeStage17Event(event_id="SSS-failed", status="failed", run_id="SSR-bad")],
+        stage17_events=[FakeStage17Event(event_id="SSS-failed", status="failed", run_id=None)],
     )
     service = _build_full_success_service(order=order, repository=repository, stage17_service=stage17)
 
@@ -382,6 +442,160 @@ def test_pipeline_blocks_duplicate_skip_when_only_failed_stage17_events_exist() 
     assert result.strategy_signal_run_id is None
     assert "23f_lookup" not in order
     assert "18" not in order
+
+
+def test_pipeline_retry_flag_still_reuses_existing_success_stage17_event() -> None:
+    order: list[str] = []
+    stage17 = FakeStage17(
+        order,
+        status=StrategySignalSchedulerStatus.SKIPPED,
+        run_id=None,
+        message="Stage-17 strategy signal scheduler skipped a duplicate target event.",
+    )
+    stage16 = FakeStage16(order)
+    repository = FakeRepository(
+        order=order,
+        stage17_events=[FakeStage17Event(event_id="SSS-old", status="success", run_id="SSR-old")],
+    )
+    stage23f = FakeStage23F(order)
+    service = _build_full_success_service(
+        order=order,
+        repository=repository,
+        stage16_service=stage16,
+        stage17_service=stage17,
+        stage23f_service=stage23f,
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(
+            kline_slot_utc=SLOT,
+            dry_run=False,
+            confirm_write=True,
+            retry_failed_stage17=True,
+        ),
+    )
+
+    assert result.status == StrategyPipelineStatus.SUCCESS
+    assert result.strategy_signal_run_id == "SSR-old"
+    assert stage17.calls == 0
+    assert stage16.calls == 0
+    assert stage23f.requests[0].strategy_signal_run_id == "SSR-old"
+    assert order[:3] == ["17_reuse_lookup", "23f_lookup", "23f_create"]
+    assert result.details["reused_stage17_duplicate"] is True
+    assert result.details.get("retry_failed_stage17") is not True
+
+
+def test_pipeline_retry_failed_stage17_reruns_stage16_and_continues_to_23f() -> None:
+    order: list[str] = []
+    stage17 = FakeStage17(
+        order,
+        status=StrategySignalSchedulerStatus.SKIPPED,
+        run_id=None,
+        message="Stage-17 strategy signal scheduler skipped a duplicate target event.",
+    )
+    stage16 = FakeStage16(order, run_id="SSR-retry")
+    repository = FakeRepository(
+        order=order,
+        stage17_events=[
+            FakeStage17Event(
+                event_id="SSS-blocked",
+                status="blocked",
+                run_id=None,
+                error_code="strategy_registry_config_error",
+            )
+        ],
+    )
+    stage23f = FakeStage23F(order)
+    service = _build_full_success_service(
+        order=order,
+        repository=repository,
+        stage16_service=stage16,
+        stage17_service=stage17,
+        stage23f_service=stage23f,
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(
+            kline_slot_utc=SLOT,
+            dry_run=False,
+            confirm_write=True,
+            retry_failed_stage17=True,
+        ),
+    )
+
+    assert result.status == StrategyPipelineStatus.SUCCESS
+    assert result.strategy_signal_run_id == "SSR-retry"
+    assert result.strategy_evidence_aggregation_id == "SEA-created"
+    assert stage17.calls == 1
+    assert stage16.calls == 1
+    assert stage23f.requests[0].strategy_signal_run_id == "SSR-retry"
+    assert order[:6] == [
+        "17_reuse_lookup",
+        "17",
+        "17_reuse_lookup",
+        "17_latest_lookup",
+        "16_retry",
+        "23f_lookup",
+    ]
+    assert result.details["retry_failed_stage17"] is True
+    assert result.details["previous_stage17_event_id"] == "SSS-blocked"
+    assert result.details["previous_stage17_status"] == "blocked"
+    assert result.details["previous_stage17_error_code"] == "strategy_registry_config_error"
+    assert result.details["new_strategy_signal_run_id"] == "SSR-retry"
+    final_payload, finished = repository.updated_events[-1]
+    assert finished is True
+    assert final_payload.details["retry_failed_stage17"] is True
+    assert final_payload.details["previous_stage17_event_id"] == "SSS-blocked"
+
+
+def test_pipeline_retry_failed_stage17_failure_stops_before_23f() -> None:
+    order: list[str] = []
+    stage16 = FakeStage16(
+        order,
+        status=StrategyRunStatus.FAILED,
+        message="retry failed",
+        error_message="strategy retry error",
+    )
+    repository = FakeRepository(
+        order=order,
+        stage17_events=[FakeStage17Event(event_id="SSS-failed", status="failed", run_id=None)],
+    )
+    service = _build_full_success_service(
+        order=order,
+        repository=repository,
+        stage16_service=stage16,
+        stage17_service=FakeStage17(
+            order,
+            status=StrategySignalSchedulerStatus.SKIPPED,
+            run_id=None,
+            message="Stage-17 strategy signal scheduler skipped a duplicate target event.",
+        ),
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(
+            kline_slot_utc=SLOT,
+            dry_run=False,
+            confirm_write=True,
+            retry_failed_stage17=True,
+        ),
+    )
+
+    assert result.status == StrategyPipelineStatus.FAILED
+    assert result.error_code == "failed"
+    assert result.error_message == "strategy retry error"
+    assert "17" in order
+    assert stage16.calls == 1
+    assert "23f_lookup" not in order
+    assert "18" not in order
+    assert result.details["retry_failed_stage17"] is True
+    assert result.details["previous_stage17_event_id"] == "SSS-failed"
+    final_payload, finished = repository.updated_events[-1]
+    assert finished is True
+    assert final_payload.details["retry_failed_stage17"] is True
 
 
 def test_pipeline_blocks_duplicate_skip_when_success_event_has_empty_run_id() -> None:
@@ -611,6 +825,7 @@ def _build_full_success_service(
     order: list[str],
     repository: FakeRepository | None = None,
     lock_manager: FakeLockManager | None = None,
+    stage16_service: FakeStage16 | None = None,
     stage17_service: FakeStage17 | None = None,
     stage23f_service: FakeStage23F | None = None,
     stage20_worker: FakeStage20Worker | None = None,
@@ -624,6 +839,7 @@ def _build_full_success_service(
         ),
         repository=repository or FakeRepository(order=order),
         lock_manager=lock_manager or FakeLockManager(),
+        stage16_service=stage16_service,
         stage17_service=stage17_service or FakeStage17(order),
         stage23f_service=stage23f_service or FakeStage23F(order),
         stage18_service=FakeStage18(order),

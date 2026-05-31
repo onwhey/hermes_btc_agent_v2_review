@@ -257,3 +257,55 @@ ORM：
 
 相关查询由 `app/strategy_pipeline/repository.py::get_latest_reusable_stage17_scheduler_event`
 完成。该查询只读 MySQL，不写库、不提交事务、不请求外部接口、不发送 Hermes、不调用大模型、不涉及交易执行。
+
+## 11. 2026-05-31 补充修复：显式重试 failed/blocked Stage-17 事件
+
+本次新增手动 CLI 参数：
+
+```bash
+python -m scripts.run_strategy_pipeline \
+  --symbol BTCUSDT \
+  --base-interval 4h \
+  --higher-interval 1d \
+  --trigger-source cli \
+  --confirm-write \
+  --retry-failed-stage17
+```
+
+默认行为不变：未传 `--retry-failed-stage17` 时，Stage-17 返回 duplicate skipped 且没有可复用
+`success / partial_success + run_id` 的 SSR，25A 仍返回 blocked，不继续 23F、18、20、21。
+
+显式重试规则：
+
+- 25A 先查询同一 `symbol / base_interval / higher_interval / kline_slot_utc` 下是否已有可复用
+  `success / partial_success + run_id`。如果存在，必须复用旧 SSR，不会重跑 16。
+- 如果没有可复用 SSR，25A 仍先调用
+  `app/scheduler/strategy_signal_scheduler_service.py::run_after_collector_success`，让 Stage-17 返回
+  duplicate skipped，并记录本轮 stage17_result。
+- 只有用户显式传入 `--retry-failed-stage17`，且历史最新 Stage-17 事件为 `failed` 或 `blocked`，
+  且该事件没有 `run_id`，25A 才调用现有
+  `app/strategy/signal_service.py::StrategySignalService.run_strategy_signals` 重新生成新的
+  `strategy_signal_run_id`。
+- 旧 Stage-17 event 不会被删除、修改或覆盖；新 SSR 只通过 Stage-16 正常落库生成。
+- 重试成功后，25A 继续显式调用或复用 24A/23F，然后再进入 18、20C/19/20A、21A/21B。
+- 重试失败时，25A 停止在 `17_16_strategy_signals` 阶段并写 pipeline event log，不会绕过 23F 进入 18。
+
+禁止重试的情况：
+
+- 已存在 `success / partial_success + run_id`：必须复用旧 SSR。
+- 历史 Stage-17 事件仍为 `running` 或 `waiting_upstream`。
+- 历史 Stage-17 事件不是 `failed / blocked`，或仍带有 `run_id`。
+- pipeline Redis 锁未获取。
+- `kline_slot_utc` 无法唯一确定。
+
+pipeline event log 的 `details_json` 会记录：
+
+- `retry_failed_stage17=true`
+- `retry_reason`
+- `previous_stage17_event_id`
+- `previous_stage17_status`
+- `previous_stage17_error_code`
+- `new_strategy_signal_run_id`
+
+本次没有修改 scheduler runner 自动链路；25A 仍是手动统一入口。该重试能力不请求 Binance、不读取账户或持仓、
+不调用大模型、不发送 Hermes、不生成 advice、不涉及自动交易。

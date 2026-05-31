@@ -47,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         use_real_model=bool(args.use_real_model),
         confirm_real_model_cost=bool(args.confirm_real_model_cost),
         send_real_hermes=bool(args.send_real_hermes),
+        retry_failed_stage17=bool(args.retry_failed_stage17),
         created_by="cli",
     )
     with session_scope(settings=settings, commit_on_success=False) as db_session:
@@ -72,6 +73,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use-real-model", action="store_true")
     parser.add_argument("--confirm-real-model-cost", action="store_true")
     parser.add_argument("--send-real-hermes", action="store_true")
+    parser.add_argument(
+        "--retry-failed-stage17",
+        action="store_true",
+        help="Manually retry stage 17/16 only when the existing target event is failed/blocked and has no reusable SSR.",
+    )
     return parser
 
 
@@ -87,4 +93,3 @@ def _parse_optional_datetime(value: str | None) -> datetime | None:
 
 if __name__ == "__main__":  # pragma: no cover - exercised through CLI use.
     sys.exit(main())
-

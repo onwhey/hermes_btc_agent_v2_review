@@ -22,6 +22,7 @@ from app.model_review_chain.worker_schema import (
 )
 from app.scheduler.slot_state import KLINE_4H_INCREMENTAL_JOB_NAME
 from app.scheduler.strategy_signal_scheduler_types import StrategySignalSchedulerRequest
+from app.strategy.types import StrategyRunStatus, StrategySignalRunRequest
 from app.strategy.aggregation.types import StrategyAggregationRequest, StrategyAggregationStatus
 from app.strategy_advice.scheduler_schema import StrategyAdviceSchedulerRequest, StrategyAdviceSchedulerStatus
 from app.strategy_pipeline.evidence_stage import run_or_reuse_stage23f_for_pipeline
@@ -51,6 +52,7 @@ from app.strategy_pipeline.types import (
     status_value,
 )
 from app.strategy_pipeline.stage_services import (
+    create_pipeline_stage16_service,
     create_pipeline_stage17_service,
     create_pipeline_stage18_service,
     create_pipeline_stage23f_service,
@@ -58,7 +60,12 @@ from app.strategy_pipeline.stage_services import (
     create_pipeline_stage20a_service,
     create_pipeline_stage21_service,
 )
-from app.strategy_pipeline.stage17_reuse import resolve_stage17_result_or_reusable_duplicate
+from app.strategy_pipeline.stage17_reuse import (
+    Stage17ResolutionOutcome,
+    record_stage17_retry_success,
+    resolve_stage17_result_or_reusable_duplicate,
+    resolve_stage17_retry_preflight,
+)
 from app.strategy_pipeline.utils import (
     PipelineState,
     commit_if_possible,
@@ -78,6 +85,7 @@ class StrategyPipelineService:
         settings: AppSettings | None = None,
         repository: StrategyPipelineRepository | Any | None = None,
         lock_manager: StrategyPipelineLockManager | Any | None = None,
+        stage16_service: Any | None = None,
         stage17_service: Any | None = None,
         stage23f_service: Any | None = None,
         stage18_service: Any | None = None,
@@ -88,6 +96,7 @@ class StrategyPipelineService:
         self._settings = settings or get_settings()
         self._repository = repository or create_default_strategy_pipeline_repository()
         self._lock_manager = lock_manager or StrategyPipelineLockManager()
+        self._stage16_service = stage16_service
         self._stage17_service = stage17_service
         self._stage23f_service = stage23f_service
         self._stage18_service = stage18_service
@@ -187,25 +196,38 @@ class StrategyPipelineService:
         state: PipelineState,
         event_row: Any,
     ) -> StrategyPipelineResult:
-        stage17 = self._run_stage17_16(db_session, request=request, state=state)
-        stage17_resolution = resolve_stage17_result_or_reusable_duplicate(
+        stage17_resolution = resolve_stage17_retry_preflight(
             db_session,
             request=request,
             state=state,
             repository=self._repository,
-            stage17_result=stage17,
         )
-        if not stage17_resolution.should_continue:
-            return self._finish_from_stage_failure(
+        if stage17_resolution is None:
+            stage17 = self._run_stage17_16(db_session, request=request, state=state)
+            stage17_resolution = resolve_stage17_result_or_reusable_duplicate(
                 db_session,
-                event_row=event_row,
                 request=request,
                 state=state,
+                repository=self._repository,
+                stage17_result=stage17,
+            )
+        if stage17_resolution.should_retry_failed_stage17:
+            stage17_resolution = self._retry_failed_stage17_with_stage16(
+                db_session,
+                request=request,
+                state=state,
+            )
+        if not stage17_resolution.should_continue:
+            result = self._build_result(
+                request=request,
+                state=state,
+                status=stage17_resolution.status or StrategyPipelineStatus.BLOCKED,
                 current_step=PIPELINE_STEP_STAGE17_16,
                 message=stage17_resolution.message,
                 error_code=stage17_resolution.error_code,
                 error_message=stage17_resolution.error_message,
             )
+            return self._finish_result(db_session, event_row=event_row, request=request, result=result)
         self._update_event_progress(db_session, event_row=event_row, request=request, state=state)
 
         evidence_outcome = run_or_reuse_stage23f_for_pipeline(
@@ -278,6 +300,58 @@ class StrategyPipelineService:
         if hasattr(service, "run_after_collector_success"):
             return service.run_after_collector_success(db_session, request=scheduler_request)
         return service(db_session=db_session, request=scheduler_request)
+
+    def _retry_failed_stage17_with_stage16(
+        self,
+        db_session: Any,
+        *,
+        request: StrategyPipelineRequest,
+        state: PipelineState,
+    ) -> Stage17ResolutionOutcome:
+        """Retry a failed/blocked stage-17 target by rerunning stage 16 only.
+
+        The historical stage-17 event is left untouched; this manual recovery
+        path records the retry in the 25A pipeline event details and persists a
+        fresh strategy_signal_run through the existing stage-16 service.
+        """
+
+        state.current_step = PIPELINE_STEP_STAGE17_16
+        service = self._stage16_service or create_pipeline_stage16_service()
+        signal_request = StrategySignalRunRequest(
+            symbol=request.symbol,
+            base_interval_value=request.base_interval,
+            higher_interval_value=request.higher_interval,
+            lookback_base_count=self._settings.market_context_4h_lookback_count,
+            lookback_higher_count=self._settings.market_context_1d_lookback_count,
+            trigger_source=request.trigger_source,
+            ensure_latest_snapshot=True,
+            dry_run=False,
+            confirm_write=True,
+            created_by="strategy_pipeline_retry_failed_stage17",
+            current_time_ms=utc_datetime_to_timestamp_ms(now_utc()),
+            trace_id=request.trace_id,
+        )
+        retry_result = (
+            service.run_strategy_signals(db_session, request=signal_request)
+            if hasattr(service, "run_strategy_signals")
+            else service(db_session=db_session, request=signal_request)
+        )
+        state.details["stage17_retry_result"] = compact_object(retry_result)
+        if getattr(retry_result, "status", None) in (StrategyRunStatus.SUCCESS, StrategyRunStatus.PARTIAL_SUCCESS):
+            return record_stage17_retry_success(state, retry_result)
+        pipeline_status = (
+            StrategyPipelineStatus.FAILED
+            if getattr(retry_result, "status", None) == StrategyRunStatus.FAILED
+            else StrategyPipelineStatus.BLOCKED
+        )
+        return Stage17ResolutionOutcome(
+            should_continue=False,
+            status=pipeline_status,
+            message=str(getattr(retry_result, "message", "") or "Manual retry of failed stage 17 did not succeed."),
+            error_code=getattr(retry_result, "blocked_reason", None)
+            or status_value(getattr(retry_result, "status", "")),
+            error_message=getattr(retry_result, "error_message", None),
+        )
 
     def _run_stage18(
         self,
