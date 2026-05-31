@@ -50,16 +50,27 @@ class FakeEvidenceAggregation:
     decision_readiness: str = "wait_for_confirmation"
 
 
+@dataclass
+class FakeStage17Event:
+    event_id: str = "SSS-reused"
+    status: str = "success"
+    run_id: str | None = "SSR-reused"
+    target_base_open_time_utc: datetime = SLOT
+    created_at_utc: datetime = SLOT
+
+
 class FakeRepository:
     def __init__(
         self,
         order: list[str] | None = None,
         latest_slot: datetime | None = SLOT,
         existing_evidence: FakeEvidenceAggregation | None = None,
+        stage17_events: list[FakeStage17Event] | None = None,
     ) -> None:
         self.order = order if order is not None else []
         self.latest_slot = latest_slot
         self.existing_evidence = existing_evidence
+        self.stage17_events = stage17_events or []
         self.created_events: list[Any] = []
         self.updated_events: list[Any] = []
 
@@ -74,6 +85,27 @@ class FakeRepository:
     ) -> FakeEvidenceAggregation | None:
         self.order.append("23f_lookup")
         return self.existing_evidence
+
+    def get_latest_reusable_stage17_scheduler_event(
+        self,
+        db_session: Any,
+        *,
+        symbol: str,
+        base_interval: str,
+        higher_interval: str,
+        target_base_open_time_utc: datetime,
+    ) -> FakeStage17Event | None:
+        self.order.append("17_reuse_lookup")
+        reusable = [
+            event
+            for event in self.stage17_events
+            if event.status in {"success", "partial_success"}
+            and bool(event.run_id)
+            and event.target_base_open_time_utc == target_base_open_time_utc
+        ]
+        if not reusable:
+            return None
+        return sorted(reusable, key=lambda event: event.created_at_utc, reverse=True)[0]
 
     def create_pipeline_event_log(self, db_session: Any, *, payload: Any) -> dict[str, Any]:
         row: dict[str, Any] = {"payload": payload}
@@ -102,21 +134,35 @@ class FakeLockManager:
 
 
 class FakeStage17:
-    def __init__(self, order: list[str]) -> None:
+    def __init__(
+        self,
+        order: list[str],
+        *,
+        status: StrategySignalSchedulerStatus = StrategySignalSchedulerStatus.SUCCESS,
+        run_id: str | None = "SSR-test",
+        event_id: str = "SSS-test",
+        message: str = "stage17 ok",
+    ) -> None:
         self.order = order
+        self.status = status
+        self.run_id = run_id
+        self.event_id = event_id
+        self.message = message
+        self.calls = 0
 
     def run_after_collector_success(self, db_session: Any, *, request: Any) -> StrategySignalSchedulerResult:
+        self.calls += 1
         self.order.append("17")
         return StrategySignalSchedulerResult(
-            status=StrategySignalSchedulerStatus.SUCCESS,
-            event_id="SSS-test",
+            status=self.status,
+            event_id=self.event_id,
             trace_id=request.trace_id,
-            message="stage17 ok",
+            message=self.message,
             target_base_open_time_ms=request.upstream_latest_base_open_time_ms,
-            run_id="SSR-test",
-            snapshot_id="MCS-test",
-            strategy_count=4,
-            success_count=4,
+            run_id=self.run_id,
+            snapshot_id="MCS-test" if self.run_id else None,
+            strategy_count=4 if self.run_id else 0,
+            success_count=4 if self.run_id else 0,
         )
 
 
@@ -272,6 +318,95 @@ def test_confirm_write_calls_existing_stage_services_in_pipeline_order() -> None
     assert result.review_aggregation_run_id == "MRAG-test"
     assert result.advice_id == "ADV-test"
     assert result.review_id == "ADVR-test"
+
+
+def test_pipeline_reuses_successful_stage17_event_after_duplicate_skip() -> None:
+    order: list[str] = []
+    stage17 = FakeStage17(
+        order,
+        status=StrategySignalSchedulerStatus.SKIPPED,
+        run_id=None,
+        message="Stage-17 strategy signal scheduler skipped a duplicate target event.",
+    )
+    repository = FakeRepository(
+        order=order,
+        stage17_events=[FakeStage17Event(event_id="SSS-old", status="success", run_id="SSR-old")],
+    )
+    stage23f = FakeStage23F(order)
+    service = _build_full_success_service(
+        order=order,
+        repository=repository,
+        stage17_service=stage17,
+        stage23f_service=stage23f,
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.SUCCESS
+    assert result.strategy_signal_run_id == "SSR-old"
+    assert stage17.calls == 1
+    assert stage23f.requests[0].strategy_signal_run_id == "SSR-old"
+    assert order[:4] == ["17", "17_reuse_lookup", "23f_lookup", "23f_create"]
+    assert result.details["reused_stage17_duplicate"] is True
+    assert result.details["reused_strategy_signal_run_id"] == "SSR-old"
+    assert result.details["reused_stage17_event_id"] == "SSS-old"
+    final_payload, finished = repository.updated_events[-1]
+    assert finished is True
+    assert final_payload.details["reused_stage17_duplicate"] is True
+
+
+def test_pipeline_blocks_duplicate_skip_when_only_failed_stage17_events_exist() -> None:
+    order: list[str] = []
+    stage17 = FakeStage17(
+        order,
+        status=StrategySignalSchedulerStatus.SKIPPED,
+        run_id=None,
+        message="Stage-17 strategy signal scheduler skipped a duplicate target event.",
+    )
+    repository = FakeRepository(
+        order=order,
+        stage17_events=[FakeStage17Event(event_id="SSS-failed", status="failed", run_id="SSR-bad")],
+    )
+    service = _build_full_success_service(order=order, repository=repository, stage17_service=stage17)
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.BLOCKED
+    assert result.error_code == "stage17_duplicate_reusable_run_not_found"
+    assert result.strategy_signal_run_id is None
+    assert "23f_lookup" not in order
+    assert "18" not in order
+
+
+def test_pipeline_blocks_duplicate_skip_when_success_event_has_empty_run_id() -> None:
+    order: list[str] = []
+    stage17 = FakeStage17(
+        order,
+        status=StrategySignalSchedulerStatus.SKIPPED,
+        run_id=None,
+        message="Stage-17 strategy signal scheduler skipped a duplicate target event.",
+    )
+    repository = FakeRepository(
+        order=order,
+        stage17_events=[FakeStage17Event(event_id="SSS-empty", status="success", run_id=None)],
+    )
+    service = _build_full_success_service(order=order, repository=repository, stage17_service=stage17)
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.BLOCKED
+    assert result.error_code == "stage17_duplicate_reusable_run_not_found"
+    assert result.strategy_signal_run_id is None
+    assert "23f_lookup" not in order
 
 
 def test_pipeline_blocks_when_kline_slot_cannot_be_determined() -> None:
@@ -476,6 +611,7 @@ def _build_full_success_service(
     order: list[str],
     repository: FakeRepository | None = None,
     lock_manager: FakeLockManager | None = None,
+    stage17_service: FakeStage17 | None = None,
     stage23f_service: FakeStage23F | None = None,
     stage20_worker: FakeStage20Worker | None = None,
     stage20a_service: FakeStage20A | None = None,
@@ -488,7 +624,7 @@ def _build_full_success_service(
         ),
         repository=repository or FakeRepository(order=order),
         lock_manager=lock_manager or FakeLockManager(),
-        stage17_service=FakeStage17(order),
+        stage17_service=stage17_service or FakeStage17(order),
         stage23f_service=stage23f_service or FakeStage23F(order),
         stage18_service=FakeStage18(order),
         stage20_worker=stage20_worker or FakeStage20Worker(order),

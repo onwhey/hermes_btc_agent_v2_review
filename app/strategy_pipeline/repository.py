@@ -22,6 +22,7 @@ from app.market_data.kline_constants import KLINE_4H_INTERVAL_VALUE
 from app.storage.mysql.models.market_kline_4h import MarketKline4h
 from app.storage.mysql.models.strategy_aggregation import StrategyEvidenceAggregationResult
 from app.storage.mysql.models.strategy_pipeline import StrategyPipelineEventLog
+from app.storage.mysql.models.strategy_signal_scheduler_event import StrategySignalSchedulerEventLog
 from app.strategy_pipeline.types import StrategyPipelineEventPayload
 
 try:
@@ -77,6 +78,42 @@ class StrategyPipelineRepository:
         stmt = (
             select(StrategyEvidenceAggregationResult)
             .where(StrategyEvidenceAggregationResult.strategy_signal_run_id == strategy_signal_run_id)
+            .limit(1)
+        )
+        return db_session.execute(stmt).scalar_one_or_none()
+
+    def get_latest_reusable_stage17_scheduler_event(
+        self,
+        db_session: Any,
+        *,
+        symbol: str,
+        base_interval: str,
+        higher_interval: str,
+        target_base_open_time_utc: datetime,
+    ) -> Any | None:
+        """Return the latest successful stage-17 event that can supply a SSR id.
+
+        This is used only when a fresh stage-17 call reports a duplicate skip.
+        It never creates a strategy run and never changes the old scheduler
+        event; it only finds a prior success/partial_success row for the exact
+        same target base Kline open time.
+        """
+
+        _require_sqlalchemy()
+        slot = ensure_utc_aware(target_base_open_time_utc)
+        stmt = (
+            select(StrategySignalSchedulerEventLog)
+            .where(StrategySignalSchedulerEventLog.symbol == symbol)
+            .where(StrategySignalSchedulerEventLog.base_interval == base_interval)
+            .where(StrategySignalSchedulerEventLog.higher_interval == higher_interval)
+            .where(StrategySignalSchedulerEventLog.target_base_open_time_utc == slot)
+            .where(StrategySignalSchedulerEventLog.status.in_(("success", "partial_success")))
+            .where(StrategySignalSchedulerEventLog.run_id.is_not(None))
+            .where(StrategySignalSchedulerEventLog.run_id != "")
+            .order_by(
+                StrategySignalSchedulerEventLog.created_at_utc.desc(),
+                StrategySignalSchedulerEventLog.id.desc(),
+            )
             .limit(1)
         )
         return db_session.execute(stmt).scalar_one_or_none()
@@ -185,4 +222,3 @@ __all__ = [
     "StrategyPipelineRepository",
     "create_default_strategy_pipeline_repository",
 ]
-

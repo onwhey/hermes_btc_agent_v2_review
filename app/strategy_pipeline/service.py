@@ -21,7 +21,7 @@ from app.model_review_chain.worker_schema import (
     ModelReviewChainWorkerRequest,
 )
 from app.scheduler.slot_state import KLINE_4H_INCREMENTAL_JOB_NAME
-from app.scheduler.strategy_signal_scheduler_types import StrategySignalSchedulerRequest, StrategySignalSchedulerStatus
+from app.scheduler.strategy_signal_scheduler_types import StrategySignalSchedulerRequest
 from app.strategy.aggregation.types import StrategyAggregationRequest, StrategyAggregationStatus
 from app.strategy_advice.scheduler_schema import StrategyAdviceSchedulerRequest, StrategyAdviceSchedulerStatus
 from app.strategy_pipeline.evidence_stage import run_or_reuse_stage23f_for_pipeline
@@ -58,6 +58,7 @@ from app.strategy_pipeline.stage_services import (
     create_pipeline_stage20a_service,
     create_pipeline_stage21_service,
 )
+from app.strategy_pipeline.stage17_reuse import resolve_stage17_result_or_reusable_duplicate
 from app.strategy_pipeline.utils import (
     PipelineState,
     commit_if_possible,
@@ -187,19 +188,24 @@ class StrategyPipelineService:
         event_row: Any,
     ) -> StrategyPipelineResult:
         stage17 = self._run_stage17_16(db_session, request=request, state=state)
-        if stage17.status not in (StrategySignalSchedulerStatus.SUCCESS, StrategySignalSchedulerStatus.PARTIAL_SUCCESS):
+        stage17_resolution = resolve_stage17_result_or_reusable_duplicate(
+            db_session,
+            request=request,
+            state=state,
+            repository=self._repository,
+            stage17_result=stage17,
+        )
+        if not stage17_resolution.should_continue:
             return self._finish_from_stage_failure(
                 db_session,
                 event_row=event_row,
                 request=request,
                 state=state,
                 current_step=PIPELINE_STEP_STAGE17_16,
-                message=stage17.message,
-                error_code=status_value(stage17.status),
-                error_message=stage17.error_message,
+                message=stage17_resolution.message,
+                error_code=stage17_resolution.error_code,
+                error_message=stage17_resolution.error_message,
             )
-        state.strategy_signal_run_id = stage17.run_id
-        state.details["stage17_result"] = compact_object(stage17)
         self._update_event_progress(db_session, event_row=event_row, request=request, state=state)
 
         evidence_outcome = run_or_reuse_stage23f_for_pipeline(

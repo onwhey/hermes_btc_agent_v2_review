@@ -233,3 +233,27 @@ ORM：
 - mock_review、dry-run、复用已有模型审查结果，都必须保持 `real_model_called=false`。
 
 本次仍未修改 scheduler runner 自动接管逻辑；25A 仍然只是手动统一入口。
+
+## 10. 2026-05-31 补充修复：Stage-17 duplicate skipped 后复用已有 SSR
+
+本次修复后，25A 在调用 `app/scheduler/strategy_signal_scheduler_service.py::run_after_collector_success`
+返回 `skipped` 时，不再直接终止。25A 会通过
+`app/strategy_pipeline/stage17_reuse.py::resolve_stage17_result_or_reusable_duplicate`
+读取 `strategy_signal_scheduler_event_log` 中同一
+`symbol / base_interval / higher_interval / target_base_open_time_utc`
+下最新的 `success` 或 `partial_success` 记录。
+
+复用规则：
+
+- 只复用 `status in (success, partial_success)` 且 `run_id` 非空的旧 Stage-17 事件。
+- `blocked / failed / skipped / running / waiting_upstream` 不能贡献可复用 SSR。
+- `run_id` 为空的旧成功事件不能复用。
+- 找到可复用事件时，25A 设置 `state.strategy_signal_run_id`，并继续显式调用或复用 24A/23F。
+- 复用时不删除旧 event，不重跑 16，不重复创建 `strategy_signal_run`。
+- pipeline event log 的 `details_json` 会记录：
+  - `reused_stage17_duplicate=true`
+  - `reused_strategy_signal_run_id`
+  - `reused_stage17_event_id`
+
+相关查询由 `app/strategy_pipeline/repository.py::get_latest_reusable_stage17_scheduler_event`
+完成。该查询只读 MySQL，不写库、不提交事务、不请求外部接口、不发送 Hermes、不调用大模型、不涉及交易执行。
