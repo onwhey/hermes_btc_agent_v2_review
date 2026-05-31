@@ -195,6 +195,8 @@ def format_strategy_pipeline_result_lines(result: StrategyPipelineResult) -> lis
         f"retry_failed_stage17={str(bool(_detail_value(result.details, 'retry_failed_stage17'))).lower()}",
         f"previous_stage17_event_id={_detail_value(result.details, 'previous_stage17_event_id') or ''}",
         f"previous_stage17_status={_detail_value(result.details, 'previous_stage17_status') or ''}",
+        f"previous_stage17_run_id={_detail_value(result.details, 'previous_stage17_run_id') or ''}",
+        f"previous_strategy_signal_run_status={_detail_value(result.details, 'previous_strategy_signal_run_status') or ''}",
         f"new_strategy_signal_run_id={_detail_value(result.details, 'new_strategy_signal_run_id') or ''}",
         f"is_final_trading_advice={str(result.is_final_trading_advice).lower()}",
         f"is_trading_signal={str(result.is_trading_signal).lower()}",

@@ -315,10 +315,32 @@ pipeline event log 的 `details_json` 会记录：
 
 1. `get_latest_reusable_stage17_scheduler_event()`：先查 `success / partial_success + run_id`，存在则复用旧 SSR。
 2. `get_latest_in_progress_stage17_scheduler_event_for_slot()`：如果存在 `running / waiting_upstream`，阻断 retry。
-3. `get_latest_retryable_failed_stage17_scheduler_event_for_slot()`：只查询 `failed / blocked` 且 `run_id IS NULL OR run_id = ''` 的历史事件。
+3. `get_latest_retryable_failed_stage17_scheduler_event_for_slot()`：查询 `failed / blocked` 历史事件，不再要求 `run_id` 为空。
 
 因此，即使同一 slot 后续出现了 skipped duplicate 记录，也不会挡住更早的 failed/blocked 事件重试判断。
 成功 SSR 仍然优先复用；没有 retryable failed/blocked 事件时仍然 blocked。
+
+## 13. 2026-05-31 补充修复：failed/blocked Stage-17 可带 blocked SSR
+
+服务器真实数据证明，Stage-17 `blocked / failed` 事件也可能已经写入 `run_id`，且对应
+`strategy_signal_run.status` 本身也是 `blocked / failed / invalid`。因此 retry 判断不再把
+`run_id` 为空作为必要条件。
+
+新的 run_id 处理规则：
+
+- 如果同一 slot 存在 `success / partial_success + run_id` 的 Stage-17 事件，25A 必须复用该 SSR，禁止 retry。
+- 如果 retryable Stage-17 事件为 `failed / blocked` 且带有 `run_id`，25A 会只读查询
+  `strategy_signal_run`。
+- 对应 `strategy_signal_run.status in (blocked, failed, invalid)` 时允许 retry。
+- 对应 `strategy_signal_run.status in (success, partial_success)` 时不允许 retry，避免把不一致事件误重跑。
+- 如果查不到对应 `strategy_signal_run`，允许 retry，但 `details_json` 记录
+  `previous_stage17_run_missing=true`。
+
+retry 成功后的 `details_json` 额外记录：
+
+- `previous_stage17_run_id`
+- `previous_strategy_signal_run_status`
+- `previous_stage17_run_missing`
 
 本次没有修改 scheduler runner 自动链路；25A 仍是手动统一入口。该重试能力不请求 Binance、不读取账户或持仓、
 不调用大模型、不发送 Hermes、不生成 advice、不涉及自动交易。

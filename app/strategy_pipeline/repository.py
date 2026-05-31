@@ -22,6 +22,7 @@ from app.market_data.kline_constants import KLINE_4H_INTERVAL_VALUE
 from app.storage.mysql.models.market_kline_4h import MarketKline4h
 from app.storage.mysql.models.strategy_aggregation import StrategyEvidenceAggregationResult
 from app.storage.mysql.models.strategy_pipeline import StrategyPipelineEventLog
+from app.storage.mysql.models.strategy_signal import StrategySignalRun
 from app.storage.mysql.models.strategy_signal_scheduler_event import StrategySignalSchedulerEventLog
 from app.strategy_pipeline.types import StrategyPipelineEventPayload
 
@@ -80,6 +81,13 @@ class StrategyPipelineRepository:
             .where(StrategyEvidenceAggregationResult.strategy_signal_run_id == strategy_signal_run_id)
             .limit(1)
         )
+        return db_session.execute(stmt).scalar_one_or_none()
+
+    def get_strategy_signal_run_by_run_id(self, db_session: Any, *, run_id: str) -> Any | None:
+        """Return one stage-16 strategy signal run by business id."""
+
+        _require_sqlalchemy()
+        stmt = select(StrategySignalRun).where(StrategySignalRun.run_id == run_id).limit(1)
         return db_session.execute(stmt).scalar_one_or_none()
 
     def get_latest_reusable_stage17_scheduler_event(
@@ -154,13 +162,10 @@ class StrategyPipelineRepository:
         higher_interval: str,
         target_base_open_time_utc: datetime,
     ) -> Any | None:
-        """Return the latest failed/blocked stage-17 event that can be retried."""
+        """Return the latest failed/blocked stage-17 event for retry review."""
 
         _require_sqlalchemy()
         slot = ensure_utc_aware(target_base_open_time_utc)
-        run_id_empty = (StrategySignalSchedulerEventLog.run_id.is_(None)) | (
-            StrategySignalSchedulerEventLog.run_id == ""
-        )
         stmt = (
             select(StrategySignalSchedulerEventLog)
             .where(StrategySignalSchedulerEventLog.symbol == symbol)
@@ -168,7 +173,6 @@ class StrategyPipelineRepository:
             .where(StrategySignalSchedulerEventLog.higher_interval == higher_interval)
             .where(StrategySignalSchedulerEventLog.target_base_open_time_utc == slot)
             .where(StrategySignalSchedulerEventLog.status.in_(("failed", "blocked")))
-            .where(run_id_empty)
             .order_by(
                 StrategySignalSchedulerEventLog.created_at_utc.desc(),
                 StrategySignalSchedulerEventLog.id.desc(),

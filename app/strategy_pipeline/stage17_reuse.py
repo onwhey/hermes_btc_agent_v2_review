@@ -145,7 +145,12 @@ def resolve_stage17_result_or_reusable_duplicate(
                 target_base_open_time_utc=slot,
             )
             if retryable_event is not None:
-                return _build_retry_outcome_from_previous_event(state, retryable_event)
+                return _resolve_retryable_stage17_event(
+                    db_session,
+                    repository=repository,
+                    state=state,
+                    previous_event=retryable_event,
+                )
         return Stage17ResolutionOutcome(
             should_continue=False,
             status=StrategyPipelineStatus.BLOCKED,
@@ -214,7 +219,30 @@ def _build_in_progress_blocked_outcome(state: PipelineState, event: Any) -> Stag
     )
 
 
-def _build_retry_outcome_from_previous_event(state: PipelineState, previous_event: Any) -> Stage17ResolutionOutcome:
+def _resolve_retryable_stage17_event(
+    db_session: Any,
+    *,
+    repository: Any,
+    state: PipelineState,
+    previous_event: Any,
+) -> Stage17ResolutionOutcome:
+    previous_run_id = text_or_none(getattr(previous_event, "run_id", None))
+    previous_strategy_run = None
+    if previous_run_id:
+        previous_strategy_run = repository.get_strategy_signal_run_by_run_id(db_session, run_id=previous_run_id)
+    return _build_retry_outcome_from_previous_event(
+        state,
+        previous_event,
+        previous_strategy_run=previous_strategy_run,
+    )
+
+
+def _build_retry_outcome_from_previous_event(
+    state: PipelineState,
+    previous_event: Any,
+    *,
+    previous_strategy_run: Any | None = None,
+) -> Stage17ResolutionOutcome:
     previous_status = status_value(getattr(previous_event, "status", ""))
     previous_run_id = text_or_none(getattr(previous_event, "run_id", None))
     event_id = text_or_none(getattr(previous_event, "event_id", None))
@@ -226,13 +254,38 @@ def _build_retry_outcome_from_previous_event(state: PipelineState, previous_even
             message="Manual retry is blocked because an existing stage-17 event is still running or waiting.",
             error_code="stage17_event_in_progress",
         )
-    if previous_status not in {"failed", "blocked"} or previous_run_id:
+    if previous_status not in {"failed", "blocked"}:
         return Stage17ResolutionOutcome(
             should_continue=False,
             status=StrategyPipelineStatus.BLOCKED,
-            message="Manual retry is allowed only for failed/blocked stage-17 events without a reusable SSR.",
+            message="Manual retry is allowed only for failed/blocked stage-17 events.",
             error_code="stage17_event_not_retryable",
         )
+
+    previous_strategy_run_status = ""
+    previous_stage17_run_missing = False
+    if previous_run_id:
+        previous_strategy_run_status = status_value(getattr(previous_strategy_run, "status", ""))
+        previous_stage17_run_missing = previous_strategy_run is None
+        if previous_strategy_run_status in {"success", "partial_success"}:
+            state.details.update(
+                {
+                    "previous_stage17_event_id": event_id,
+                    "previous_stage17_status": previous_status,
+                    "previous_stage17_run_id": previous_run_id,
+                    "previous_strategy_signal_run_status": previous_strategy_run_status,
+                    "previous_stage17_error_code": text_or_none(getattr(previous_event, "error_code", None)),
+                }
+            )
+            return Stage17ResolutionOutcome(
+                should_continue=False,
+                status=StrategyPipelineStatus.BLOCKED,
+                message=(
+                    "Manual retry is blocked because the failed/blocked stage-17 event points to an "
+                    "already successful strategy_signal_run."
+                ),
+                error_code="stage17_retry_existing_run_success",
+            )
 
     retry_reason = (
         f"manual retry requested for previous stage-17 event {event_id or ''} "
@@ -244,6 +297,9 @@ def _build_retry_outcome_from_previous_event(state: PipelineState, previous_even
             "retry_reason": retry_reason,
             "previous_stage17_event_id": event_id,
             "previous_stage17_status": previous_status,
+            "previous_stage17_run_id": previous_run_id,
+            "previous_strategy_signal_run_status": previous_strategy_run_status,
+            "previous_stage17_run_missing": previous_stage17_run_missing,
             "previous_stage17_error_code": text_or_none(getattr(previous_event, "error_code", None)),
         }
     )
