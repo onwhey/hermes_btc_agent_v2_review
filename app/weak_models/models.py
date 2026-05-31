@@ -26,6 +26,9 @@ class TrendStrengthDirectionalModel(BaseWeakModel):
         fast = int(params.get("ma_fast", 20))
         slow = int(params.get("ma_slow", 60))
         slope_window = int(params.get("slope_window", 10))
+        weak_signal_score = float(params.get("weak_signal_score", 0.25))
+        trend_signal_score = float(params.get("trend_signal_score", 0.50))
+        strong_signal_score = float(params.get("strong_signal_score", 0.75))
         min_count = max(fast, slow, slope_window + slow)
         if len(rows) < min_count:
             return _failed_output(self, "insufficient_base_klines", {"actual_base_count": len(rows), "required": min_count})
@@ -40,20 +43,20 @@ class TrendStrengthDirectionalModel(BaseWeakModel):
         signal_score = 0.0
         direction = "neutral"
         if latest_close > slow_ma and fast_ma > slow_ma and slope > Decimal("0.002"):
-            signal_score = 0.50
+            signal_score = trend_signal_score
             direction = "bullish"
             if ma_distance > Decimal("0.015") and slope > Decimal("0.006"):
-                signal_score = 0.75
+                signal_score = strong_signal_score
         elif latest_close < slow_ma and fast_ma < slow_ma and slope < Decimal("-0.002"):
-            signal_score = -0.50
+            signal_score = -trend_signal_score
             direction = "bearish"
             if ma_distance < Decimal("-0.015") and slope < Decimal("-0.006"):
-                signal_score = -0.75
+                signal_score = -strong_signal_score
         elif latest_close > slow_ma:
-            signal_score = 0.25
+            signal_score = weak_signal_score
             direction = "bullish"
         elif latest_close < slow_ma:
-            signal_score = -0.25
+            signal_score = -weak_signal_score
             direction = "bearish"
         confidence = _clamp(0.50 + min(abs(float(ma_distance)) * 8, 0.20) + min(abs(float(slope)) * 16, 0.10), 0.30, 0.80)
         effective_score = signal_score * confidence * self.profile.static_weight
@@ -73,6 +76,9 @@ class TrendStrengthDirectionalModel(BaseWeakModel):
                 "slow_ma": str(slow_ma),
                 "slow_ma_slope_ratio": str(slope),
                 "ma_distance_ratio": str(ma_distance),
+                "weak_signal_score": weak_signal_score,
+                "trend_signal_score": trend_signal_score,
+                "strong_signal_score": strong_signal_score,
             },
             raw_output={"signal_score": signal_score, "direction_bias": direction, "not_trading_advice": True},
         )

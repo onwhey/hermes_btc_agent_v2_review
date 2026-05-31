@@ -352,3 +352,57 @@ error_code=directional_score_too_strong
 ```
 
 这说明如果当前 27A 输出频繁达到 `±0.75`，在 27C 接入 18 之前需要人工复核是否应降低方向分数上限、降低 confidence 或增加冲突场景降置信度。
+
+## 11. 27B-1 参数保守化校准
+
+本次 27B-1 只调整 `trend_strength_directional` 的配置化输出上限，不修改 27A 架构，不修改 27B 质量检查规则，不接入 18/19/20/21，不接 scheduler。
+
+### 11.1 调整项
+
+配置文件：
+
+`configs/weak_models/trend_strength_directional.yaml`
+
+调整内容：
+
+```text
+config_version: 27a_v1 -> 27b_1_conservative_v1
+strong_signal_score: 隐式默认 0.75 -> 显式配置 0.60
+weak_signal_score: 显式配置 0.25
+trend_signal_score: 显式配置 0.50
+```
+
+`app/weak_models/models.py::TrendStrengthDirectionalModel.evaluate()` 现在从 `params` 读取 `weak_signal_score`、`trend_signal_score`、`strong_signal_score`。如果旧配置没有这些字段，仍使用旧默认值，不改变旧配置的解析兼容性。
+
+### 11.2 调整原因
+
+27B 质量检查规则中：
+
+```text
+abs(directional_score) >= 0.75
+```
+
+会产生：
+
+```text
+error_code=directional_score_too_strong
+severity=warning
+```
+
+当前观察到的 `weak_model_aggregation.directional_score=-0.75` 属于接入 18 前需要保守化的初始输出。27B-1 将常规强偏多/强偏空从 `±0.75` 下调到 `±0.60`，避免单个趋势弱模型在证据尚未进入 27C 校准前过早给出过强方向分数。
+
+### 11.3 不负责的边界
+
+本次不自动修改任何其他 `configs/weak_models/*.yaml`。
+本次不静默调整 `enabled`、`static_weight`、`confidence` 或聚合权重。
+本次不写数据库，不新增 migration，不请求 Binance REST，不发送 Hermes，不调用大模型，不读取账户或仓位，不自动交易。
+
+### 11.4 测试
+
+新增/调整测试：
+
+1. `tests/weak_models/test_models_and_aggregation.py::test_conservative_trend_strength_config_avoids_directional_too_strong_warning`
+2. `tests/weak_models/test_weak_model_cli_and_config.py::test_27b_1_trend_config_lowers_strong_score_and_changes_hash`
+
+第一项验证同一类强趋势输入在新配置下输出 `0.60`，不会触发 `directional_score_too_strong`。
+第二项验证 `config_version` 已更新，且当前配置与旧 `27a_v1` 配置的 `config_hash` 不同。

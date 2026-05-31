@@ -4,7 +4,7 @@ enabled: true
 maturity_stage: active
 model_role: directional
 model_version: v1
-config_version: 27a_v1
+config_version: 27b_1_conservative_v1
 config_hash: auto
 input_intervals:
   - 4h
@@ -18,3 +18,6 @@ params:
   ma_fast: 20
   ma_slow: 60
   slope_window: 10
+  weak_signal_score: 0.25
+  trend_signal_score: 0.50
+  strong_signal_score: 0.60

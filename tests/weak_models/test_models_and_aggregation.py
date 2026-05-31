@@ -10,6 +10,7 @@ from app.weak_models.models import (
     TrendStrengthDirectionalModel,
     VolatilityRiskGateModel,
 )
+from app.weak_models.output_quality_rules import evaluate_quality_issues
 from app.weak_models.types import (
     WeakModelEvaluationInput,
     WeakModelOutput,
@@ -180,6 +181,56 @@ def test_risk_veto_factors_are_exposed_in_aggregation_summary() -> None:
     assert summary.veto_factors == ("risk_veto",)
 
 
+def test_conservative_trend_strength_config_avoids_directional_too_strong_warning() -> None:
+    input_data = _strong_trend_input_data()
+    profile = _profile(
+        "trend_strength_directional",
+        WeakModelRole.DIRECTIONAL.value,
+        params={
+            "ma_fast": 20,
+            "ma_slow": 60,
+            "slope_window": 10,
+            "weak_signal_score": 0.25,
+            "trend_signal_score": 0.50,
+            "strong_signal_score": 0.60,
+        },
+    )
+    output = TrendStrengthDirectionalModel(profile).evaluate(input_data)
+
+    summary = WeakModelAggregator().aggregate(
+        weak_model_run_id="WMR-1",
+        input_data=input_data,
+        outputs=(output,),
+        profiles_by_key={profile.model_key: profile},
+    )
+    aggregation_row = SimpleNamespace(
+        directional_score=summary.directional_score,
+        veto_triggered=False,
+        veto_factors_json="[]",
+        context_summary_json='{"regime":"range"}',
+    )
+
+    assert output.signal_score == 0.60
+    assert summary.directional_score == 0.60
+    issue_codes = {issue.error_code for issue in evaluate_quality_issues(aggregation_row, ())}
+    assert "directional_score_too_strong" not in issue_codes
+
+
+def _strong_trend_input_data() -> WeakModelEvaluationInput:
+    return WeakModelEvaluationInput(
+        pipeline_run_id="SP-1",
+        strategy_signal_run_id="SSR-1",
+        snapshot_id="MCS-1",
+        symbol="BTCUSDT",
+        base_interval="4h",
+        higher_interval="1d",
+        kline_slot_utc=datetime(2026, 5, 31, 4, tzinfo=timezone.utc),
+        base_klines=_rows(count=120, start_price=60000, step=100, hours=4),
+        higher_klines=_rows(count=80, start_price=58000, step=75, hours=24),
+        trace_id="trace-1",
+    )
+
+
 def _input_data() -> WeakModelEvaluationInput:
     return WeakModelEvaluationInput(
         pipeline_run_id="SP-1",
@@ -219,6 +270,7 @@ def _profile(
     *,
     maturity_stage: str = "active",
     static_weight: float = 0.10,
+    params: dict[str, object] | None = None,
 ) -> WeakModelProfile:
     return WeakModelProfile(
         model_key=model_key,
@@ -233,5 +285,5 @@ def _profile(
         input_window={"base_interval_limit": 120, "higher_interval_limit": 80},
         static_weight=static_weight,
         description="test",
-        params={},
+        params=params or {},
     )

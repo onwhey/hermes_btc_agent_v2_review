@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterator
 
-from app.weak_models.config import WeakModelConfigError, load_weak_model_profiles
+from app.weak_models.config import WeakModelConfigError, load_weak_model_profile, load_weak_model_profiles
 from app.weak_models.registry import WeakModelRegistry
 from app.weak_models.types import EXIT_PARAMETER_ERROR, WeakModelRunResult, WeakModelRunStatus
 from scripts import run_weak_models
@@ -37,6 +37,38 @@ def test_27a_veto_factors_migration_adds_only_aggregation_column() -> None:
     assert "op.drop_column" in migration_text
     assert "market_kline_4h" not in migration_text
     assert "market_kline_1d" not in migration_text
+
+
+def test_27b_1_trend_config_lowers_strong_score_and_changes_hash(tmp_path: Path) -> None:
+    old_config = """model_key: trend_strength_directional
+model_name: Trend Strength Directional
+enabled: true
+maturity_stage: active
+model_role: directional
+model_version: v1
+config_version: 27a_v1
+config_hash: auto
+input_intervals:
+  - 4h
+  - 1d
+input_window:
+  base_interval_limit: 180
+  higher_interval_limit: 365
+static_weight: 0.10
+description: Rule-based directional factor from moving-average relation and slope.
+params:
+  ma_fast: 20
+  ma_slow: 60
+  slope_window: 10
+"""
+    old_path = tmp_path / "trend_strength_directional.yaml"
+    old_path.write_text(old_config, encoding="utf-8")
+    old_profile = load_weak_model_profile(old_path)
+    current_profile = load_weak_model_profile(Path("configs/weak_models/trend_strength_directional.yaml"))
+
+    assert current_profile.config_version == "27b_1_conservative_v1"
+    assert current_profile.params["strong_signal_score"] == 0.60
+    assert current_profile.config_hash != old_profile.config_hash
 
 
 def test_config_loader_skips_disabled_models_in_registry(tmp_path: Path) -> None:
