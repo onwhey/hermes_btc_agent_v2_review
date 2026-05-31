@@ -163,6 +163,7 @@ class WeakModelRepository:
         row.opposing_factors_json = json_dumps_compact(tuple(aggregation.opposing_factors))
         row.conflict_factors_json = json_dumps_compact(tuple(aggregation.conflict_factors))
         row.low_confidence_factors_json = json_dumps_compact(tuple(aggregation.low_confidence_factors))
+        row.veto_factors_json = json_dumps_compact(tuple(aggregation.veto_factors))
         row.context_summary_json = json_dumps_compact(dict(aggregation.context_summary))
         row.summary_text = aggregation.summary_text
         row.created_at_utc = now_utc()

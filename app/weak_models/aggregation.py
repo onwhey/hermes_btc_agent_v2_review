@@ -45,7 +45,7 @@ class WeakModelAggregator:
         risk_level, trade_permission, veto_triggered, veto_factors = _risk_summary(active_outputs)
         supporting, opposing, conflict = _confirmation_summary(active_outputs, directional_bias)
         low_confidence = tuple(output.model_key for output in active_outputs if output.confidence < 0.50)
-        context_summary = _context_summary(active_outputs)
+        context_summary = _context_summary(outputs, profiles_by_key)
         summary_text = (
             f"弱模型摘要：方向={directional_bias}({directional_score:.2f})，"
             f"风险={risk_level}，权限={trade_permission}，背景={context_summary.get('regime', 'unknown')}。"
@@ -130,16 +130,38 @@ def _confirmation_summary(outputs: tuple[WeakModelOutput, ...], directional_bias
     return tuple(supporting), tuple(opposing), tuple(missing + opposing)
 
 
-def _context_summary(outputs: tuple[WeakModelOutput, ...]) -> dict[str, object]:
-    contexts = tuple(output for output in outputs if output.model_role == WeakModelRole.CONTEXT.value)
+def _context_summary(
+    outputs: tuple[WeakModelOutput, ...],
+    profiles_by_key: dict[str, WeakModelProfile],
+) -> dict[str, object]:
+    contexts = tuple(
+        output
+        for output in outputs
+        if output.status == WeakModelResultStatus.SUCCESS
+        and output.model_role == WeakModelRole.CONTEXT.value
+        and profiles_by_key.get(output.model_key) is not None
+        and (
+            profiles_by_key[output.model_key].participates_in_aggregation
+            or profiles_by_key[output.model_key].maturity_stage == "observe_only"
+        )
+    )
     if not contexts:
-        return {"regime": "unknown", "context_score": 0.0, "confidence": 0.0}
+        return {
+            "regime": "unknown",
+            "context_score": 0.0,
+            "confidence": 0.0,
+            "source_model_key": "",
+            "source_maturity_stage": "",
+        }
     best = max(contexts, key=lambda output: output.confidence * (output.context_score or 0.0))
+    best_profile = profiles_by_key[best.model_key]
     return {
         "regime": best.context_regime or "unknown",
         "context_score": best.context_score or 0.0,
         "confidence": best.confidence,
         "source_model_key": best.model_key,
+        "source_maturity_stage": best_profile.maturity_stage,
+        "source_participation_mode": best_profile.participation_mode,
     }
 
 

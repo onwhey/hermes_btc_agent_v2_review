@@ -28,6 +28,7 @@ EXIT_BLOCKED = 2
 EXIT_FAILED = 4
 
 WEAK_MODEL_ERROR_INVALID_OR_MISSING_SNAPSHOT = "invalid_or_missing_snapshot"
+WEAK_MODEL_ERROR_INVALID_STRATEGY_SIGNAL_RUN_STATUS = "invalid_strategy_signal_run_status"
 NON_TRADING_STATEMENT = "本运行只用于弱模型 / 因子层观测，不是交易建议；不自动交易，不读取账户，不生成订单。"
 
 
@@ -357,6 +358,7 @@ __all__ = [
     "EXIT_SUCCESS",
     "NON_TRADING_STATEMENT",
     "WEAK_MODEL_ERROR_INVALID_OR_MISSING_SNAPSHOT",
+    "WEAK_MODEL_ERROR_INVALID_STRATEGY_SIGNAL_RUN_STATUS",
     "WeakModelAggregationSummary",
     "WeakModelEvaluationInput",
     "WeakModelMaturityStage",

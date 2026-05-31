@@ -157,6 +157,7 @@ if mapped_column is not None:
         opposing_factors_json: Mapped[str] = mapped_column(Text, nullable=False)
         conflict_factors_json: Mapped[str] = mapped_column(Text, nullable=False)
         low_confidence_factors_json: Mapped[str] = mapped_column(Text, nullable=False)
+        veto_factors_json: Mapped[str] = mapped_column(Text, nullable=False)
         context_summary_json: Mapped[str] = mapped_column(Text, nullable=False)
         summary_text: Mapped[str] = mapped_column(Text, nullable=False)
         created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -224,6 +225,7 @@ else:
         weak_model_run_id: str = ""
         strategy_signal_run_id: str = ""
         snapshot_id: str = ""
+        veto_factors_json: str = "[]"
 
 
 __all__ = ["WeakModelAggregation", "WeakModelResult", "WeakModelRun"]

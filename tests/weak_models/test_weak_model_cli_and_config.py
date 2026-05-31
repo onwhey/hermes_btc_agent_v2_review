@@ -25,6 +25,20 @@ def test_27a_migration_creates_only_weak_model_tables_without_snapshot_fk() -> N
     assert "fk_weak_model_run_snapshot" not in migration_text
 
 
+def test_27a_veto_factors_migration_adds_only_aggregation_column() -> None:
+    migration_text = Path("migrations/versions/20260608_27a_weak_model_veto_factors.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'down_revision: str | None = "20260607_27a"' in migration_text
+    assert "weak_model_aggregation" in migration_text
+    assert "veto_factors_json" in migration_text
+    assert "op.add_column" in migration_text
+    assert "op.drop_column" in migration_text
+    assert "market_kline_4h" not in migration_text
+    assert "market_kline_1d" not in migration_text
+
+
 def test_config_loader_skips_disabled_models_in_registry(tmp_path: Path) -> None:
     _write_config(
         tmp_path,

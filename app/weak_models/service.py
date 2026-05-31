@@ -32,6 +32,7 @@ from app.weak_models.registry import WeakModelRegistry, create_default_weak_mode
 from app.weak_models.repository import WeakModelRepository, create_default_weak_model_repository
 from app.weak_models.types import (
     WEAK_MODEL_ERROR_INVALID_OR_MISSING_SNAPSHOT,
+    WEAK_MODEL_ERROR_INVALID_STRATEGY_SIGNAL_RUN_STATUS,
     WeakModelAggregationSummary,
     WeakModelEvaluationInput,
     WeakModelOutput,
@@ -104,7 +105,7 @@ class WeakModelService:
                 persist_allowed=False,
             )
 
-        validation_error = self._validate_strategy_signal_run(ssr, request)
+        validation_error_code, validation_error = self._validate_strategy_signal_run(ssr, request)
         if validation_error is not None:
             return self._blocked_result(
                 db_session,
@@ -114,6 +115,7 @@ class WeakModelService:
                 kline_slot_utc=request.kline_slot_utc,
                 model_count_total=len(profiles),
                 model_count_enabled=len(models),
+                error_code=validation_error_code or WEAK_MODEL_ERROR_INVALID_OR_MISSING_SNAPSHOT,
                 error_message=validation_error,
             )
 
@@ -333,6 +335,7 @@ class WeakModelService:
         kline_slot_utc: Any | None,
         model_count_total: int,
         model_count_enabled: int,
+        error_code: str = WEAK_MODEL_ERROR_INVALID_OR_MISSING_SNAPSHOT,
         error_message: str,
         persist_allowed: bool = True,
     ) -> WeakModelRunResult:
@@ -352,8 +355,8 @@ class WeakModelService:
             model_count_enabled=model_count_enabled,
             database_written=False,
             database_action="dry_run" if request.dry_run or not request.confirm_write else "not_written",
-            blocked_reason=WEAK_MODEL_ERROR_INVALID_OR_MISSING_SNAPSHOT,
-            error_code=WEAK_MODEL_ERROR_INVALID_OR_MISSING_SNAPSHOT,
+            blocked_reason=error_code,
+            error_code=error_code,
             error_message=error_message,
             details={
                 "mode": "strategy_signal_run_id",
@@ -410,9 +413,18 @@ class WeakModelService:
             },
         )
 
-    def _validate_strategy_signal_run(self, ssr: Any, request: WeakModelRunRequest) -> str | None:
+    def _validate_strategy_signal_run(self, ssr: Any, request: WeakModelRunRequest) -> tuple[str | None, str | None]:
+        run_status = _text_attr(ssr, "status")
+        if run_status != "success":
+            return (
+                WEAK_MODEL_ERROR_INVALID_STRATEGY_SIGNAL_RUN_STATUS,
+                f"strategy_signal_run.status={run_status} is not success; 27A will not run weak models.",
+            )
         if not _text_attr(ssr, "snapshot_id"):
-            return "SSR 缺少 snapshot_id，27A 不允许自行选择或生成快照"
+            return (
+                WEAK_MODEL_ERROR_INVALID_OR_MISSING_SNAPSHOT,
+                "SSR 缺少 snapshot_id，27A 不允许自行选择或生成快照",
+            )
         mismatches: list[str] = []
         if _text_attr(ssr, "symbol") != request.symbol:
             mismatches.append(f"symbol: SSR={_text_attr(ssr, 'symbol')} request={request.symbol}")
@@ -424,7 +436,10 @@ class WeakModelService:
             mismatches.append(
                 f"higher_interval: SSR={_text_attr(ssr, 'higher_interval_value')} request={request.higher_interval}"
             )
-        return "；".join(mismatches) if mismatches else None
+        return (
+            WEAK_MODEL_ERROR_INVALID_OR_MISSING_SNAPSHOT,
+            "；".join(mismatches),
+        ) if mismatches else (None, None)
 
     def _validate_snapshot(self, snapshot: Any, ssr: Any, request: WeakModelRunRequest) -> tuple[str | None, Any | None]:
         kline_slot_utc = ensure_utc_aware(getattr(snapshot, "latest_4h_open_time_utc", None))

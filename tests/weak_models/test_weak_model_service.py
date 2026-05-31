@@ -5,9 +5,12 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.weak_models.base import BaseWeakModel
+from app.weak_models.repository import WeakModelRepository
 from app.weak_models.service import WeakModelService
 from app.weak_models.types import (
     WEAK_MODEL_ERROR_INVALID_OR_MISSING_SNAPSHOT,
+    WEAK_MODEL_ERROR_INVALID_STRATEGY_SIGNAL_RUN_STATUS,
+    WeakModelAggregationSummary,
     WeakModelOutput,
     WeakModelProfile,
     WeakModelResultStatus,
@@ -63,6 +66,20 @@ def test_snapshot_id_missing_blocks_and_does_not_choose_another_snapshot() -> No
     assert repo.snapshot_lookup_count == 0
     assert repo.restore_called == 0
     assert repo.run_payloads == []
+
+
+def test_non_success_strategy_signal_run_status_blocks_before_snapshot_lookup() -> None:
+    repo = FakeWeakModelRepository()
+    repo.ssr.status = "partial_success"
+    service = WeakModelService(repository=repo, registry=_registry_with_default_models())
+
+    result = service.run_weak_models_for_strategy_signal(FakeSession(), _request(dry_run=True, confirm_write=False))
+
+    assert result.status == WeakModelRunStatus.BLOCKED
+    assert result.error_code == WEAK_MODEL_ERROR_INVALID_STRATEGY_SIGNAL_RUN_STATUS
+    assert repo.snapshot_lookup_count == 0
+    assert repo.restore_called == 0
+    assert result.outputs == ()
 
 
 def test_snapshot_slot_mismatch_blocks() -> None:
@@ -155,6 +172,44 @@ def test_model_failure_is_recorded_as_partial_success_without_external_calls() -
     assert result.database_written is True
     assert repo.external_call_count == 0
     assert any(payload.output.status == WeakModelResultStatus.FAILED for payload in repo.result_payloads)
+
+
+def test_repository_writes_veto_factors_json_as_dedicated_column() -> None:
+    repo = WeakModelRepository(snapshot_repository=SimpleNamespace())
+    row = SimpleNamespace()
+    repo._get_aggregation = lambda db_session, weak_model_aggregation_id: row  # type: ignore[method-assign]
+
+    repo.upsert_aggregation(
+        FakeSession(),
+        aggregation=WeakModelAggregationSummary(
+            weak_model_aggregation_id="WMA-1",
+            weak_model_run_id="WMR-1",
+            pipeline_run_id="SP-1",
+            strategy_signal_run_id="SSR-1",
+            snapshot_id="MCS-1",
+            symbol="BTCUSDT",
+            base_interval="4h",
+            higher_interval="1d",
+            kline_slot_utc=datetime(2026, 5, 31, 4, tzinfo=timezone.utc),
+            directional_score=0.0,
+            directional_bias="neutral",
+            directional_confidence=0.0,
+            risk_level="extreme",
+            trade_permission="block",
+            veto_triggered=True,
+            supporting_factors=(),
+            opposing_factors=(),
+            conflict_factors=(),
+            low_confidence_factors=(),
+            veto_factors=("volatility_risk_gate",),
+            context_summary={"regime": "unknown"},
+            summary_text="test",
+            details={},
+        ),
+    )
+
+    assert row.veto_factors_json == '["volatility_risk_gate"]'
+    assert row.details_json == "{}"
 
 
 class FixedWeakModel(BaseWeakModel):

@@ -335,3 +335,86 @@ confirm-write 写入三张 27A 表。
 ```bash
 python -m pytest tests/weak_models -q
 ```
+
+## 12. 27A 审查修复：veto、SSR 状态与 observe_only context
+
+### 12.1 veto_factors 独立落库
+
+修复入口：
+
+`migrations/versions/20260608_27a_weak_model_veto_factors.py`
+
+新增字段：
+
+`weak_model_aggregation.veto_factors_json`
+
+写入位置：
+
+`app/weak_models/repository.py::WeakModelRepository.upsert_aggregation()`
+
+写入规则：
+
+`WeakModelAggregationSummary.veto_factors` 会序列化为紧凑 JSON 数组，写入 `veto_factors_json`。该字段是独立列，不依赖 `details_json`。
+
+迁移行为：
+
+1. `upgrade()` 给 `weak_model_aggregation` 增加 nullable 的 `veto_factors_json`。
+2. 将历史空值回填为 `[]`。
+3. 将字段改为 `nullable=False`。
+4. `downgrade()` 只删除该字段。
+
+本迁移不修改 K线表，不修改策略算法，不修改 18/19/20/21，不写业务数据，不发送 Hermes，不请求 Binance REST。
+
+### 12.2 strategy_signal_run 状态校验
+
+校验位置：
+
+`app/weak_models/service.py::WeakModelService._validate_strategy_signal_run()`
+
+规则：
+
+只有 `strategy_signal_run.status == "success"` 才允许进入弱模型执行。其他状态会在 snapshot 查询前直接 blocked。
+
+失败结果：
+
+```text
+status=blocked
+error_code=invalid_strategy_signal_run_status
+```
+
+27A 不会因为 SSR 状态异常而自行换 snapshot，也不会继续运行弱模型。
+
+### 12.3 observe_only context 汇总
+
+处理位置：
+
+`app/weak_models/aggregation.py::_context_summary()`
+
+明确选择：
+
+`observe_only` 不参与方向、风险、确认的正式聚合，不影响 `directional_score`、`risk_level`、`trade_permission` 或确认因子列表。
+
+但 `model_role=context` 的 `observe_only` 输出允许进入 `context_summary`，用于提供市场背景摘要，并在摘要中记录：
+
+```text
+source_model_key
+source_maturity_stage=observe_only
+source_participation_mode=observe_only
+```
+
+这样保留默认 `market_regime_context=observe_only` 的审计观察属性，同时避免“配置存在背景模型但摘要一直 unknown”的模糊状态。
+
+### 12.4 新增覆盖测试
+
+测试文件：
+
+1. `tests/weak_models/test_models_and_aggregation.py`
+2. `tests/weak_models/test_weak_model_service.py`
+3. `tests/weak_models/test_weak_model_cli_and_config.py`
+
+新增覆盖：
+
+1. `veto_factors_json` 独立字段落库。
+2. 新增 27A follow-up migration 只增加 `weak_model_aggregation.veto_factors_json`。
+3. SSR 非 `success` 状态直接 blocked，且不查询 snapshot、不运行弱模型。
+4. observe_only context 写入 `context_summary`，但不影响方向分数或风险权限。

@@ -95,6 +95,91 @@ def test_aggregation_uses_active_weighted_direction_and_excludes_observe_only() 
     assert summary.details["observe_only_output_count"] == 1
 
 
+def test_observe_only_context_is_summarized_without_affecting_formal_votes() -> None:
+    input_data = _input_data()
+    profiles = {
+        "active_direction": _profile("active_direction", WeakModelRole.DIRECTIONAL.value, static_weight=0.10),
+        "active_risk": _profile("active_risk", WeakModelRole.RISK.value, static_weight=0.10),
+        "observe_context": _profile(
+            "observe_context",
+            WeakModelRole.CONTEXT.value,
+            maturity_stage="observe_only",
+            static_weight=0.0,
+        ),
+    }
+    outputs = (
+        WeakModelOutput(
+            model_key="active_direction",
+            model_role="directional",
+            signal_score=0.8,
+            direction_bias="bullish",
+            confidence=1.0,
+            static_weight=0.10,
+        ),
+        WeakModelOutput(
+            model_key="active_risk",
+            model_role="risk",
+            risk_score=0.2,
+            risk_level="low",
+            trade_permission="allow",
+            confidence=1.0,
+            static_weight=0.10,
+        ),
+        WeakModelOutput(
+            model_key="observe_context",
+            model_role="context",
+            context_regime="range",
+            context_score=0.7,
+            confidence=0.9,
+            static_weight=0.0,
+        ),
+    )
+
+    summary = WeakModelAggregator().aggregate(
+        weak_model_run_id="WMR-1",
+        input_data=input_data,
+        outputs=outputs,
+        profiles_by_key=profiles,
+    )
+
+    assert round(summary.directional_score, 6) == 0.8
+    assert summary.trade_permission == "allow"
+    assert summary.context_summary["regime"] == "range"
+    assert summary.context_summary["source_model_key"] == "observe_context"
+    assert summary.context_summary["source_maturity_stage"] == "observe_only"
+
+
+def test_risk_veto_factors_are_exposed_in_aggregation_summary() -> None:
+    input_data = _input_data()
+    profiles = {
+        "risk_veto": _profile("risk_veto", WeakModelRole.RISK.value, static_weight=0.10),
+    }
+    outputs = (
+        WeakModelOutput(
+            model_key="risk_veto",
+            model_role="risk",
+            risk_score=0.95,
+            risk_level="extreme",
+            can_veto=True,
+            veto_triggered=True,
+            trade_permission="block",
+            confidence=1.0,
+            static_weight=0.10,
+        ),
+    )
+
+    summary = WeakModelAggregator().aggregate(
+        weak_model_run_id="WMR-1",
+        input_data=input_data,
+        outputs=outputs,
+        profiles_by_key=profiles,
+    )
+
+    assert summary.veto_triggered is True
+    assert summary.trade_permission == "block"
+    assert summary.veto_factors == ("risk_veto",)
+
+
 def _input_data() -> WeakModelEvaluationInput:
     return WeakModelEvaluationInput(
         pipeline_run_id="SP-1",
