@@ -77,12 +77,13 @@ app/strategy_advice/scheduler_service.py::run_strategy_advice_scheduler
 新增配置：
 
 - `STRATEGY_PIPELINE_ENABLED=false`
-- `STRATEGY_PIPELINE_AUTO_RUN_ENABLED=false`
+- `STRATEGY_PIPELINE_SCHEDULER_ENABLED=false`
 - `STRATEGY_PIPELINE_REAL_MODEL_ENABLED=false`
+- `STRATEGY_PIPELINE_CONFIRM_REAL_MODEL_COST=false`
 - `STRATEGY_PIPELINE_NOTIFICATION_SEND_ENABLED=false`
 - `STRATEGY_PIPELINE_LOCK_TTL_SECONDS=1800`
 
-25A 只使用手动入口。`STRATEGY_PIPELINE_AUTO_RUN_ENABLED` 预留给后续阶段，本阶段不接入 scheduler。
+25A 只使用手动入口。`STRATEGY_PIPELINE_SCHEDULER_ENABLED` 控制后续 scheduler 自动入口，本阶段不接入 scheduler。
 
 真实模型调用必须同时满足：
 

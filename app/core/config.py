@@ -124,7 +124,7 @@ from app.core.constants import (
     DEFAULT_STRATEGY_EVIDENCE_AGGREGATION_ENABLED,
     DEFAULT_STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED,
     DEFAULT_STRATEGY_ADVICE_SCHEDULER_ENABLED,
-    DEFAULT_STRATEGY_PIPELINE_AUTO_RUN_ENABLED,
+    DEFAULT_STRATEGY_PIPELINE_CONFIRM_REAL_MODEL_COST,
     DEFAULT_STRATEGY_PIPELINE_ENABLED,
     DEFAULT_STRATEGY_PIPELINE_LOCK_TTL_SECONDS,
     DEFAULT_STRATEGY_PIPELINE_NOTIFICATION_SEND_ENABLED,
@@ -276,9 +276,9 @@ class AppSettings:
     strategy_advice_scheduler_enabled: bool = DEFAULT_STRATEGY_ADVICE_SCHEDULER_ENABLED
     strategy_advice_notification_send_enabled: bool = DEFAULT_STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED
     strategy_pipeline_enabled: bool = DEFAULT_STRATEGY_PIPELINE_ENABLED
-    strategy_pipeline_auto_run_enabled: bool = DEFAULT_STRATEGY_PIPELINE_AUTO_RUN_ENABLED
     strategy_pipeline_scheduler_enabled: bool = DEFAULT_STRATEGY_PIPELINE_SCHEDULER_ENABLED
     strategy_pipeline_real_model_enabled: bool = DEFAULT_STRATEGY_PIPELINE_REAL_MODEL_ENABLED
+    strategy_pipeline_confirm_real_model_cost: bool = DEFAULT_STRATEGY_PIPELINE_CONFIRM_REAL_MODEL_COST
     strategy_pipeline_notification_send_enabled: bool = DEFAULT_STRATEGY_PIPELINE_NOTIFICATION_SEND_ENABLED
     strategy_pipeline_lock_ttl_seconds: int = DEFAULT_STRATEGY_PIPELINE_LOCK_TTL_SECONDS
     manual_execution_fee_rate: str = DEFAULT_MANUAL_EXECUTION_FEE_RATE
@@ -1164,15 +1164,6 @@ def load_settings(
             "STRATEGY_PIPELINE_ENABLED",
             DEFAULT_STRATEGY_PIPELINE_ENABLED,
         ),
-        strategy_pipeline_auto_run_enabled=_parse_optional_bool_config(
-            _get_config_value(
-                merged_values,
-                "STRATEGY_PIPELINE_AUTO_RUN_ENABLED",
-                str(DEFAULT_STRATEGY_PIPELINE_AUTO_RUN_ENABLED).lower(),
-            ),
-            "STRATEGY_PIPELINE_AUTO_RUN_ENABLED",
-            DEFAULT_STRATEGY_PIPELINE_AUTO_RUN_ENABLED,
-        ),
         strategy_pipeline_scheduler_enabled=_parse_optional_bool_config(
             _get_config_value(
                 merged_values,
@@ -1190,6 +1181,15 @@ def load_settings(
             ),
             "STRATEGY_PIPELINE_REAL_MODEL_ENABLED",
             DEFAULT_STRATEGY_PIPELINE_REAL_MODEL_ENABLED,
+        ),
+        strategy_pipeline_confirm_real_model_cost=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_PIPELINE_CONFIRM_REAL_MODEL_COST",
+                str(DEFAULT_STRATEGY_PIPELINE_CONFIRM_REAL_MODEL_COST).lower(),
+            ),
+            "STRATEGY_PIPELINE_CONFIRM_REAL_MODEL_COST",
+            DEFAULT_STRATEGY_PIPELINE_CONFIRM_REAL_MODEL_COST,
         ),
         strategy_pipeline_notification_send_enabled=_parse_optional_bool_config(
             _get_config_value(

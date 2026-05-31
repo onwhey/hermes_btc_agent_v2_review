@@ -353,8 +353,9 @@ finalize
 
 ```env
 STRATEGY_PIPELINE_ENABLED=false
-STRATEGY_PIPELINE_AUTO_RUN_ENABLED=false
+STRATEGY_PIPELINE_SCHEDULER_ENABLED=false
 STRATEGY_PIPELINE_REAL_MODEL_ENABLED=false
+STRATEGY_PIPELINE_CONFIRM_REAL_MODEL_COST=false
 STRATEGY_PIPELINE_NOTIFICATION_SEND_ENABLED=false
 ```
 
@@ -362,8 +363,9 @@ STRATEGY_PIPELINE_NOTIFICATION_SEND_ENABLED=false
 
 ```text
 STRATEGY_PIPELINE_ENABLED：是否允许手动运行 pipeline。
-STRATEGY_PIPELINE_AUTO_RUN_ENABLED：是否允许 scheduler 自动触发 pipeline。
+STRATEGY_PIPELINE_SCHEDULER_ENABLED：是否允许 scheduler 自动触发 pipeline。
 STRATEGY_PIPELINE_REAL_MODEL_ENABLED：pipeline 是否允许进入真实模型调用路径。
+STRATEGY_PIPELINE_CONFIRM_REAL_MODEL_COST：pipeline 是否确认真实模型成本。
 STRATEGY_PIPELINE_NOTIFICATION_SEND_ENABLED：pipeline 是否允许真实发送最终策略通知。
 ```
 
@@ -464,7 +466,7 @@ python -m scripts.run_strategy_pipeline \
 ```text
 1. 09 采集成功后，runner 只触发 25 pipeline。
 2. runner 不再直接触发 17 → 18 → 20C → 21C 分散后置链路。
-3. 如果 STRATEGY_PIPELINE_AUTO_RUN_ENABLED=false，保留旧链路或直接跳过，具体由 plan 明确。
+3. 如果 STRATEGY_PIPELINE_SCHEDULER_ENABLED=false，保留旧链路或直接跳过，具体由 plan 明确。
 4. 如果启用 25 pipeline，旧链路必须关闭或降级为 pipeline 内部步骤。
 5. scheduler 自动触发时 trigger_source=scheduler。
 6. 手动 CLI 触发时 trigger_source=cli。

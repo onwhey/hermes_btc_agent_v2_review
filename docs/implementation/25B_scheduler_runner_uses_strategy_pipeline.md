@@ -27,11 +27,12 @@ STRATEGY_PIPELINE_SCHEDULER_ENABLED=false
 
 默认值为 `false`。关闭时，scheduler runner 不自动触发 25 pipeline，继续保持原有后置链路行为。开启时，09 的 4h K线采集成功后，runner 只触发 25 pipeline，不再直接触发旧 17/18/20/21 分散链路。
 
-自动模式不会默认真实调用大模型，也不会默认真实发送 Hermes：
+自动模式不会默认真实调用大模型，也不会默认真实发送 Hermes；是否允许由 env 组合决定：
 
-- `app/scheduler/jobs/strategy_pipeline_job.py::run_strategy_pipeline_after_collect_job` 构造请求时固定 `use_real_model=false`。
-- 固定 `confirm_real_model_cost=false`。
-- 固定 `send_real_hermes=false`。
+- 只有 `STRATEGY_PIPELINE_REAL_MODEL_ENABLED=true`、`MODEL_REVIEW_REAL_MODEL_ENABLED=true`、`STRATEGY_PIPELINE_CONFIRM_REAL_MODEL_COST=true` 同时满足时，scheduler 请求才传 `use_real_model=true` 和 `confirm_real_model_cost=true`。
+- 任一模型开关为 `false` 时，scheduler 请求传 `use_real_model=false` 和 `confirm_real_model_cost=false`。
+- 只有 `STRATEGY_PIPELINE_NOTIFICATION_SEND_ENABLED=true`、`STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED=true` 同时满足时，scheduler 请求才传 `send_real_hermes=true`。
+- 任一通知开关为 `false` 时，scheduler 请求传 `send_real_hermes=false`。
 - 下游仍受 20/21/25 既有开关约束。
 
 ### 1.3 核心调用链路

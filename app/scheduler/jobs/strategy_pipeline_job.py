@@ -61,6 +61,8 @@ def run_strategy_pipeline_after_collect_job(
     active_config = config or build_scheduler_runtime_config(active_settings)
     active_slot = _ensure_utc(kline_slot_utc)
     trace_id = str(getattr(upstream_result, "trace_id", "") or uuid4().hex)
+    real_model_allowed = _scheduler_real_model_allowed(active_settings)
+    real_hermes_allowed = _scheduler_real_hermes_allowed(active_settings)
     request = StrategyPipelineRequest(
         symbol=active_config.strategy_signal_symbol,
         base_interval=active_config.strategy_signal_base_interval,
@@ -69,9 +71,9 @@ def run_strategy_pipeline_after_collect_job(
         trigger_source=TRIGGER_SOURCE_SCHEDULER,
         dry_run=False,
         confirm_write=True,
-        use_real_model=False,
-        confirm_real_model_cost=False,
-        send_real_hermes=False,
+        use_real_model=real_model_allowed,
+        confirm_real_model_cost=real_model_allowed,
+        send_real_hermes=real_hermes_allowed,
         retry_failed_stage17=False,
         created_by="scheduler_strategy_pipeline",
         trace_id=trace_id,
@@ -87,6 +89,25 @@ def _ensure_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         raise ValueError("strategy pipeline scheduler job requires timezone-aware UTC time")
     return value.astimezone(UTC)
+
+
+def _scheduler_real_model_allowed(settings: AppSettings) -> bool:
+    """Return whether scheduler-triggered 25 may request a real model call."""
+
+    return bool(
+        settings.strategy_pipeline_real_model_enabled
+        and settings.model_review_real_model_enabled
+        and settings.strategy_pipeline_confirm_real_model_cost
+    )
+
+
+def _scheduler_real_hermes_allowed(settings: AppSettings) -> bool:
+    """Return whether scheduler-triggered 25 may request real Hermes sending."""
+
+    return bool(
+        settings.strategy_pipeline_notification_send_enabled
+        and settings.strategy_advice_notification_send_enabled
+    )
 
 
 __all__ = ["run_strategy_pipeline_after_collect_job"]

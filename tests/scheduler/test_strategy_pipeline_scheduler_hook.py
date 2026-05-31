@@ -4,6 +4,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
+import pytest
+
 from app.core.config import AppSettings
 from app.market_data.collector.types import EXIT_SUCCESS, IncrementalKlineCollectResult, KlineCollectStatus
 from app.scheduler.config import SchedulerRuntimeConfig
@@ -139,6 +141,11 @@ class FakeSession:
 
     def rollback(self) -> None:
         return None
+
+
+@contextmanager
+def fake_session_scope(**_kwargs: Any) -> Any:
+    yield FakeSession()
 
 
 def collect_result(*, slot: datetime | None = utc_at(30, 4, 0)) -> IncrementalKlineCollectResult:
@@ -347,15 +354,12 @@ def test_scheduler_preserves_stage25_lock_conflict_without_falling_back_to_legac
     assert alerts.calls == []
 
 
-def test_strategy_pipeline_scheduler_job_builds_scheduler_request_without_real_model_or_hermes(
+def run_scheduler_pipeline_job_for_request(
     monkeypatch: Any,
-) -> None:
+    *,
+    settings: AppSettings,
+) -> StrategyPipelineRequest:
     service = FakePipelineService()
-
-    @contextmanager
-    def fake_session_scope(**_kwargs: Any) -> Any:
-        yield FakeSession()
-
     monkeypatch.setattr(strategy_pipeline_job.mysql_session, "session_scope", fake_session_scope)
 
     result = strategy_pipeline_job.run_strategy_pipeline_after_collect_job(
@@ -364,19 +368,24 @@ def test_strategy_pipeline_scheduler_job_builds_scheduler_request_without_real_m
         upstream_slot_time_utc=utc_at(30, 8, 5),
         kline_slot_utc=utc_at(30, 4, 0),
         current_time_utc=utc_at(30, 8, 6),
-        settings=AppSettings(
-            strategy_pipeline_enabled=True,
-            strategy_pipeline_scheduler_enabled=True,
-            strategy_pipeline_real_model_enabled=True,
-            strategy_pipeline_notification_send_enabled=True,
-        ),
+        settings=settings,
         config=runtime_config(strategy_pipeline_scheduler_enabled=True),
         service=service,
     )
 
     assert result.status == StrategyPipelineStatus.SUCCESS
     assert len(service.requests) == 1
-    request = service.requests[0]
+    return service.requests[0]
+
+
+def test_strategy_pipeline_scheduler_job_default_request_disables_real_model_and_hermes(
+    monkeypatch: Any,
+) -> None:
+    request = run_scheduler_pipeline_job_for_request(
+        monkeypatch,
+        settings=AppSettings(strategy_pipeline_enabled=True, strategy_pipeline_scheduler_enabled=True),
+    )
+
     assert request.trigger_source == "scheduler"
     assert request.dry_run is False
     assert request.confirm_write is True
@@ -385,3 +394,99 @@ def test_strategy_pipeline_scheduler_job_builds_scheduler_request_without_real_m
     assert request.confirm_real_model_cost is False
     assert request.send_real_hermes is False
     assert request.retry_failed_stage17 is False
+
+
+def test_strategy_pipeline_scheduler_job_enables_real_model_only_when_all_model_switches_true(
+    monkeypatch: Any,
+) -> None:
+    request = run_scheduler_pipeline_job_for_request(
+        monkeypatch,
+        settings=AppSettings(
+            strategy_pipeline_enabled=True,
+            strategy_pipeline_scheduler_enabled=True,
+            strategy_pipeline_real_model_enabled=True,
+            model_review_real_model_enabled=True,
+            strategy_pipeline_confirm_real_model_cost=True,
+        ),
+    )
+
+    assert request.use_real_model is True
+    assert request.confirm_real_model_cost is True
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        AppSettings(
+            strategy_pipeline_enabled=True,
+            strategy_pipeline_scheduler_enabled=True,
+            strategy_pipeline_real_model_enabled=False,
+            model_review_real_model_enabled=True,
+            strategy_pipeline_confirm_real_model_cost=True,
+        ),
+        AppSettings(
+            strategy_pipeline_enabled=True,
+            strategy_pipeline_scheduler_enabled=True,
+            strategy_pipeline_real_model_enabled=True,
+            model_review_real_model_enabled=False,
+            strategy_pipeline_confirm_real_model_cost=True,
+        ),
+        AppSettings(
+            strategy_pipeline_enabled=True,
+            strategy_pipeline_scheduler_enabled=True,
+            strategy_pipeline_real_model_enabled=True,
+            model_review_real_model_enabled=True,
+            strategy_pipeline_confirm_real_model_cost=False,
+        ),
+    ],
+)
+def test_strategy_pipeline_scheduler_job_disables_real_model_when_any_model_switch_false(
+    monkeypatch: Any,
+    settings: AppSettings,
+) -> None:
+    request = run_scheduler_pipeline_job_for_request(monkeypatch, settings=settings)
+
+    assert request.use_real_model is False
+    assert request.confirm_real_model_cost is False
+
+
+def test_strategy_pipeline_scheduler_job_enables_real_hermes_only_when_both_notification_switches_true(
+    monkeypatch: Any,
+) -> None:
+    request = run_scheduler_pipeline_job_for_request(
+        monkeypatch,
+        settings=AppSettings(
+            strategy_pipeline_enabled=True,
+            strategy_pipeline_scheduler_enabled=True,
+            strategy_pipeline_notification_send_enabled=True,
+            strategy_advice_notification_send_enabled=True,
+        ),
+    )
+
+    assert request.send_real_hermes is True
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        AppSettings(
+            strategy_pipeline_enabled=True,
+            strategy_pipeline_scheduler_enabled=True,
+            strategy_pipeline_notification_send_enabled=False,
+            strategy_advice_notification_send_enabled=True,
+        ),
+        AppSettings(
+            strategy_pipeline_enabled=True,
+            strategy_pipeline_scheduler_enabled=True,
+            strategy_pipeline_notification_send_enabled=True,
+            strategy_advice_notification_send_enabled=False,
+        ),
+    ],
+)
+def test_strategy_pipeline_scheduler_job_disables_real_hermes_when_any_notification_switch_false(
+    monkeypatch: Any,
+    settings: AppSettings,
+) -> None:
+    request = run_scheduler_pipeline_job_for_request(monkeypatch, settings=settings)
+
+    assert request.send_real_hermes is False
