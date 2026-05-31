@@ -1,6 +1,6 @@
 """Stage-25A manual strategy pipeline orchestration service.
 
-This file coordinates existing 17/16, 23F, 18, 20C/20A, and 21C services for a
+This file coordinates existing 17/16, 23F, 26B, 18, 20C/20A, and 21C services for a
 manual 25A run. It does not implement strategies, prompts, advice logic, Hermes
 rendering, exchange/account access, order endpoints, or automatic trading.
 """
@@ -27,8 +27,13 @@ from app.model_review_chain.worker_schema import (
 )
 from app.scheduler.slot_state import KLINE_4H_INCREMENTAL_JOB_NAME
 from app.scheduler.strategy_signal_scheduler_types import StrategySignalSchedulerRequest
-from app.strategy.types import StrategyRunStatus, StrategySignalRunRequest
 from app.strategy.aggregation.types import StrategyAggregationRequest, StrategyAggregationStatus
+from app.strategy.evidence_quality.types import (
+    STRATEGY_EVIDENCE_QUALITY_ERROR_CODE,
+    StrategyEvidenceQualityGateRequest,
+    result_to_pipeline_details,
+)
+from app.strategy.types import StrategyRunStatus, StrategySignalRunRequest
 from app.strategy_advice.scheduler_schema import StrategyAdviceSchedulerRequest, StrategyAdviceSchedulerStatus
 from app.strategy_pipeline.evidence_stage import run_or_reuse_stage23f_for_pipeline
 from app.strategy_pipeline.locks import (
@@ -44,6 +49,7 @@ from app.strategy_pipeline.repository import (
 from app.strategy_pipeline.types import (
     PIPELINE_STEP_PREFLIGHT,
     PIPELINE_STEP_STAGE17_16,
+    PIPELINE_STEP_STAGE26B,
     PIPELINE_STEP_STAGE18,
     PIPELINE_STEP_STAGE20,
     PIPELINE_STEP_STAGE21,
@@ -61,6 +67,7 @@ from app.strategy_pipeline.stage_services import (
     create_pipeline_stage17_service,
     create_pipeline_stage18_service,
     create_pipeline_stage23f_service,
+    create_pipeline_stage26b_service,
     create_pipeline_stage20_worker,
     create_pipeline_stage20a_service,
     create_pipeline_stage21_service,
@@ -93,6 +100,7 @@ class StrategyPipelineService:
         stage16_service: Any | None = None,
         stage17_service: Any | None = None,
         stage23f_service: Any | None = None,
+        stage26b_service: Any | None = None,
         stage18_service: Any | None = None,
         stage20_worker: Any | None = None,
         stage20a_service: Any | None = None,
@@ -104,6 +112,7 @@ class StrategyPipelineService:
         self._stage16_service = stage16_service
         self._stage17_service = stage17_service
         self._stage23f_service = stage23f_service
+        self._stage26b_service = stage26b_service
         self._stage18_service = stage18_service
         self._stage20_worker = stage20_worker
         self._stage20a_service = stage20a_service
@@ -256,6 +265,21 @@ class StrategyPipelineService:
             return self._finish_result(db_session, event_row=event_row, request=request, result=result)
         self._update_event_progress(db_session, event_row=event_row, request=request, state=state)
 
+        stage26b = self._run_stage26b(db_session, request=request, state=state)
+        state.details["stage26b_result"] = result_to_pipeline_details(stage26b)
+        if getattr(stage26b, "should_block_pipeline", False):
+            return self._finish_from_stage_failure(
+                db_session,
+                event_row=event_row,
+                request=request,
+                state=state,
+                current_step=PIPELINE_STEP_STAGE26B,
+                message=str(getattr(stage26b, "message", "") or "26B strategy evidence quality gate blocked."),
+                error_code=getattr(stage26b, "error_code", None) or STRATEGY_EVIDENCE_QUALITY_ERROR_CODE,
+                error_message=getattr(stage26b, "error_message", None),
+            )
+        self._update_event_progress(db_session, event_row=event_row, request=request, state=state)
+
         stage18 = self._run_stage18(db_session, request=request, state=state)
         stage18_failure = self._apply_stage18_result_or_reusable_material_pack(
             db_session,
@@ -362,6 +386,39 @@ class StrategyPipelineService:
             or status_value(getattr(retry_result, "status", "")),
             error_message=getattr(retry_result, "error_message", None),
         )
+
+    def _run_stage26b(
+        self,
+        db_session: Any,
+        *,
+        request: StrategyPipelineRequest,
+        state: PipelineState,
+    ) -> Any:
+        """Run the 26B quality gate after 23F/24 and before stage 18.
+
+        This method only invokes the 26B service. It never calls stage 18/20/21,
+        never calls a model, never sends trading advice, and never reads account
+        state. A blocking 26B result is handled by `_run_confirmed_pipeline`
+        before any material-pack creation can start.
+        """
+
+        state.current_step = PIPELINE_STEP_STAGE26B
+        service = self._stage26b_service or create_pipeline_stage26b_service(settings=self._settings)
+        quality_request = StrategyEvidenceQualityGateRequest(
+            pipeline_run_id=state.pipeline_run_id,
+            strategy_signal_run_id=str(state.strategy_signal_run_id or ""),
+            strategy_evidence_aggregation_id=str(state.strategy_evidence_aggregation_id or ""),
+            symbol=request.symbol,
+            base_interval=request.base_interval,
+            higher_interval=request.higher_interval,
+            kline_slot_utc=state.kline_slot_utc,
+            trigger_source="pipeline",
+            created_by=request.created_by,
+            trace_id=request.trace_id,
+        )
+        if hasattr(service, "run_strategy_evidence_quality_gate"):
+            return service.run_strategy_evidence_quality_gate(db_session, request=quality_request)
+        return service(db_session=db_session, request=quality_request)
 
     def _run_stage18(
         self,

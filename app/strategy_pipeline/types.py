@@ -32,6 +32,7 @@ EXIT_FAILED = 4
 PIPELINE_STEP_PREFLIGHT = "preflight"
 PIPELINE_STEP_STAGE17_16 = "17_16_strategy_signals"
 PIPELINE_STEP_STAGE23F = "24a_23f_evidence_aggregation"
+PIPELINE_STEP_STAGE26B = "26b_strategy_evidence_quality_gate"
 PIPELINE_STEP_STAGE18 = "18_material_pack"
 PIPELINE_STEP_STAGE20 = "20c_19_20a_model_review"
 PIPELINE_STEP_STAGE21 = "21a_21b_advice_notification"
@@ -225,6 +226,7 @@ __all__ = [
     "PIPELINE_STEP_STAGE18",
     "PIPELINE_STEP_STAGE20",
     "PIPELINE_STEP_STAGE21",
+    "PIPELINE_STEP_STAGE26B",
     "PIPELINE_STEP_STAGE23F",
     "StrategyPipelineEventPayload",
     "StrategyPipelineRequest",

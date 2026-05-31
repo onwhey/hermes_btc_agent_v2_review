@@ -9,7 +9,8 @@ Current model modules include alert messages, formal 4h/1d Kline tables,
 quality checks, collector event logs, MarketContextSnapshot, stage-16
 strategy signal run/result tables, stage-17 scheduler events, stage-18
 strategy aggregation/material-pack tables, stage-23F strategy evidence
-aggregation tables, plus stage-19 model review-gate
+aggregation tables, stage-26B strategy evidence quality gate result tables,
+plus stage-19 model review-gate
 attempt/result tables, stage-20A model review aggregation output tables,
 stage-20B model review chain state tables, stage-21 strategy advice
 lifecycle/scheduler tables, stage-22A manual execution feedback tables, and

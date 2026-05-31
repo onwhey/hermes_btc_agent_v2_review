@@ -122,6 +122,8 @@ from app.core.constants import (
     DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED,
     DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SUCCESS,
     DEFAULT_STRATEGY_EVIDENCE_AGGREGATION_ENABLED,
+    DEFAULT_STRATEGY_EVIDENCE_QUALITY_GATE_ALERT_ENABLED,
+    DEFAULT_STRATEGY_EVIDENCE_QUALITY_GATE_ENABLED,
     DEFAULT_STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED,
     DEFAULT_STRATEGY_ADVICE_SCHEDULER_ENABLED,
     DEFAULT_STRATEGY_PIPELINE_CONFIRM_REAL_MODEL_COST,
@@ -273,6 +275,8 @@ class AppSettings:
     strategy_aggregation_hermes_notify_failed: bool = DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_FAILED
     strategy_aggregation_hermes_notify_skipped: bool = DEFAULT_STRATEGY_AGGREGATION_HERMES_NOTIFY_SKIPPED
     strategy_evidence_aggregation_enabled: bool = DEFAULT_STRATEGY_EVIDENCE_AGGREGATION_ENABLED
+    strategy_evidence_quality_gate_enabled: bool = DEFAULT_STRATEGY_EVIDENCE_QUALITY_GATE_ENABLED
+    strategy_evidence_quality_gate_alert_enabled: bool = DEFAULT_STRATEGY_EVIDENCE_QUALITY_GATE_ALERT_ENABLED
     strategy_advice_scheduler_enabled: bool = DEFAULT_STRATEGY_ADVICE_SCHEDULER_ENABLED
     strategy_advice_notification_send_enabled: bool = DEFAULT_STRATEGY_ADVICE_NOTIFICATION_SEND_ENABLED
     strategy_pipeline_enabled: bool = DEFAULT_STRATEGY_PIPELINE_ENABLED
@@ -1136,6 +1140,24 @@ def load_settings(
             ),
             "STRATEGY_EVIDENCE_AGGREGATION_ENABLED",
             DEFAULT_STRATEGY_EVIDENCE_AGGREGATION_ENABLED,
+        ),
+        strategy_evidence_quality_gate_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_EVIDENCE_QUALITY_GATE_ENABLED",
+                str(DEFAULT_STRATEGY_EVIDENCE_QUALITY_GATE_ENABLED).lower(),
+            ),
+            "STRATEGY_EVIDENCE_QUALITY_GATE_ENABLED",
+            DEFAULT_STRATEGY_EVIDENCE_QUALITY_GATE_ENABLED,
+        ),
+        strategy_evidence_quality_gate_alert_enabled=_parse_optional_bool_config(
+            _get_config_value(
+                merged_values,
+                "STRATEGY_EVIDENCE_QUALITY_GATE_ALERT_ENABLED",
+                str(DEFAULT_STRATEGY_EVIDENCE_QUALITY_GATE_ALERT_ENABLED).lower(),
+            ),
+            "STRATEGY_EVIDENCE_QUALITY_GATE_ALERT_ENABLED",
+            DEFAULT_STRATEGY_EVIDENCE_QUALITY_GATE_ALERT_ENABLED,
         ),
         strategy_advice_scheduler_enabled=_parse_optional_bool_config(
             _get_config_value(

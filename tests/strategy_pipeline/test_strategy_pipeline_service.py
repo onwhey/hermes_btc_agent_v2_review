@@ -23,6 +23,12 @@ from app.strategy_advice.scheduler_schema import (
     StrategyAdviceSchedulerResult,
     StrategyAdviceSchedulerStatus,
 )
+from app.strategy.evidence_quality.types import (
+    STRATEGY_EVIDENCE_QUALITY_ERROR_CODE,
+    StrategyEvidenceQualityGateResult,
+    StrategyEvidenceQualitySeverity,
+    StrategyEvidenceQualityStatus,
+)
 from app.strategy_pipeline.locks import StrategyPipelineLock
 from app.strategy_pipeline.service import StrategyPipelineService
 from app.strategy_pipeline.types import (
@@ -409,6 +415,53 @@ class FakeStage23F:
         )
 
 
+class FakeStage26B:
+    def __init__(
+        self,
+        order: list[str],
+        *,
+        status: StrategyEvidenceQualityStatus = StrategyEvidenceQualityStatus.PASSED,
+        should_block_pipeline: bool = False,
+        alert_status: str = "not_required",
+        alert_error_message: str | None = None,
+    ) -> None:
+        self.order = order
+        self.status = status
+        self.should_block_pipeline = should_block_pipeline
+        self.alert_status = alert_status
+        self.alert_error_message = alert_error_message
+        self.requests: list[Any] = []
+
+    def run_strategy_evidence_quality_gate(self, db_session: Any, *, request: Any) -> StrategyEvidenceQualityGateResult:
+        self.order.append("26b")
+        self.requests.append(request)
+        return StrategyEvidenceQualityGateResult(
+            status=self.status,
+            quality_check_id="EQC-test",
+            pipeline_run_id=request.pipeline_run_id,
+            strategy_signal_run_id=request.strategy_signal_run_id,
+            strategy_evidence_aggregation_id=request.strategy_evidence_aggregation_id,
+            symbol=request.symbol,
+            base_interval=request.base_interval,
+            higher_interval=request.higher_interval,
+            kline_slot_utc=request.kline_slot_utc,
+            should_block_pipeline=self.should_block_pipeline,
+            severity=(
+                StrategyEvidenceQualitySeverity.CRITICAL
+                if self.should_block_pipeline
+                else StrategyEvidenceQualitySeverity.INFO
+            ),
+            error_code=STRATEGY_EVIDENCE_QUALITY_ERROR_CODE if self.should_block_pipeline else None,
+            error_message="策略证据质量重大异常，已阻断 18 材料包。" if self.should_block_pipeline else None,
+            alert_required=self.should_block_pipeline,
+            alert_status=self.alert_status,
+            alert_error_message=self.alert_error_message,
+            database_written=True,
+            database_action="created",
+            trace_id=request.trace_id,
+        )
+
+
 class FakeStage20Worker:
     def __init__(self, order: list[str], *, result_kwargs: dict[str, Any] | None = None) -> None:
         self.order = order
@@ -507,7 +560,7 @@ def test_confirm_write_calls_existing_stage_services_in_pipeline_order() -> None
     )
 
     assert result.status == StrategyPipelineStatus.SUCCESS
-    assert order == ["17", "23f_lookup", "23f_create", "18", "20c", "20a", "21c"]
+    assert order == ["17", "23f_lookup", "23f_create", "26b", "18", "20c", "20a", "21c"]
     assert result.strategy_signal_run_id == "SSR-test"
     assert result.strategy_evidence_aggregation_id == "SEA-created"
     assert result.material_pack_id == "AMP-test"
@@ -559,6 +612,7 @@ def test_pipeline_reuses_existing_success_material_pack_after_stage18_already_ex
         "17",
         "23f_lookup",
         "23f_create",
+        "26b",
         "18",
         "18_material_reuse_lookup",
         "20c",
@@ -1431,7 +1485,7 @@ def test_pipeline_reuses_existing_23f_without_creating_duplicate() -> None:
 
     assert result.status == StrategyPipelineStatus.SUCCESS
     assert result.strategy_evidence_aggregation_id == "SEA-test"
-    assert order == ["17", "23f_lookup", "18", "20c", "20a", "21c"]
+    assert order == ["17", "23f_lookup", "26b", "18", "20c", "20a", "21c"]
     assert stage23f.requests == []
 
 
@@ -1471,6 +1525,62 @@ def test_pipeline_blocks_when_23f_is_disabled_and_does_not_run_18() -> None:
     assert "18" not in order
 
 
+def test_pipeline_blocks_after_26b_and_does_not_call_18_20_21() -> None:
+    order: list[str] = []
+    repository = FakeRepository(order=order)
+    stage26b = FakeStage26B(
+        order,
+        status=StrategyEvidenceQualityStatus.FAILED,
+        should_block_pipeline=True,
+        alert_status="submitted_to_hermes",
+    )
+    service = _build_full_success_service(order=order, repository=repository, stage26b_service=stage26b)
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.BLOCKED
+    assert result.current_step == "26b_strategy_evidence_quality_gate"
+    assert result.error_code == STRATEGY_EVIDENCE_QUALITY_ERROR_CODE
+    assert "18" not in order
+    assert "20c" not in order
+    assert "21c" not in order
+    assert result.details["stage26b_result"]["quality_check_id"] == "EQC-test"
+    assert result.details["stage26b_result"]["alert_status"] == "submitted_to_hermes"
+    final_payload, finished = repository.updated_events[-1]
+    assert finished is True
+    assert final_payload.current_step == "26b_strategy_evidence_quality_gate"
+    assert final_payload.error_code == STRATEGY_EVIDENCE_QUALITY_ERROR_CODE
+
+
+def test_pipeline_records_26b_alert_failure_without_entering_stage18() -> None:
+    order: list[str] = []
+    repository = FakeRepository(order=order)
+    stage26b = FakeStage26B(
+        order,
+        status=StrategyEvidenceQualityStatus.FAILED,
+        should_block_pipeline=True,
+        alert_status="submit_failed",
+        alert_error_message="Hermes submit failed",
+    )
+    service = _build_full_success_service(order=order, repository=repository, stage26b_service=stage26b)
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.BLOCKED
+    assert "18" not in order
+    assert result.details["stage26b_result"]["alert_status"] == "submit_failed"
+    assert result.details["stage26b_result"]["alert_error_message"] == "Hermes submit failed"
+    final_payload, finished = repository.updated_events[-1]
+    assert finished is True
+    assert final_payload.details["stage26b_result"]["alert_status"] == "submit_failed"
+
+
 def test_pipeline_result_preserves_non_trading_boundary_fields() -> None:
     service = _build_full_success_service(order=[])
 
@@ -1493,6 +1603,7 @@ def _build_full_success_service(
     stage16_service: FakeStage16 | None = None,
     stage17_service: FakeStage17 | None = None,
     stage23f_service: FakeStage23F | None = None,
+    stage26b_service: FakeStage26B | None = None,
     stage18_service: FakeStage18 | None = None,
     stage20_worker: FakeStage20Worker | None = None,
     stage20a_service: FakeStage20A | None = None,
@@ -1508,6 +1619,7 @@ def _build_full_success_service(
         stage16_service=stage16_service,
         stage17_service=stage17_service or FakeStage17(order),
         stage23f_service=stage23f_service or FakeStage23F(order),
+        stage26b_service=stage26b_service or FakeStage26B(order),
         stage18_service=stage18_service or FakeStage18(order),
         stage20_worker=stage20_worker or FakeStage20Worker(order),
         stage20a_service=stage20a_service or FakeStage20A(order),
