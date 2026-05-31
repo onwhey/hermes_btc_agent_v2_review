@@ -1,11 +1,12 @@
-"""DTOs and constants for stage-25A manual strategy pipeline orchestration.
+"""DTOs and constants for stage-25 strategy pipeline orchestration.
 
 This file belongs to `app/strategy_pipeline`. It defines only bounded request,
-result, and persistence payload objects for the manual unified pipeline.
+result, and persistence payload objects for the unified pipeline.
 
 Called by `app/strategy_pipeline/service.py`, `scripts/run_strategy_pipeline.py`,
-and tests. External services: none. MySQL: none in this file. Redis: none.
-Hermes: none. Large models: none. Trading execution: none.
+the scheduler 25B wrapper, and tests. External services: none. MySQL: none in
+this file. Redis: none. Hermes: none. Large models: none. Trading execution:
+none.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ PIPELINE_STEP_STAGE21 = "21a_21b_advice_notification"
 
 
 class StrategyPipelineStatus(str, Enum):
-    """Stable status values for one manual 25A pipeline run."""
+    """Stable status values for one 25 pipeline run."""
 
     SUCCESS = "success"
     PARTIAL_SUCCESS = "partial_success"
@@ -49,7 +50,7 @@ class StrategyPipelineStatus(str, Enum):
 
 @dataclass(frozen=True)
 class StrategyPipelineRequest:
-    """Input for one manual strategy pipeline attempt.
+    """Input for one strategy pipeline attempt.
 
     Parameters: symbol/intervals identify the market scope; `kline_slot_utc`
     optionally pins the base Kline open time. If omitted, the service may infer

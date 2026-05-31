@@ -5,20 +5,17 @@ scripts/run_scheduler.py::main
     -> app/scheduler/runner.py::run_scheduler_forever
     -> app/scheduler/runner.py::SchedulerRunner.run_once
     -> app/scheduler/jobs/kline_4h_incremental_collect.py::run_kline_4h_incremental_collect_job
-    -> app/scheduler/jobs/strategy_signal_scheduler_job.py::run_strategy_signal_scheduler_after_collect_job
-    -> app/strategy/signal_service.py::StrategySignalService.run_strategy_signals
-    -> app/scheduler/jobs/strategy_aggregation_job.py::run_strategy_aggregation_after_signal_job
-    -> app/strategy/aggregation/service.py::run_strategy_aggregation
-    -> app/scheduler/jobs/strategy_advice_scheduler_job.py::run_strategy_advice_scheduler_after_model_review_job
+    -> app/scheduler/jobs/strategy_pipeline_job.py::run_strategy_pipeline_after_collect_job
+    -> app/strategy_pipeline/service.py::StrategyPipelineService.run_strategy_pipeline
     -> app/scheduler/jobs/daily_kline_integrity_check.py::run_daily_kline_integrity_check_job
 
 This file belongs to `app/scheduler`. It polls UTC time, separates Redis
 running locks from completed markers, and calls thin scheduler jobs for phases
-09, 11, 14, the stage-17 strategy-signal hook, and the optional stage-18
-aggregation hook, and the optional stage-21C advice scheduler hook. It does not
-call strategy scripts, request Binance directly, read/write `bitcoin_price`,
-implement collector business checks, call DeepSeek, generate final advice, or
-perform trading.
+09, 11, 14, the optional stage-25 strategy pipeline hook, or the legacy
+stage-17/18/20/21 post-collector hooks when stage-25 scheduling is disabled. It
+does not call strategy scripts, request Binance directly, read/write
+`bitcoin_price`, implement collector business checks, call DeepSeek, generate
+final advice, or perform trading.
 """
 
 from __future__ import annotations
@@ -33,7 +30,7 @@ from app.alerting.types import AlertEvent, AlertSeverity, AlertType
 from app.core.config import AppSettings, get_settings
 from app.core.exceptions import ConfigError, RedisError
 from app.core.logger import get_logger
-from app.core.time_utils import UTC, now_utc
+from app.core.time_utils import UTC, now_utc, timestamp_ms_to_utc_datetime
 from app.scheduler.config import SchedulerRuntimeConfig, build_scheduler_runtime_config
 from app.scheduler.slot_state import (
     DAILY_KLINE_INTEGRITY_JOB_NAME,
@@ -57,6 +54,7 @@ DAILY_1D_JOB_CATCH_UP_WINDOW = timedelta(hours=2)
 
 JobCallable = Callable[[], Any]
 StrategySignalAfterCollectCallable = Callable[..., Any]
+StrategyPipelineAfterCollectCallable = Callable[..., Any]
 StrategyAggregationAfterSignalCallable = Callable[..., Any]
 ModelReviewChainWorkerAfterAggregationCallable = Callable[..., Any]
 StrategyAdviceAfterModelReviewCallable = Callable[..., Any]
@@ -110,6 +108,7 @@ class SchedulerRunner:
         kline_1d_integrity_job: JobCallable | None = None,
         daily_integrity_job: JobCallable | None = None,
         strategy_signal_after_collect_job: StrategySignalAfterCollectCallable | None = None,
+        strategy_pipeline_after_collect_job: StrategyPipelineAfterCollectCallable | None = None,
         strategy_aggregation_after_signal_job: StrategyAggregationAfterSignalCallable | None = None,
         model_review_chain_worker_after_aggregation_job: (
             ModelReviewChainWorkerAfterAggregationCallable | None
@@ -126,6 +125,9 @@ class SchedulerRunner:
         self.kline_1d_integrity_job = kline_1d_integrity_job or _default_kline_1d_integrity_job
         self.daily_integrity_job = daily_integrity_job or _default_daily_integrity_job
         self.strategy_signal_after_collect_job = strategy_signal_after_collect_job or _default_strategy_signal_after_collect_job
+        self.strategy_pipeline_after_collect_job = (
+            strategy_pipeline_after_collect_job or _default_strategy_pipeline_after_collect_job
+        )
         self.strategy_aggregation_after_signal_job = (
             strategy_aggregation_after_signal_job or _default_strategy_aggregation_after_signal_job
         )
@@ -328,7 +330,7 @@ class SchedulerRunner:
                     details=_result_details(result),
                 )
             else:
-                post_collect_details = self._run_strategy_signal_post_collect_if_needed(
+                post_collect_details = self._run_post_collect_chain_if_needed(
                     due_job,
                     result=result,
                     trace_id=trace_id,
@@ -367,6 +369,124 @@ class SchedulerRunner:
                 **post_collect_details,
             },
         )
+
+    def _run_post_collect_chain_if_needed(
+        self,
+        due_job: DueSchedulerJob,
+        *,
+        result: Any,
+        trace_id: str,
+        current_time_utc: datetime,
+    ) -> dict[str, object]:
+        """Choose the single post-collector chain for a successful scheduler job."""
+
+        if self.config.strategy_pipeline_scheduler_enabled:
+            return self._run_strategy_pipeline_post_collect_if_needed(
+                due_job,
+                result=result,
+                trace_id=trace_id,
+                current_time_utc=current_time_utc,
+            )
+        return self._run_strategy_signal_post_collect_if_needed(
+            due_job,
+            result=result,
+            trace_id=trace_id,
+            current_time_utc=current_time_utc,
+        )
+
+    def _run_strategy_pipeline_post_collect_if_needed(
+        self,
+        due_job: DueSchedulerJob,
+        *,
+        result: Any,
+        trace_id: str,
+        current_time_utc: datetime,
+    ) -> dict[str, object]:
+        """Run the stage-25 pipeline only after a successful 4h collector result.
+
+        The pipeline target Kline must come from the collector result. This
+        method never guesses the latest Kline slot and never falls back to the
+        legacy stage-17 chain while the stage-25 scheduler switch is enabled.
+        """
+
+        if due_job.name != KLINE_4H_INCREMENTAL_JOB_NAME:
+            return {}
+        if _result_status_text(result) != "success":
+            return {}
+
+        pipeline_slot = _extract_pipeline_kline_slot_utc_from_collect_result(result)
+        legacy_skip = bool(self.config.strategy_signal_scheduler_enabled)
+        if pipeline_slot is None:
+            details = {
+                "status": "blocked",
+                "current_step": "scheduler_post_collect",
+                "error_code": "pipeline_kline_slot_missing",
+                "error_message": (
+                    "09 collector result did not expose an explicit closed 4h Kline slot; "
+                    "stage-25 pipeline was not allowed to infer it."
+                ),
+                "old_stage17_auto_trigger_skipped_due_to_pipeline_enabled": legacy_skip,
+                "not_trading_advice": True,
+                "is_final_trading_advice": False,
+                "is_trading_signal": False,
+                "is_executable": False,
+                "auto_trading_allowed": False,
+            }
+            self._send_strategy_pipeline_failure_alert(
+                trace_id=trace_id,
+                due_job=due_job,
+                upstream_result=result,
+                pipeline_details=details,
+                kline_slot_utc=None,
+            )
+            return {"strategy_pipeline": details}
+
+        try:
+            pipeline_result = self.strategy_pipeline_after_collect_job(
+                upstream_job_name=due_job.name,
+                upstream_result=result,
+                upstream_slot_time_utc=due_job.slot_time_utc,
+                kline_slot_utc=pipeline_slot,
+                current_time_utc=current_time_utc,
+                settings=self.settings,
+                config=self.config,
+            )
+            details = _strategy_pipeline_result_details(pipeline_result)
+            details["kline_slot_utc_from_09"] = pipeline_slot.isoformat()
+            details["old_stage17_auto_trigger_skipped_due_to_pipeline_enabled"] = legacy_skip
+            if _pipeline_result_needs_scheduler_alert(details):
+                self._send_strategy_pipeline_failure_alert(
+                    trace_id=trace_id,
+                    due_job=due_job,
+                    upstream_result=result,
+                    pipeline_details=details,
+                    kline_slot_utc=pipeline_slot,
+                )
+            return {"strategy_pipeline": details}
+        except Exception as exc:  # noqa: BLE001 - post-hook failures must not rewrite collector result.
+            LOGGER.exception("strategy pipeline post-collect hook failed job=%s", due_job.name)
+            details = {
+                "status": "failed",
+                "current_step": "scheduler_post_collect",
+                "error_type": exc.__class__.__name__,
+                "error_code": "strategy_pipeline_scheduler_hook_failed",
+                "error_message": str(exc),
+                "kline_slot_utc": pipeline_slot.isoformat(),
+                "old_stage17_auto_trigger_skipped_due_to_pipeline_enabled": legacy_skip,
+                "not_trading_advice": True,
+                "is_final_trading_advice": False,
+                "is_trading_signal": False,
+                "is_executable": False,
+                "auto_trading_allowed": False,
+            }
+            self._send_strategy_pipeline_failure_alert(
+                trace_id=trace_id,
+                due_job=due_job,
+                upstream_result=result,
+                pipeline_details=details,
+                kline_slot_utc=pipeline_slot,
+            )
+            return {"strategy_pipeline": details}
 
     def _run_strategy_signal_post_collect_if_needed(
         self,
@@ -741,6 +861,58 @@ class SchedulerRunner:
         except Exception:  # noqa: BLE001 - alert failure must not crash the scheduler loop.
             LOGGER.exception("scheduler system alert failed job=%s trace_id=%s", job_name, trace_id)
 
+    def _send_strategy_pipeline_failure_alert(
+        self,
+        *,
+        trace_id: str,
+        due_job: DueSchedulerJob,
+        upstream_result: Any,
+        pipeline_details: dict[str, object],
+        kline_slot_utc: datetime | None,
+    ) -> None:
+        """Send a fixed-template system alert for a failed automatic pipeline.
+
+        The alert says the 09 collector already succeeded but the stage-25
+        pipeline did not. It is a system failure reminder, not a trading signal.
+        """
+
+        event = AlertEvent(
+            alert_type=AlertType.SYSTEM_ERROR,
+            severity=AlertSeverity.ERROR,
+            title="Strategy pipeline scheduler failure",
+            summary=(
+                "09 4h Kline collection succeeded, but the stage-25 strategy "
+                "pipeline failed or was blocked. This alert is not trading advice."
+            ),
+            details={
+                "scheduler_job": due_job.name,
+                "upstream_09_success": True,
+                "upstream_collector_event_id": getattr(upstream_result, "event_log_id", None),
+                "pipeline_run_id": pipeline_details.get("pipeline_run_id"),
+                "pipeline_status": pipeline_details.get("status"),
+                "current_step": pipeline_details.get("current_step"),
+                "error_code": pipeline_details.get("error_code"),
+                "error_message": pipeline_details.get("error_message"),
+                "symbol": self.config.strategy_signal_symbol,
+                "base_interval": self.config.strategy_signal_base_interval,
+                "higher_interval": self.config.strategy_signal_higher_interval,
+                "kline_slot_utc": kline_slot_utc.isoformat() if kline_slot_utc else "",
+                "pipeline_trace_id": pipeline_details.get("trace_id"),
+                "trace_id": trace_id,
+                "not_trading_advice": True,
+                "is_final_trading_advice": False,
+                "is_trading_signal": False,
+                "is_executable": False,
+                "auto_trading_allowed": False,
+            },
+            source="app.scheduler.runner",
+            trace_id=trace_id,
+        )
+        try:
+            self.alert_sender(event, settings=self.settings, send_real_alert=True)
+        except Exception:  # noqa: BLE001 - alert failure must not crash the scheduler loop.
+            LOGGER.exception("strategy pipeline scheduler alert failed job=%s trace_id=%s", due_job.name, trace_id)
+
 
 def run_scheduler_forever(
     *,
@@ -789,6 +961,12 @@ def _default_strategy_signal_after_collect_job(*args: Any, **kwargs: Any) -> Any
     from app.scheduler.jobs.strategy_signal_scheduler_job import run_strategy_signal_scheduler_after_collect_job
 
     return run_strategy_signal_scheduler_after_collect_job(*args, **kwargs)
+
+
+def _default_strategy_pipeline_after_collect_job(*args: Any, **kwargs: Any) -> Any:
+    from app.scheduler.jobs.strategy_pipeline_job import run_strategy_pipeline_after_collect_job
+
+    return run_strategy_pipeline_after_collect_job(*args, **kwargs)
 
 
 def _default_strategy_aggregation_after_signal_job(*args: Any, **kwargs: Any) -> Any:
@@ -1008,6 +1186,88 @@ def _result_details(result: Any) -> dict[str, object]:
         "alert_status": getattr(result, "alert_status", ""),
         **dict(details),
     }
+
+
+def _extract_pipeline_kline_slot_utc_from_collect_result(result: Any) -> datetime | None:
+    """Extract the explicit 4h Kline open time from a successful 09 result."""
+
+    candidate_names = (
+        "latest_written_open_time_ms",
+        "latest_closed_open_time_ms",
+        "latest_base_open_time_ms",
+        "actual_end_open_time_ms",
+        "end_open_time_ms",
+    )
+    for name in candidate_names:
+        parsed = _parse_open_time_ms(getattr(result, name, None))
+        if parsed is not None:
+            return timestamp_ms_to_utc_datetime(parsed)
+
+    details = getattr(result, "details", None)
+    if isinstance(details, Mapping):
+        for name in candidate_names:
+            parsed = _parse_open_time_ms(details.get(name))
+            if parsed is not None:
+                return timestamp_ms_to_utc_datetime(parsed)
+    return None
+
+
+def _parse_open_time_ms(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _strategy_pipeline_result_details(result: Any) -> dict[str, object]:
+    status = _result_status_text(result)
+    return {
+        "status": status,
+        "pipeline_run_id": getattr(result, "pipeline_run_id", None),
+        "trace_id": getattr(result, "trace_id", ""),
+        "symbol": getattr(result, "symbol", ""),
+        "base_interval": getattr(result, "base_interval", ""),
+        "higher_interval": getattr(result, "higher_interval", ""),
+        "kline_slot_utc": (
+            getattr(result, "kline_slot_utc").isoformat()
+            if getattr(result, "kline_slot_utc", None)
+            else ""
+        ),
+        "kline_slot_source": getattr(result, "kline_slot_source", ""),
+        "current_step": getattr(result, "current_step", None),
+        "strategy_signal_run_id": getattr(result, "strategy_signal_run_id", None),
+        "strategy_evidence_aggregation_id": getattr(result, "strategy_evidence_aggregation_id", None),
+        "material_pack_id": getattr(result, "material_pack_id", None),
+        "model_analysis_run_id": getattr(result, "model_analysis_run_id", None),
+        "review_aggregation_run_id": getattr(result, "review_aggregation_run_id", None),
+        "advice_id": getattr(result, "advice_id", None),
+        "review_id": getattr(result, "review_id", None),
+        "notification_status": getattr(result, "notification_status", None),
+        "model_review_invoked": getattr(result, "model_review_invoked", False),
+        "model_review_reused": getattr(result, "model_review_reused", False),
+        "real_model_called": getattr(result, "real_model_called", False),
+        "hermes_real_sent": getattr(result, "hermes_real_sent", False),
+        "error_code": getattr(result, "error_code", None),
+        "error_message": getattr(result, "error_message", None),
+        "message": getattr(result, "message", ""),
+        "not_trading_advice": True,
+        "is_final_trading_advice": getattr(result, "is_final_trading_advice", False),
+        "is_trading_signal": getattr(result, "is_trading_signal", False),
+        "is_executable": getattr(result, "is_executable", False),
+        "auto_trading_allowed": getattr(result, "auto_trading_allowed", False),
+    }
+
+
+def _pipeline_result_needs_scheduler_alert(details: Mapping[str, object]) -> bool:
+    status = str(details.get("status") or "")
+    if status in {"failed", "blocked"}:
+        return True
+    if status == "partial_success" and not details.get("strategy_evidence_aggregation_id"):
+        return True
+    return False
 
 
 def _strategy_scheduler_result_details(result: Any) -> dict[str, object]:

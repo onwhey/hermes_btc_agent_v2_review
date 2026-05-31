@@ -86,7 +86,11 @@ def result_from_collect_report(
         first_issue_message=first_issue.message if first_issue else None,
         event_log_id=event_log_id,
         quality_check_id=quality_check_id,
-        details={"quality_summary": format_quality_report_summary(report)},
+        details={
+            "quality_summary": format_quality_report_summary(report),
+            "actual_start_open_time_ms": report.start_open_time_ms,
+            "actual_end_open_time_ms": report.end_open_time_ms,
+        },
     )
 
 

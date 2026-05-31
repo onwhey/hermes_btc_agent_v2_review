@@ -13,7 +13,12 @@ from typing import Any
 from app.core.config import AppSettings, get_settings
 from app.core.exceptions import RedisError
 from app.core.time_utils import now_utc, utc_datetime_to_timestamp_ms
-from app.market_data.kline_constants import KLINE_4H_INTERVAL_MS, KLINE_4H_INTERVAL_VALUE, TRIGGER_SOURCE_CLI
+from app.market_data.kline_constants import (
+    KLINE_4H_INTERVAL_MS,
+    KLINE_4H_INTERVAL_VALUE,
+    TRIGGER_SOURCE_CLI,
+    TRIGGER_SOURCE_SCHEDULER,
+)
 from app.model_review_aggregation.schema import ModelReviewAggregationRequest, ModelReviewAggregationStatus
 from app.model_review_chain.worker_schema import (
     MODEL_REVIEW_CHAIN_WORKER_STATUS_BLOCKED,
@@ -546,8 +551,8 @@ class StrategyPipelineService:
         problems: list[str] = []
         if not self._settings.strategy_pipeline_enabled:
             problems.append("STRATEGY_PIPELINE_ENABLED=false")
-        if request.trigger_source != TRIGGER_SOURCE_CLI:
-            problems.append("25A manual pipeline currently supports only trigger_source=cli")
+        if request.trigger_source not in {TRIGGER_SOURCE_CLI, TRIGGER_SOURCE_SCHEDULER}:
+            problems.append("strategy pipeline trigger_source must be cli or scheduler")
         if request.dry_run and request.confirm_write:
             problems.append("dry_run and confirm_write cannot both be true")
         if not request.dry_run and not request.confirm_write:
@@ -581,7 +586,11 @@ class StrategyPipelineService:
     ) -> StrategyPipelineResult | None:
         if request.kline_slot_utc is not None:
             state.kline_slot_utc = require_slot(request.kline_slot_utc)
-            state.kline_slot_source = "cli_argument"
+            state.kline_slot_source = (
+                "scheduler_upstream_collect"
+                if request.trigger_source == TRIGGER_SOURCE_SCHEDULER
+                else "cli_argument"
+            )
             return None
         value = self._repository.resolve_latest_base_kline_slot_utc(
             db_session,
