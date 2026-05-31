@@ -68,9 +68,55 @@ def test_snapshot_id_missing_blocks_and_does_not_choose_another_snapshot() -> No
     assert repo.run_payloads == []
 
 
-def test_non_success_strategy_signal_run_status_blocks_before_snapshot_lookup() -> None:
+def test_strategy_signal_run_missing_blocks_without_snapshot_lookup() -> None:
     repo = FakeWeakModelRepository()
-    repo.ssr.status = "partial_success"
+    service = WeakModelService(repository=repo, registry=_registry_with_default_models())
+
+    result = service.run_weak_models_for_strategy_signal(
+        FakeSession(),
+        _request(dry_run=True, confirm_write=False, strategy_signal_run_id="SSR-MISSING"),
+    )
+
+    assert result.status == WeakModelRunStatus.BLOCKED
+    assert result.error_code == WEAK_MODEL_ERROR_INVALID_OR_MISSING_SNAPSHOT
+    assert repo.snapshot_lookup_count == 0
+    assert repo.restore_called == 0
+    assert result.outputs == ()
+
+
+def test_usable_partial_success_strategy_signal_run_status_can_run() -> None:
+    repo = FakeWeakModelRepository()
+    _mark_usable_partial_success(repo)
+    service = WeakModelService(repository=repo, registry=_registry_with_default_models())
+
+    result = service.run_weak_models_for_strategy_signal(FakeSession(), _request(dry_run=True, confirm_write=False))
+
+    assert result.status == WeakModelRunStatus.DRY_RUN
+    assert result.error_code is None
+    assert repo.snapshot_lookup_count == 1
+    assert repo.restore_called == 1
+    assert result.model_count_executed == 2
+
+
+def test_partial_success_with_failed_or_invalid_count_blocks_before_snapshot_lookup() -> None:
+    for field_name in ("failed_count", "invalid_count"):
+        repo = FakeWeakModelRepository()
+        _mark_usable_partial_success(repo)
+        setattr(repo.ssr, field_name, 1)
+        service = WeakModelService(repository=repo, registry=_registry_with_default_models())
+
+        result = service.run_weak_models_for_strategy_signal(FakeSession(), _request(dry_run=True, confirm_write=False))
+
+        assert result.status == WeakModelRunStatus.BLOCKED
+        assert result.error_code == WEAK_MODEL_ERROR_INVALID_STRATEGY_SIGNAL_RUN_STATUS
+        assert repo.snapshot_lookup_count == 0
+        assert repo.restore_called == 0
+        assert result.outputs == ()
+
+
+def test_blocked_strategy_signal_run_status_blocks_before_snapshot_lookup() -> None:
+    repo = FakeWeakModelRepository()
+    repo.ssr.status = "blocked"
     service = WeakModelService(repository=repo, registry=_registry_with_default_models())
 
     result = service.run_weak_models_for_strategy_signal(FakeSession(), _request(dry_run=True, confirm_write=False))
@@ -248,6 +294,11 @@ class FakeWeakModelRepository:
             base_interval_value="4h",
             higher_interval_value="1d",
             status="success",
+            success_count=7,
+            failed_count=0,
+            invalid_count=0,
+            not_implemented_count=1,
+            blocked_reason=None,
         )
         self.snapshot = SimpleNamespace(
             snapshot_id="MCS-1",
@@ -337,10 +388,11 @@ def _request(
     *,
     dry_run: bool,
     confirm_write: bool,
+    strategy_signal_run_id: str = "SSR-1",
     kline_slot_utc: datetime | None = None,
 ) -> WeakModelRunRequest:
     return WeakModelRunRequest(
-        strategy_signal_run_id="SSR-1",
+        strategy_signal_run_id=strategy_signal_run_id,
         pipeline_run_id="SP-1",
         symbol="BTCUSDT",
         base_interval="4h",
@@ -350,6 +402,15 @@ def _request(
         confirm_write=confirm_write,
         trace_id="trace1234567890",
     )
+
+
+def _mark_usable_partial_success(repo: FakeWeakModelRepository) -> None:
+    repo.ssr.status = "partial_success"
+    repo.ssr.success_count = 7
+    repo.ssr.failed_count = 0
+    repo.ssr.invalid_count = 0
+    repo.ssr.not_implemented_count = 1
+    repo.ssr.blocked_reason = None
 
 
 def _rows(*, count: int, start_price: int, step: int, hours: int) -> tuple[SimpleNamespace, ...]:

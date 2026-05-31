@@ -373,7 +373,7 @@ python -m pytest tests/weak_models -q
 
 规则：
 
-只有 `strategy_signal_run.status == "success"` 才允许进入弱模型执行。其他状态会在 snapshot 查询前直接 blocked。
+`strategy_signal_run.status` 为 `success` 可以进入弱模型执行；`partial_success` 只有在 `snapshot_id` 不为空、`success_count > 0`、`failed_count = 0`、`invalid_count = 0`、`blocked_reason IS NULL` 时可以进入弱模型执行。`blocked` 或其他状态会在 snapshot 查询前直接 blocked。
 
 失败结果：
 
@@ -412,9 +412,80 @@ source_participation_mode=observe_only
 2. `tests/weak_models/test_weak_model_service.py`
 3. `tests/weak_models/test_weak_model_cli_and_config.py`
 
+## 13. 27A SSR 状态校验修复：允许受控 partial_success
+
+### 13.1 修复入口
+
+核心文件：
+
+`app/weak_models/service.py`
+
+核心方法：
+
+`WeakModelService._validate_strategy_signal_run()`
+
+调用链路：
+
+```text
+scripts/run_weak_models.py::main
+    -> app/weak_models/service.py::WeakModelService.run_weak_models_for_strategy_signal
+    -> app/weak_models/service.py::WeakModelService._validate_strategy_signal_run
+    -> app/weak_models/repository.py::WeakModelRepository.get_snapshot_by_snapshot_id
+```
+
+### 13.2 校验规则
+
+27A 允许继续运行的 SSR 状态：
+
+1. `success`
+2. `partial_success`
+
+`partial_success` 必须同时满足：
+
+1. `snapshot_id` 不为空。
+2. `success_count > 0`。
+3. `failed_count = 0`。
+4. `invalid_count = 0`。
+5. `blocked_reason IS NULL`。
+
+`not_implemented_count > 0` 允许继续运行，用于兼容当前 16 阶段占位/未实现策略。`blocked` 或其他状态继续返回：
+
+```text
+status=blocked
+error_code=invalid_strategy_signal_run_status
+```
+
+如果 `partial_success` 中出现 `failed_count > 0` 或 `invalid_count > 0`，同样返回 `invalid_strategy_signal_run_status`，且不会继续查询 snapshot、不会执行弱模型。
+
+### 13.3 边界说明
+
+本修复不请求外部接口。
+本修复不读取 Redis。
+本修复不写入 Redis。
+本修复不发送 Hermes。
+本修复不调用 DeepSeek/GPT/Claude。
+本修复不请求 Binance REST。
+本修复不读取账户、仓位或交易私有状态。
+本修复不自动交易、不生成订单。
+本修复不修改 18/19/20/21。
+本修复不自行更换 snapshot，也不重新生成 snapshot。
+
+### 13.4 测试覆盖
+
+测试文件：
+
+`tests/weak_models/test_weak_model_service.py`
+
+新增/调整覆盖：
+
+1. 可用 `partial_success`：`success_count > 0`、`failed_count=0`、`invalid_count=0`、`blocked_reason=None` 时允许运行。
+2. 不可用 `partial_success`：`failed_count > 0` 或 `invalid_count > 0` 时 blocked。
+3. `blocked` SSR 状态继续 blocked。
+4. 原有 SSR 缺失、snapshot 缺失、slot mismatch 测试保留。
+
 新增覆盖：
 
 1. `veto_factors_json` 独立字段落库。
 2. 新增 27A follow-up migration 只增加 `weak_model_aggregation.veto_factors_json`。
-3. SSR 非 `success` 状态直接 blocked，且不查询 snapshot、不运行弱模型。
+3. SSR `blocked` 或不满足可用条件的 `partial_success` 直接 blocked，且不查询 snapshot、不运行弱模型。
 4. observe_only context 写入 `context_summary`，但不影响方向分数或风险权限。

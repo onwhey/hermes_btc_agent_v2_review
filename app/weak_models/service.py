@@ -415,16 +415,35 @@ class WeakModelService:
 
     def _validate_strategy_signal_run(self, ssr: Any, request: WeakModelRunRequest) -> tuple[str | None, str | None]:
         run_status = _text_attr(ssr, "status")
-        if run_status != "success":
+        if run_status not in {"success", "partial_success"}:
             return (
                 WEAK_MODEL_ERROR_INVALID_STRATEGY_SIGNAL_RUN_STATUS,
-                f"strategy_signal_run.status={run_status} is not success; 27A will not run weak models.",
+                f"strategy_signal_run.status={run_status} is not usable; 27A will not run weak models.",
             )
         if not _text_attr(ssr, "snapshot_id"):
             return (
                 WEAK_MODEL_ERROR_INVALID_OR_MISSING_SNAPSHOT,
                 "SSR 缺少 snapshot_id，27A 不允许自行选择或生成快照",
             )
+        if run_status == "partial_success":
+            partial_status_errors: list[str] = []
+            success_count = _int_attr(ssr, "success_count")
+            failed_count = _int_attr(ssr, "failed_count")
+            invalid_count = _int_attr(ssr, "invalid_count")
+            blocked_reason = getattr(ssr, "blocked_reason", None)
+            if success_count is None or success_count <= 0:
+                partial_status_errors.append(f"success_count={success_count} must be > 0")
+            if failed_count != 0:
+                partial_status_errors.append(f"failed_count={failed_count} must be 0")
+            if invalid_count != 0:
+                partial_status_errors.append(f"invalid_count={invalid_count} must be 0")
+            if blocked_reason is not None:
+                partial_status_errors.append("blocked_reason must be NULL")
+            if partial_status_errors:
+                return (
+                    WEAK_MODEL_ERROR_INVALID_STRATEGY_SIGNAL_RUN_STATUS,
+                    "partial_success SSR is not usable for 27A: " + "; ".join(partial_status_errors),
+                )
         mismatches: list[str] = []
         if _text_attr(ssr, "symbol") != request.symbol:
             mismatches.append(f"symbol: SSR={_text_attr(ssr, 'symbol')} request={request.symbol}")
@@ -479,6 +498,16 @@ def create_default_weak_model_service() -> WeakModelService:
 def _text_attr(row: Any, field_name: str) -> str:
     value = getattr(row, field_name, "")
     return "" if value is None else str(value)
+
+
+def _int_attr(row: Any, field_name: str) -> int | None:
+    value = getattr(row, field_name, None)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _commit_if_possible(db_session: Any) -> None:
