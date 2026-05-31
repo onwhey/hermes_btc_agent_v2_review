@@ -107,6 +107,14 @@ higher_interval=1d
 limit=5
 ```
 
+第一版 K线 slot 边界：
+
+- 26A 只读取 `market_kline_4h` 中最近 N 根已入库、已收盘 4h K线 slot，并检查这些 slot 是否有对应 pipeline。
+- 26A 不识别“最新理论上应收盘但 `market_kline_4h` 缺失”的 K线 slot。
+- 26A 不请求 Binance REST 来推断理论应收盘 slot。
+- K线本身是否漏采、是否连续，仍由 07/11 K线质量检查负责。
+- 26A 输出中的 `missing` 只表示“该 4h K线已入库，但未找到对应 25 pipeline”，不表示“K线本身缺失”。
+
 ---
 
 ## 6. 状态判断规则
@@ -120,11 +128,13 @@ limit=5
 每个 slot 应至少判断：
 
 ```text
-该 slot 是否有已收盘 K线
+该 slot 是否存在于 market_kline_4h
 该 slot 是否有对应 pipeline_run
 该 slot 是否重复 pipeline_run
 该 slot 是否缺 pipeline_run
 ```
+
+说明：26A 不生成理论 K线时间轴；如果某个理论应收盘 slot 未入库，它不会出现在 26A 的观测明细中。
 
 ### 6.2 pipeline 状态
 

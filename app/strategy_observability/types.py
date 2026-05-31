@@ -38,6 +38,10 @@ OBSERVATION_STATUS_DUPLICATE = "duplicate"
 OBSERVATION_STATUS_UNKNOWN = "unknown"
 
 NON_TRADING_STATEMENT = "本检查只用于策略链路运行观测，不是交易建议；不自动交易，不读取账户，不生成订单。"
+KLINE_SCOPE_STATEMENT = "26A 只观测已入库 K线对应的策略链路。"
+KLINE_QUALITY_SCOPE_STATEMENT = (
+    "K线本身是否漏采、是否连续，仍由 07/11 K线质量检查负责；26A 不请求 Binance REST 推断理论应收盘 slot。"
+)
 
 
 class SlotObservationStatus(str, Enum):
@@ -213,6 +217,8 @@ def format_strategy_pipeline_status_report_lines(report: StrategyPipelineStatusR
             f"higher_interval={report.request.higher_interval} "
             f"limit={report.request.limit}"
         ),
+        f"观测范围：{KLINE_SCOPE_STATEMENT}",
+        f"质量边界：{KLINE_QUALITY_SCOPE_STATEMENT}",
         "",
         "汇总：",
         f"- 检查 slot 数：{len(report.observations)}",
@@ -305,6 +311,8 @@ __all__ = [
     "EXIT_PARAMETER_OR_DATABASE_ERROR",
     "EXIT_SUCCESS",
     "EXIT_UNHEALTHY",
+    "KLINE_QUALITY_SCOPE_STATEMENT",
+    "KLINE_SCOPE_STATEMENT",
     "KlineSlotRecord",
     "NON_TRADING_STATEMENT",
     "OBSERVATION_STATUS_DUPLICATE",

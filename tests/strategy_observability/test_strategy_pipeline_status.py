@@ -179,6 +179,9 @@ def test_output_contains_key_ids_and_model_hermes_flags() -> None:
     assert "ADVR：存在 ADVR-test" in output
     assert "real_model_called：false" in output
     assert "hermes_real_sent：false" in output
+    assert "26A 只观测已入库 K线对应的策略链路" in output
+    assert "K线本身是否漏采、是否连续，仍由 07/11 K线质量检查负责" in output
+    assert "不请求 Binance REST 推断理论应收盘 slot" in output
     assert "本检查只用于策略链路运行观测，不是交易建议；不自动交易，不读取账户，不生成订单。" in output
 
 

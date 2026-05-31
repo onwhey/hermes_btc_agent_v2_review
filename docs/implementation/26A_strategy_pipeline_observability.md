@@ -107,6 +107,16 @@ app/strategy_observability/types.py::format_strategy_pipeline_status_report_line
 
 第一版不依赖 `alert_message` 判断真实发送状态，因为 25 pipeline event 已保存 `hermes_real_sent` 与 `notification_status`。Hermes 关闭导致未真实发送不会被判定为失败。
 
+### 3.1 K线 slot 观测边界
+
+26A 第一版只检查“已入库 K线对应的 pipeline 状态”：
+
+- `app/strategy_observability/repository.py::list_recent_closed_kline_slots` 只从 `market_kline_4h` 读取最近 N 根已入库、已收盘 4h K线 slot。
+- 26A 不识别“最新理论上应收盘但 `market_kline_4h` 缺失”的 K线 slot。
+- 26A 不请求 Binance REST，不通过 server time 或本地时间推断理论应收盘 slot。
+- 26A 输出中的 `missing` 只表示“该 4h K线已入库，但未找到对应 25 pipeline”，不表示“K线本身缺失”。
+- K线本身是否漏采、是否连续，仍由 07/11 K线质量检查负责。
+
 ## 4. 数据写入
 
 本功能不写入数据库。
@@ -128,12 +138,14 @@ app/strategy_observability/types.py::format_strategy_pipeline_status_report_line
 
 26A 按最近 N 根正式 4h K线 slot 判断，而不是只查最近一条 pipeline。
 
+这些 slot 全部来自 `market_kline_4h` 已入库记录；26A 不生成理论 K线时间轴，也不扩展为新的 K线质量检查模块。
+
 每个 slot 的状态分类：
 
 - `healthy`：pipeline 为 `success`，且 SP / SSR / SEA / AMP / MRAG / ADVR 关键 ID 均可确认存在。
 - `expected_blocked`：pipeline 为 `blocked`，停在 `20c_19_20a_model_review`，错误码为模型结果缺失或真实模型关闭类错误，且当前真实模型相关开关处于安全关闭状态。
 - `failed`：pipeline 为 `failed`，或 blocked 但不属于当前配置下的合理阻断。
-- `missing`：该 4h K线存在，但没有对应的 25 pipeline。
+- `missing`：该 4h K线已入库，但没有对应的 25 pipeline；不代表理论应存在的 K线缺失。
 - `duplicate`：同一 slot 有多条 pipeline_run。
 - `unknown`：pipeline 状态无法归类，或 success 但关键链路 ID 不完整。
 
@@ -153,6 +165,8 @@ app/strategy_observability/types.py::format_strategy_pipeline_status_report_line
 
 CLI 输出中文报告，包括：
 
+- 观测范围：26A 只观测已入库 K线对应的策略链路。
+- 质量边界：K线本身是否漏采、是否连续，仍由 07/11 K线质量检查负责；26A 不请求 Binance REST 推断理论应收盘 slot。
 - 汇总计数。
 - 当前真实模型 / 当前真实 Hermes 开关状态。
 - 关键配置开关。
