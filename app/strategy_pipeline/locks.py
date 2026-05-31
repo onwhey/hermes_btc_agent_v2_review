@@ -56,7 +56,11 @@ class StrategyPipelineLockManager:
     def acquire_strategy_pipeline_lock(self, *, lock: StrategyPipelineLock) -> StrategyPipelineLock:
         """Try to acquire the Redis lock without writing MySQL."""
 
-        acquired = self._task_lock.acquire_lock(lock.key, owner=lock.owner, ttl_seconds=lock.ttl_seconds)
+        acquired = self._task_lock.acquire_lock(
+            key=lock.key,
+            owner=lock.owner,
+            ttl_seconds=lock.ttl_seconds,
+        )
         return StrategyPipelineLock(
             key=lock.key,
             owner=lock.owner,
@@ -67,7 +71,10 @@ class StrategyPipelineLockManager:
     def release_strategy_pipeline_lock(self, *, lock: StrategyPipelineLock) -> None:
         """Release the Redis lock if this owner still holds it."""
 
-        self._task_lock.release_lock(lock.key, owner=lock.owner)
+        self._task_lock.release_lock(
+            key=lock.key,
+            owner=lock.owner,
+        )
 
 
 __all__ = [
@@ -75,4 +82,3 @@ __all__ = [
     "StrategyPipelineLockManager",
     "build_strategy_pipeline_lock_key",
 ]
-
