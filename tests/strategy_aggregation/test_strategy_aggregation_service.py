@@ -20,6 +20,7 @@ from app.strategy.aggregation.types import (
     StrategyAggregationRequest,
     StrategyAggregationStatus,
 )
+from app.strategy.aggregation.weak_model_material import WeakModelMaterialSource
 from scripts import run_strategy_aggregation as aggregation_cli
 
 
@@ -45,6 +46,7 @@ class FakeAggregationRepository:
         existing: Any | None = None,
         existing_after_unique_conflict: Any | None = None,
         evidence_aggregation: Any | None = None,
+        weak_model_sources: tuple[WeakModelMaterialSource, ...] = (),
         create_material_pack_error: Exception | None = None,
     ) -> None:
         self.strategy_run = strategy_run
@@ -53,6 +55,7 @@ class FakeAggregationRepository:
         self.existing = existing
         self.existing_after_unique_conflict = existing_after_unique_conflict
         self.evidence_aggregation = evidence_aggregation
+        self.weak_model_sources = weak_model_sources
         self.create_material_pack_error = create_material_pack_error
         self.unique_conflict_raised = False
         self.aggregation_rows: list[Any] = []
@@ -105,6 +108,49 @@ class FakeAggregationRepository:
         if self.evidence_aggregation.strategy_signal_run_id != strategy_signal_run_id:
             return None
         return self.evidence_aggregation
+
+    def get_latest_weak_model_material(
+        self,
+        _db_session: Any,
+        *,
+        strategy_signal_run_id: str,
+        snapshot_id: str,
+        symbol: str,
+        base_interval: str,
+        higher_interval: str,
+        kline_slot_utc: datetime | None,
+    ) -> WeakModelMaterialSource | None:
+        candidates: list[WeakModelMaterialSource] = []
+        for source in self.weak_model_sources:
+            run = source.run
+            aggregation = source.aggregation
+            if getattr(run, "run_status", None) != "success":
+                continue
+            if getattr(run, "strategy_signal_run_id", None) != strategy_signal_run_id:
+                continue
+            if getattr(run, "snapshot_id", None) != snapshot_id:
+                continue
+            if getattr(run, "symbol", None) != symbol:
+                continue
+            if getattr(run, "base_interval", None) != base_interval:
+                continue
+            if getattr(run, "higher_interval", None) != higher_interval:
+                continue
+            if getattr(run, "kline_slot_utc", None) != kline_slot_utc:
+                continue
+            if getattr(aggregation, "snapshot_id", None) != snapshot_id:
+                continue
+            candidates.append(source)
+        if not candidates:
+            return None
+        return sorted(
+            candidates,
+            key=lambda source: (
+                getattr(source.run, "created_at_utc", datetime.min.replace(tzinfo=timezone.utc)),
+                getattr(source.run, "id", 0),
+            ),
+            reverse=True,
+        )[0]
 
     def create_aggregation_run(self, _db_session: Any, *, payload: Any) -> Any:
         row = SimpleNamespace(**payload.__dict__)
@@ -213,6 +259,101 @@ def strategy_run(*, status: str = "success", run_id: str = "SSR-stage18", snapsh
     )
 
 
+def weak_model_material_source(
+    *,
+    weak_model_run_id: str = "WMR-stage18",
+    weak_model_aggregation_id: str = "WMA-stage18",
+    quality_status: str | None = "passed",
+    run_status: str = "success",
+    snapshot_id: str = "MCS-stage18",
+    created_at_utc: datetime | None = None,
+    directional_score: str = "-0.60",
+    directional_bias: str = "bearish",
+    kline_slot_utc: datetime | None = None,
+) -> WeakModelMaterialSource:
+    slot = kline_slot_utc or restored_snapshot_slot_utc()
+    run = SimpleNamespace(
+        id=1,
+        weak_model_run_id=weak_model_run_id,
+        strategy_signal_run_id="SSR-stage18",
+        snapshot_id=snapshot_id,
+        symbol="BTCUSDT",
+        base_interval="4h",
+        higher_interval="1d",
+        kline_slot_utc=slot,
+        run_status=run_status,
+        created_at_utc=created_at_utc or utc_at(18, 10),
+    )
+    aggregation = SimpleNamespace(
+        id=1,
+        weak_model_aggregation_id=weak_model_aggregation_id,
+        weak_model_run_id=weak_model_run_id,
+        strategy_signal_run_id="SSR-stage18",
+        snapshot_id=snapshot_id,
+        symbol="BTCUSDT",
+        base_interval="4h",
+        higher_interval="1d",
+        kline_slot_utc=slot,
+        directional_score=Decimal(directional_score),
+        directional_bias=directional_bias,
+        directional_confidence=Decimal("0.62"),
+        risk_level="medium",
+        trade_permission="allow",
+        veto_triggered=False,
+        supporting_factors_json=json.dumps(["trend_strength_directional"], ensure_ascii=False),
+        opposing_factors_json=json.dumps([], ensure_ascii=False),
+        conflict_factors_json=json.dumps([], ensure_ascii=False),
+        low_confidence_factors_json=json.dumps(["support_distance_confirmation"], ensure_ascii=False),
+        veto_factors_json=json.dumps([], ensure_ascii=False),
+        context_summary_json=json.dumps(
+            {
+                "regime": "range",
+                "source_model_key": "market_regime_context",
+                "source_maturity_stage": "observe_only",
+            },
+            ensure_ascii=False,
+        ),
+        summary_text="27A weak model compact summary",
+    )
+    quality_check = None
+    if quality_status is not None:
+        quality_check = SimpleNamespace(
+            id=1,
+            quality_check_id=f"WMQC-{weak_model_run_id}",
+            weak_model_run_id=weak_model_run_id,
+            weak_model_aggregation_id=weak_model_aggregation_id,
+            status=quality_status,
+            severity="warning" if quality_status == "warning" else "info",
+            issues_json=json.dumps(
+                [
+                    {
+                        "error_code": "directional_score_too_strong",
+                        "severity": "warning",
+                        "field_name": "directional_score",
+                    }
+                ]
+                if quality_status == "warning"
+                else [],
+                ensure_ascii=False,
+            ),
+            updated_at_utc=utc_at(18, 11),
+        )
+    return WeakModelMaterialSource(
+        run=run,
+        aggregation=aggregation,
+        quality_check=quality_check,
+        source_config_hashes=(
+            "trend_strength_directional:hash-directional-v1",
+            "volatility_risk_gate:hash-risk-v1",
+        ),
+    )
+
+
+def restored_snapshot_slot_utc() -> datetime:
+    snapshot_obj = restored_snapshot()
+    return datetime.fromtimestamp(snapshot_obj.snapshot.end_4h_open_time_ms / 1000, tz=timezone.utc)
+
+
 def fake_stage16_signal(
     name: str,
     *,
@@ -274,8 +415,8 @@ def test_success_and_partial_strategy_signal_runs_can_project_long_hypothesis() 
     assert result.effective_strategy_count == 2
 
 
-def test_material_schema_version_is_v2_after_strategy_evidence_shape_change() -> None:
-    assert MATERIAL_SCHEMA_VERSION == "material_schema_v2"
+def test_material_schema_version_is_v3_after_weak_model_summary_shape_change() -> None:
+    assert MATERIAL_SCHEMA_VERSION == "material_schema_v3"
 
 
 def test_blocked_and_failed_strategy_signal_runs_are_not_allowed() -> None:
@@ -367,7 +508,7 @@ def test_confirm_write_persists_aggregation_and_material_pack_with_required_sect
     assert len(repo.aggregation_rows) == 1
     assert len(repo.material_rows) == 1
     aggregation = repo.aggregation_rows[0]
-    assert aggregation.material_schema_version == "material_schema_v2"
+    assert aggregation.material_schema_version == "material_schema_v3"
     assert aggregation.analysis_hypothesis_direction == "long"
     assert aggregation.analysis_hypothesis_semantics == "analysis_hypothesis_only"
     assert aggregation.direction_projection_source == "fixture_or_existing_signal_projection"
@@ -379,8 +520,8 @@ def test_confirm_write_persists_aggregation_and_material_pack_with_required_sect
     assert aggregation.promotion_requires_future_strategy_and_llm_stage is True
     assert not hasattr(aggregation, "candidate_direction")
     material = repo.material_rows[0].material_json
-    assert repo.material_rows[0].material_schema_version == "material_schema_v2"
-    assert material["material_schema_version"] == "material_schema_v2"
+    assert repo.material_rows[0].material_schema_version == "material_schema_v3"
+    assert material["material_schema_version"] == "material_schema_v3"
     assert material["swing"]["recent_swing_highs"]
     assert material["swing"]["recent_swing_lows"]
     assert material["volatility"]["atr_14"] is not None
@@ -393,6 +534,9 @@ def test_confirm_write_persists_aggregation_and_material_pack_with_required_sect
     assert material["strategy_evidence"]["source"] == "legacy_strategy_results"
     assert material["strategy_evidence"]["aggregation_id"] is None
     assert "23F aggregation not found" in material["strategy_evidence"]["warning"]
+    assert material["weak_model_summary"]["status"] == "missing"
+    assert material["legacy_math_context"]["source"] == "legacy_math_context"
+    assert material["legacy_math_context"]["status"] == "deprecated_math_material"
     scenario = repo.aggregation_rows[0].candidate_scenarios_json["candidate_scenarios"][0]
     assert scenario["scenario_type"] == "long_hypothesis"
     assert scenario["activation_check"]
@@ -433,8 +577,8 @@ def test_confirm_write_material_pack_prefers_23f_strategy_evidence() -> None:
     service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
 
     material = repo.material_rows[0].material_json
-    assert repo.material_rows[0].material_schema_version == "material_schema_v2"
-    assert material["material_schema_version"] == "material_schema_v2"
+    assert repo.material_rows[0].material_schema_version == "material_schema_v3"
+    assert material["material_schema_version"] == "material_schema_v3"
     strategy_evidence = material["strategy_evidence"]
     assert strategy_evidence["source"] == "strategy_evidence_aggregation_result"
     assert strategy_evidence["aggregation_id"] == "SEA-stage18"
@@ -445,6 +589,126 @@ def test_confirm_write_material_pack_prefers_23f_strategy_evidence() -> None:
     assert strategy_evidence["decision_source_chain"] == [{"strategy_name": "risk_gate"}]
     assert strategy_evidence["model_review_focus"] == {"review_points": ["review 23F evidence chain"]}
     assert material["support_resistance"]["support_candidates"]
+
+
+def test_confirm_write_material_pack_includes_passed_weak_model_summary() -> None:
+    snapshot_obj = restored_snapshot()
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(fake_stage16_signal("fixture_direction_hypothesis_short", direction="bearish_bias", risk="low", strength="0.80"),),
+        restored_snapshot=snapshot_obj,
+        weak_model_sources=(weak_model_material_source(kline_slot_utc=restored_snapshot_slot_utc()),),
+    )
+
+    service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+
+    material = repo.material_rows[0].material_json
+    weak_summary = material["weak_model_summary"]
+    assert weak_summary["status"] == "available"
+    assert weak_summary["weak_model_run_id"] == "WMR-stage18"
+    assert weak_summary["weak_model_aggregation_id"] == "WMA-stage18"
+    assert weak_summary["quality_check_id"] == "WMQC-WMR-stage18"
+    assert weak_summary["quality_status"] == "passed"
+    assert weak_summary["directional_score"] == -0.6
+    assert weak_summary["source_config_hashes"]
+    assert "raw_output_json" not in json.dumps(material, ensure_ascii=False)
+
+
+def test_weak_model_warning_and_unchecked_are_explicitly_marked() -> None:
+    for quality_status, expected_status in (("warning", "warning"), (None, "unchecked")):
+        repo = FakeAggregationRepository(
+            strategy_run=strategy_run(),
+            results=(fake_stage16_signal("fixture_direction_hypothesis_short", direction="bearish_bias", risk="low", strength="0.80"),),
+            restored_snapshot=restored_snapshot(),
+            weak_model_sources=(weak_model_material_source(quality_status=quality_status),),
+        )
+
+        service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+
+        weak_summary = repo.material_rows[0].material_json["weak_model_summary"]
+        assert weak_summary["status"] == expected_status
+        if quality_status == "warning":
+            assert weak_summary["quality_status"] == "warning"
+            assert weak_summary["quality_issues"][0]["error_code"] == "directional_score_too_strong"
+        else:
+            assert weak_summary["quality_status"] == "unchecked"
+            assert weak_summary["quality_issues"] == []
+
+
+def test_weak_model_critical_is_excluded_from_normal_material_values() -> None:
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(fake_stage16_signal("fixture_direction_hypothesis_short", direction="bearish_bias", risk="low", strength="0.80"),),
+        restored_snapshot=restored_snapshot(),
+        weak_model_sources=(weak_model_material_source(quality_status="critical", directional_score="-0.95"),),
+    )
+
+    service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+
+    weak_summary = repo.material_rows[0].material_json["weak_model_summary"]
+    assert weak_summary["status"] == "excluded_by_quality_check"
+    assert weak_summary["quality_status"] == "critical"
+    assert weak_summary["directional_score"] is None
+    assert weak_summary["trade_permission"] == "excluded_by_quality_check"
+    assert weak_summary["excluded_values"]["directional_score"] == -0.95
+
+
+def test_latest_success_matching_weak_model_run_is_selected_and_snapshot_mismatch_ignored() -> None:
+    old_source = weak_model_material_source(
+        weak_model_run_id="WMR-old",
+        weak_model_aggregation_id="WMA-old",
+        created_at_utc=utc_at(18, 9),
+        directional_score="-0.40",
+    )
+    latest_source = weak_model_material_source(
+        weak_model_run_id="WMR-latest",
+        weak_model_aggregation_id="WMA-latest",
+        created_at_utc=utc_at(18, 12),
+        directional_score="-0.55",
+    )
+    mismatched_snapshot = weak_model_material_source(
+        weak_model_run_id="WMR-wrong-snapshot",
+        weak_model_aggregation_id="WMA-wrong-snapshot",
+        snapshot_id="MCS-other",
+        created_at_utc=utc_at(18, 13),
+        directional_score="-0.10",
+    )
+    failed_run = weak_model_material_source(
+        weak_model_run_id="WMR-failed",
+        weak_model_aggregation_id="WMA-failed",
+        run_status="failed",
+        created_at_utc=utc_at(18, 14),
+    )
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(fake_stage16_signal("fixture_direction_hypothesis_short", direction="bearish_bias", risk="low", strength="0.80"),),
+        restored_snapshot=restored_snapshot(),
+        weak_model_sources=(old_source, latest_source, mismatched_snapshot, failed_run),
+    )
+
+    service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+
+    weak_summary = repo.material_rows[0].material_json["weak_model_summary"]
+    assert weak_summary["weak_model_run_id"] == "WMR-latest"
+    assert weak_summary["weak_model_aggregation_id"] == "WMA-latest"
+    assert weak_summary["directional_score"] == -0.55
+
+
+def test_weak_model_missing_keeps_stage18_success_and_marks_legacy_math_context() -> None:
+    repo = FakeAggregationRepository(
+        strategy_run=strategy_run(),
+        results=(fake_stage16_signal("fixture_direction_hypothesis_long", direction="bullish_bias", risk="low", strength="0.80"),),
+        restored_snapshot=restored_snapshot(),
+    )
+
+    result = service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
+
+    material = repo.material_rows[0].material_json
+    assert result.status == StrategyAggregationStatus.SUCCESS
+    assert material["weak_model_summary"]["status"] == "missing"
+    assert material["legacy_math_context"]["source"] == "legacy_math_context"
+    assert material["legacy_math_context"]["status"] == "deprecated_math_material"
+    assert "不得把它们当作两组独立证据重复计票" in material["legacy_math_context"]["double_counting_warning"]
 
 
 def test_direction_hypothesis_outputs_are_not_strategy_signals_or_advice() -> None:
@@ -554,7 +818,7 @@ def test_same_strategy_signal_run_version_is_skipped_when_existing() -> None:
     assert result.details["skip_reason"] == "already_exists"
 
 
-def test_existing_v1_material_pack_does_not_skip_v2_generation() -> None:
+def test_existing_v1_material_pack_does_not_skip_v3_generation() -> None:
     existing_v1 = SimpleNamespace(
         aggregation_run_id="SAR-existing-v1",
         snapshot_id="MCS-stage18",
@@ -589,9 +853,9 @@ def test_existing_v1_material_pack_does_not_skip_v2_generation() -> None:
     assert repo.material_rows[0].material_json["strategy_evidence"]["source"] == "legacy_strategy_results"
 
 
-def test_existing_v2_material_pack_is_idempotently_skipped() -> None:
-    existing_v2 = SimpleNamespace(
-        aggregation_run_id="SAR-existing-v2",
+def test_existing_v3_material_pack_is_idempotently_skipped() -> None:
+    existing_v3 = SimpleNamespace(
+        aggregation_run_id="SAR-existing-v3",
         snapshot_id="MCS-stage18",
         status="success",
         material_schema_version=MATERIAL_SCHEMA_VERSION,
@@ -606,12 +870,12 @@ def test_existing_v2_material_pack_is_idempotently_skipped() -> None:
         input_not_implemented_count=0,
         effective_strategy_count=2,
     )
-    repo = FakeAggregationRepository(strategy_run=strategy_run(), existing=existing_v2)
+    repo = FakeAggregationRepository(strategy_run=strategy_run(), existing=existing_v3)
 
     result = service_with_repo(repo).run_strategy_aggregation(FakeSession(), request=run_request(confirm=True))
 
     assert result.status == StrategyAggregationStatus.SKIPPED
-    assert result.aggregation_run_id == "SAR-existing-v2"
+    assert result.aggregation_run_id == "SAR-existing-v3"
     assert repo.result_calls == 0
     assert repo.aggregation_rows == []
     assert repo.material_rows == []

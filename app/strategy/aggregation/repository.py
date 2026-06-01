@@ -2,7 +2,8 @@
 
 This file belongs to `app/strategy/aggregation`. It reads existing
 `strategy_signal_run` / `strategy_signal_result` rows, delegates read-only
-snapshot window restoration to the stage-15 repository, and writes only
+snapshot window restoration to the stage-15 repository, reads optional 27A/27B
+weak-model summary rows for material context, and writes only
 `strategy_aggregation_run` plus `analysis_material_pack`.
 
 Called by: `app/strategy/aggregation/service.py`.
@@ -31,10 +32,17 @@ from app.storage.mysql.models.strategy_aggregation import (
     StrategyEvidenceAggregationResult,
 )
 from app.storage.mysql.models.strategy_signal import StrategySignalResult, StrategySignalRun
+from app.storage.mysql.models.weak_model import (
+    WeakModelAggregation,
+    WeakModelQualityCheck,
+    WeakModelResult,
+    WeakModelRun,
+)
 from app.strategy.aggregation.types import (
     AnalysisMaterialPackPersistencePayload,
     StrategyAggregationPersistencePayload,
 )
+from app.strategy.aggregation.weak_model_material import WeakModelMaterialSource
 
 try:
     from sqlalchemy import select
@@ -181,6 +189,68 @@ class StrategyAggregationRepository:
         )
         return db_session.execute(stmt).scalar_one_or_none()
 
+    def get_latest_weak_model_material(
+        self,
+        db_session: Any,
+        *,
+        strategy_signal_run_id: str,
+        snapshot_id: str,
+        symbol: str,
+        base_interval: str,
+        higher_interval: str,
+        kline_slot_utc: Any | None,
+    ) -> WeakModelMaterialSource | None:
+        """Return latest matching 27A/27B weak-model material source.
+
+        The selection is read-only and strict: only `run_status=success` WMR
+        rows matching the current SSR, snapshot, symbol, intervals, and base
+        Kline slot may be selected. The method reads compact config hashes from
+        `weak_model_result` but deliberately never loads `raw_output_json`.
+        """
+
+        _require_sqlalchemy()
+        if kline_slot_utc is None:
+            return None
+        stmt = (
+            select(WeakModelRun, WeakModelAggregation)
+            .join(
+                WeakModelAggregation,
+                WeakModelAggregation.weak_model_run_id == WeakModelRun.weak_model_run_id,
+            )
+            .where(WeakModelRun.strategy_signal_run_id == strategy_signal_run_id)
+            .where(WeakModelRun.snapshot_id == snapshot_id)
+            .where(WeakModelRun.symbol == symbol)
+            .where(WeakModelRun.base_interval == base_interval)
+            .where(WeakModelRun.higher_interval == higher_interval)
+            .where(WeakModelRun.kline_slot_utc == kline_slot_utc)
+            .where(WeakModelRun.run_status == "success")
+            .where(WeakModelAggregation.strategy_signal_run_id == strategy_signal_run_id)
+            .where(WeakModelAggregation.snapshot_id == snapshot_id)
+            .where(WeakModelAggregation.symbol == symbol)
+            .where(WeakModelAggregation.base_interval == base_interval)
+            .where(WeakModelAggregation.higher_interval == higher_interval)
+            .where(WeakModelAggregation.kline_slot_utc == kline_slot_utc)
+            .order_by(WeakModelRun.created_at_utc.desc(), WeakModelRun.id.desc(), WeakModelAggregation.id.desc())
+            .limit(1)
+        )
+        row = db_session.execute(stmt).first()
+        if row is None:
+            return None
+        weak_model_run, weak_model_aggregation = row[0], row[1]
+        quality_check = self._get_latest_weak_model_quality_check(
+            db_session,
+            weak_model_run_id=str(getattr(weak_model_run, "weak_model_run_id", "")),
+        )
+        return WeakModelMaterialSource(
+            run=weak_model_run,
+            aggregation=weak_model_aggregation,
+            quality_check=quality_check,
+            source_config_hashes=self._list_weak_model_config_hashes(
+                db_session,
+                weak_model_run_id=str(getattr(weak_model_run, "weak_model_run_id", "")),
+            ),
+        )
+
     def create_aggregation_run(
         self,
         db_session: Any,
@@ -315,6 +385,35 @@ class StrategyAggregationRepository:
         aggregation_row.updated_at_utc = now_utc()
         _flush_if_possible(db_session)
         return aggregation_row
+
+    def _get_latest_weak_model_quality_check(self, db_session: Any, *, weak_model_run_id: str) -> Any | None:
+        stmt = (
+            select(WeakModelQualityCheck)
+            .where(WeakModelQualityCheck.weak_model_run_id == weak_model_run_id)
+            .order_by(WeakModelQualityCheck.updated_at_utc.desc(), WeakModelQualityCheck.id.desc())
+            .limit(1)
+        )
+        return db_session.execute(stmt).scalar_one_or_none()
+
+    def _list_weak_model_config_hashes(self, db_session: Any, *, weak_model_run_id: str) -> tuple[str, ...]:
+        stmt = (
+            select(WeakModelResult.model_key, WeakModelResult.config_hash)
+            .where(WeakModelResult.weak_model_run_id == weak_model_run_id)
+            .order_by(WeakModelResult.model_key.asc(), WeakModelResult.id.asc())
+        )
+        markers: list[str] = []
+        seen: set[str] = set()
+        for row in db_session.execute(stmt).all():
+            model_key = str(row[0] or "")
+            config_hash = str(row[1] or "")
+            if not model_key or not config_hash:
+                continue
+            marker = f"{model_key}:{config_hash}"
+            if marker in seen:
+                continue
+            seen.add(marker)
+            markers.append(marker)
+        return tuple(markers)
 
 
 def create_default_strategy_aggregation_repository() -> StrategyAggregationRepository:

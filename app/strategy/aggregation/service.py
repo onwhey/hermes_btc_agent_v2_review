@@ -6,6 +6,7 @@ scripts/run_strategy_aggregation.py::main
     -> app/strategy/aggregation/repository.py::get_strategy_signal_run
     -> app/strategy/aggregation/repository.py::list_strategy_signal_results
     -> app/strategy/aggregation/repository.py::restore_snapshot_kline_windows
+    -> app/strategy/aggregation/repository.py::get_latest_weak_model_material
     -> app/strategy/aggregation/material_builder.py::build_material_pack
     -> app/strategy/aggregation/repository.py::create_aggregation_run
     -> app/strategy/aggregation/repository.py::create_material_pack
@@ -83,6 +84,10 @@ from app.strategy.aggregation.types import (
     StrategyAggregationRequest,
     StrategyAggregationResult,
     StrategyAggregationStatus,
+)
+from app.strategy.aggregation.weak_model_material import (
+    build_weak_model_summary,
+    extract_snapshot_base_slot_utc,
 )
 
 try:
@@ -290,6 +295,31 @@ class StrategyAggregationService:
                 )
             except Exception:  # noqa: BLE001 - 23F bridge is optional for stage-18 compatibility.
                 strategy_evidence_aggregation = None
+        kline_slot_utc = extract_snapshot_base_slot_utc(restored_snapshot)
+        weak_model_source = None
+        weak_model_getter = getattr(self._repository, "get_latest_weak_model_material", None)
+        if callable(weak_model_getter):
+            try:
+                weak_model_source = weak_model_getter(
+                    db_session,
+                    strategy_signal_run_id=request.strategy_signal_run_id,
+                    snapshot_id=str(getattr(strategy_run, "snapshot_id", "") or ""),
+                    symbol=str(getattr(strategy_run, "symbol", "") or ""),
+                    base_interval=str(getattr(strategy_run, "base_interval_value", "") or ""),
+                    higher_interval=str(getattr(strategy_run, "higher_interval_value", "") or ""),
+                    kline_slot_utc=kline_slot_utc,
+                )
+            except Exception:  # noqa: BLE001 - 27C weak-model bridge must not block stage 18.
+                weak_model_source = None
+        weak_model_summary = build_weak_model_summary(
+            weak_model_source,
+            strategy_signal_run_id=request.strategy_signal_run_id,
+            snapshot_id=getattr(strategy_run, "snapshot_id", None),
+            symbol=str(getattr(strategy_run, "symbol", "") or ""),
+            base_interval=str(getattr(strategy_run, "base_interval_value", "") or ""),
+            higher_interval=str(getattr(strategy_run, "higher_interval_value", "") or ""),
+            kline_slot_utc=kline_slot_utc,
+        )
         try:
             latest_close = latest_close_price(restored_snapshot.rows_4h)
             support_resistance_probe = build_support_resistance_probe(
@@ -313,6 +343,7 @@ class StrategyAggregationService:
                 decision=decision,
                 candidate_scenarios_json=candidate_scenarios_json,
                 strategy_evidence_aggregation=strategy_evidence_aggregation,
+                weak_model_summary=weak_model_summary,
             )
         except ValueError as exc:
             return self._return_or_persist_blocked(

@@ -155,6 +155,50 @@ def test_old_stage19_result_within_three_base_bars_can_be_reused():
     assert "本轮未调用大模型" in result.model_review_skip_reason
 
 
+def test_weak_model_summary_change_prevents_old_stage19_reuse():
+    old_material = _material_pack(
+        "AMP-old",
+        base_end_ms=BASE_TIME_MS,
+        weak_model_summary={
+            "status": "warning",
+            "weak_model_run_id": "WMR-old",
+            "weak_model_aggregation_id": "WMA-old",
+            "quality_check_id": "WMQC-old",
+            "quality_status": "warning",
+            "directional_bias": "bearish",
+            "directional_score": -0.75,
+            "source_config_hashes": ["trend_strength_directional:old"],
+        },
+    )
+    current_material = _material_pack(
+        "AMP-current",
+        base_end_ms=BASE_TIME_MS + 2 * BASE_INTERVAL_MS,
+        weak_model_summary={
+            "status": "available",
+            "weak_model_run_id": "WMR-current",
+            "weak_model_aggregation_id": "WMA-current",
+            "quality_check_id": "WMQC-current",
+            "quality_status": "passed",
+            "directional_bias": "bearish",
+            "directional_score": -0.60,
+            "source_config_hashes": ["trend_strength_directional:new"],
+        },
+    )
+    old_run = _model_run("MAR-old", material_pack_id=old_material.material_pack_id)
+    old_result = _model_result(old_run.model_analysis_run_id, old_material.material_pack_id)
+    repo = FakeRepository(
+        materials={current_material.material_pack_id: current_material},
+        runs={current_material.material_pack_id: []},
+        candidates=[_candidate(old_run, old_result, old_material)],
+    )
+
+    result, _ = _run(repo, material_pack_id=current_material.material_pack_id)
+
+    assert result.status == ModelReviewAggregationStatus.BLOCKED
+    assert result.error_code == "no_model_review_result"
+    assert result.model_review_reused is False
+
+
 def test_support_resistance_price_changes_make_material_fingerprint_different():
     first_material = _material_pack(
         "AMP-first",
@@ -181,6 +225,51 @@ def test_support_resistance_price_changes_make_material_fingerprint_different():
     assert first_fingerprint.details["support_candidates_summary"] != second_fingerprint.details[
         "support_candidates_summary"
     ]
+    assert first_fingerprint.fingerprint != second_fingerprint.fingerprint
+
+
+def test_weak_model_summary_changes_make_material_fingerprint_different():
+    first_material = _material_pack(
+        "AMP-first",
+        base_end_ms=BASE_TIME_MS,
+        weak_model_summary={
+            "status": "warning",
+            "weak_model_run_id": "WMR-first",
+            "weak_model_aggregation_id": "WMA-first",
+            "quality_check_id": "WMQC-first",
+            "quality_status": "warning",
+            "directional_bias": "bearish",
+            "directional_score": -0.75,
+            "risk_level": "medium",
+            "trade_permission": "allow",
+            "source_config_hashes": ["trend_strength_directional:old"],
+        },
+    )
+    second_material = _material_pack(
+        "AMP-second",
+        base_end_ms=BASE_TIME_MS,
+        weak_model_summary={
+            "status": "available",
+            "weak_model_run_id": "WMR-second",
+            "weak_model_aggregation_id": "WMA-second",
+            "quality_check_id": "WMQC-second",
+            "quality_status": "passed",
+            "directional_bias": "bearish",
+            "directional_score": -0.60,
+            "risk_level": "medium",
+            "trade_permission": "allow",
+            "source_config_hashes": ["trend_strength_directional:new"],
+        },
+    )
+
+    first_fingerprint = build_material_fingerprint(first_material)
+    second_fingerprint = build_material_fingerprint(second_material)
+
+    assert first_fingerprint.details["weak_model_summary"]["quality_status"] == "warning"
+    assert second_fingerprint.details["weak_model_summary"]["quality_status"] == "passed"
+    assert first_fingerprint.details["weak_model_summary"]["directional_score"] != second_fingerprint.details[
+        "weak_model_summary"
+    ]["directional_score"]
     assert first_fingerprint.fingerprint != second_fingerprint.fingerprint
 
 
@@ -322,6 +411,7 @@ def _material_pack(
     base_end_ms,
     support_candidates=None,
     resistance_candidates=None,
+    weak_model_summary=None,
 ):
     support_candidates = support_candidates or [{"level": "support-zone"}]
     resistance_candidates = resistance_candidates or [{"level": "resistance-zone"}]
@@ -342,6 +432,8 @@ def _material_pack(
         "hypothesis_invalidation_check": "close below structure support",
         "hypothesis_target_observation_zone": "prior resistance zone",
     }
+    if weak_model_summary is not None:
+        material_json["weak_model_summary"] = weak_model_summary
     summary_json = {
         "analysis_hypothesis_direction": "long_bias",
         "risk_gate_status": "allowed_for_review",

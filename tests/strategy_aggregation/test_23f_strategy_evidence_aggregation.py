@@ -808,8 +808,8 @@ def test_stage18_material_pack_uses_23f_aggregation_or_marks_legacy_source() -> 
     )
 
     bridge = with_evidence.material_json["strategy_evidence"]
-    assert MATERIAL_SCHEMA_VERSION == "material_schema_v2"
-    assert with_evidence.material_json["material_schema_version"] == "material_schema_v2"
+    assert MATERIAL_SCHEMA_VERSION == "material_schema_v3"
+    assert with_evidence.material_json["material_schema_version"] == "material_schema_v3"
     assert bridge["source"] == "strategy_evidence_aggregation_result"
     assert bridge["aggregation_id"] == "SEA-existing"
     assert bridge["strategy_signal_run_id"] == "SSR-23F"
@@ -826,11 +826,12 @@ def test_stage18_material_pack_uses_23f_aggregation_or_marks_legacy_source() -> 
     assert bridge["model_review_focus"] == {"review_points": ["check evidence"]}
 
     legacy = without_evidence.material_json["strategy_evidence"]
-    assert without_evidence.material_json["material_schema_version"] == "material_schema_v2"
+    assert without_evidence.material_json["material_schema_version"] == "material_schema_v3"
     assert legacy["source"] == "legacy_strategy_results"
     assert legacy["aggregation_id"] is None
     assert legacy["strategy_signal_run_id"] == "SSR-23F"
     assert legacy["warning"] == "23F aggregation not found; material pack used legacy compatible strategy evidence."
+    assert without_evidence.material_json["weak_model_summary"]["status"] == "missing"
 
 
 def restored_snapshot() -> Any:

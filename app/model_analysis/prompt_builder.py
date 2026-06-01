@@ -81,6 +81,12 @@ REVIEW_OUTPUT_JSON_SKELETON: dict[str, Any] = {
     "time_freshness_assessment": "",
     "boundary_flags": [],
     "quality_flags": [],
+    "weak_model_assessment": "",
+    "weak_model_supports_strategy": "unknown",
+    "weak_model_conflicts_with_strategy": "unknown",
+    "weak_model_quality_concerns": [],
+    "duplicate_evidence_risk": "unknown",
+    "model_reviewer_note": "",
     "confidence": "unknown",
     "summary": "",
     "not_trading_advice": True,
@@ -141,7 +147,7 @@ REVIEW_DECISION_SEMANTIC_RULES: dict[str, Any] = {
     },
 }
 
-PROMPT_TEMPLATE_POLICY_VERSION = "review_prompt_policy_v4_strategy_evidence_compacted"
+PROMPT_TEMPLATE_POLICY_VERSION = "review_prompt_policy_v5_weak_model_summary"
 
 def build_prompt_template_hash(
     *,
@@ -174,6 +180,11 @@ REVIEW_OUTPUT_RULES = (
     "Every major judgment must cite evidence_refs from the provided material pack.",
     "Do not use material-external news, macro, on-chain, account, position, or old BTC market-memory information.",
     "Do not treat 23F candidate_bias as fact and do not output formal entry / stop_loss / take_profit.",
+    "When weak_model_summary is present, question it instead of trusting it as a conclusion.",
+    "审查弱模型，而不是盲信弱模型；若弱模型和策略冲突，优先指出冲突。",
+    "Review weak_model directional_score strength, confidence, risk_level, trade_permission, confirmation support, and quality_status.",
+    "Check whether weak_model_summary conflicts with strategy_evidence or duplicates the same source logic; flag duplicate_evidence_risk when relevant.",
+    "If weak models and strategy evidence conflict, identify the conflict first instead of forcing a blended conclusion.",
     "If evidence is insufficient, use review_decision=need_more_evidence or wait.",
     "review_decision=require_more_evidence requires human_review_required=true.",
     "If evidence is insufficient but no human intervention is required, use review_decision=wait and human_review_required=false.",
@@ -371,10 +382,12 @@ def _render_prompt_text(input_summary: Mapping[str, Any]) -> str:
     compaction = input_summary.get("input_compaction")
     emergency_mode = isinstance(compaction, Mapping) and compaction.get("mode") == "emergency"
     prompt_input = {
-        "instructions": REVIEW_INSTRUCTIONS,
+        "instructions": _prompt_instructions(emergency_mode=emergency_mode),
         "allowed_enum_values": _core_allowed_enum_values() if emergency_mode else REVIEW_OUTPUT_ALLOWED_ENUM_VALUES,
         "review_decision_semantic_rules": REVIEW_DECISION_SEMANTIC_RULES,
-        "required_output_json_skeleton": REVIEW_OUTPUT_JSON_SKELETON,
+        "required_output_json_skeleton": (
+            _core_required_output_json_skeleton() if emergency_mode else REVIEW_OUTPUT_JSON_SKELETON
+        ),
         "input_summary": _prompt_input_summary(input_summary),
     }
     return json.dumps(
@@ -383,6 +396,24 @@ def _render_prompt_text(input_summary: Mapping[str, Any]) -> str:
         sort_keys=True,
         default=str,
         separators=(",", ":"),
+    )
+
+
+def _prompt_instructions(*, emergency_mode: bool) -> str:
+    """Return compact instructions when material input already hit emergency mode."""
+
+    if not emergency_mode:
+        return REVIEW_INSTRUCTIONS
+    return "\n".join(
+        (
+            "You are an independent risk review officer, not a strategy and not a final trader.",
+            "Rebut 23F first, cite provided evidence, question weak_model_summary, and output JSON only.",
+            "No trading/action fields; not_trading_advice=true; final/signal/executable/auto flags=false.",
+            "Check weak_model strength, confidence, risk, permission, quality_status, conflict, and duplicate evidence risk.",
+            "审查弱模型，而不是盲信弱模型；若弱模型和策略冲突，优先指出冲突。",
+            "If evidence is insufficient, use need_more_evidence or wait.",
+            "The output must conform to review_schema_v2_strategy_evidence.",
+        )
     )
 
 
@@ -404,6 +435,43 @@ def _core_allowed_enum_values() -> dict[str, list[str]]:
         )
         if key in REVIEW_OUTPUT_ALLOWED_ENUM_VALUES
     }
+
+
+def _core_required_output_json_skeleton() -> dict[str, Any]:
+    """Return the required output skeleton without backward-compatible extras."""
+
+    keys = (
+        "agreement_with_23f",
+        "review_decision",
+        "main_objection",
+        "strongest_counterargument",
+        "missing_evidence",
+        "disputed_strategy_points",
+        "overestimated_evidence",
+        "underestimated_evidence",
+        "scenario_review",
+        "discipline_check",
+        "recommendation_to_advice_layer",
+        "evidence_refs",
+        "time_freshness_assessment",
+        "boundary_flags",
+        "quality_flags",
+        "weak_model_assessment",
+        "weak_model_supports_strategy",
+        "weak_model_conflicts_with_strategy",
+        "weak_model_quality_concerns",
+        "duplicate_evidence_risk",
+        "model_reviewer_note",
+        "confidence",
+        "summary",
+        "not_trading_advice",
+        "human_review_required",
+        "is_final_trading_advice",
+        "is_trading_signal",
+        "is_executable",
+        "auto_trading_allowed",
+    )
+    return {key: REVIEW_OUTPUT_JSON_SKELETON[key] for key in keys}
 
 
 def _prompt_input_summary(input_summary: Mapping[str, Any]) -> dict[str, Any]:

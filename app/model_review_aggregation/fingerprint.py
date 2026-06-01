@@ -19,6 +19,7 @@ from typing import Any, Mapping
 
 from app.market_data.kline_constants import KLINE_1D_INTERVAL_MS, KLINE_4H_INTERVAL_MS
 from app.model_review_aggregation.schema import REVIEW_INPUT_FINGERPRINT_VERSION
+from app.strategy.aggregation.weak_model_material import weak_model_summary_fingerprint_fields
 
 MAX_CANDIDATE_SUMMARY_ITEMS = 8
 MAX_CANDIDATE_FIELD_CHARS = 48
@@ -56,6 +57,7 @@ def build_material_fingerprint(material_pack: Any) -> MaterialFingerprint:
     resistance_candidates = _list_value(support_resistance.get("resistance_candidates"))
     support_candidates_summary = _summarize_price_candidates(support_candidates)
     resistance_candidates_summary = _summarize_price_candidates(resistance_candidates)
+    weak_model_summary = _mapping(material_json.get("weak_model_summary"))
     details = {
         "fingerprint_version": REVIEW_INPUT_FINGERPRINT_VERSION,
         "symbol": str(getattr(material_pack, "symbol", "") or material_json.get("symbol", "")),
@@ -85,6 +87,7 @@ def build_material_fingerprint(material_pack: Any) -> MaterialFingerprint:
         "resistance_candidates_summary": resistance_candidates_summary,
         "hypothesis_invalidation_check": _bounded_text(material_json.get("hypothesis_invalidation_check")),
         "hypothesis_target_observation_zone": _bounded_text(material_json.get("hypothesis_target_observation_zone")),
+        "weak_model_summary": weak_model_summary_fingerprint_fields(weak_model_summary),
         "base_open_time_end_ms": _optional_int(data_window_json.get("base_open_time_end_ms")),
     }
     fingerprint_details = dict(details)

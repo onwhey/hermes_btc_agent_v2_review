@@ -32,6 +32,10 @@ from app.strategy.aggregation.indicators import (
     max_open_time_ms,
     open_time_utc_text,
 )
+from app.strategy.aggregation.weak_model_material import (
+    build_legacy_math_context_summary,
+    build_weak_model_summary,
+)
 from app.strategy.aggregation.types import (
     AGGREGATION_VERSION,
     CANDIDATE_SCENARIO_VERSION,
@@ -98,6 +102,7 @@ def build_material_pack(
     decision: AggregationDecision,
     candidate_scenarios_json: Mapping[str, Any],
     strategy_evidence_aggregation: Any | None = None,
+    weak_model_summary: Mapping[str, Any] | None = None,
 ) -> MaterialPackBuildResult:
     """Build deterministic material JSON for the next analysis layer.
 
@@ -138,6 +143,22 @@ def build_material_pack(
         strategy_evidence_aggregation,
         strategy_signal_run_id=str(getattr(strategy_signal_run, "run_id", "")),
     )
+    normalized_weak_model_summary = (
+        dict(weak_model_summary)
+        if isinstance(weak_model_summary, Mapping)
+        else dict(
+            build_weak_model_summary(
+                None,
+                strategy_signal_run_id=str(getattr(strategy_signal_run, "run_id", "")),
+                snapshot_id=getattr(strategy_signal_run, "snapshot_id", None),
+                symbol=str(getattr(strategy_signal_run, "symbol", "")),
+                base_interval=str(getattr(strategy_signal_run, "base_interval_value", "")),
+                higher_interval=str(getattr(strategy_signal_run, "higher_interval_value", "")),
+                kline_slot_utc=None,
+            )
+        )
+    )
+    legacy_math_context = build_legacy_math_context_summary(normalized_weak_model_summary)
 
     material_json: Mapping[str, Any] = {
         "material_schema_version": MATERIAL_SCHEMA_VERSION,
@@ -178,6 +199,8 @@ def build_material_pack(
         },
         "support_resistance": support_resistance,
         "strategy_evidence": strategy_evidence,
+        "weak_model_summary": normalized_weak_model_summary,
+        "legacy_math_context": legacy_math_context,
         "analysis_hypothesis_direction": decision.analysis_hypothesis_direction.value,
         "analysis_hypothesis_semantics": ANALYSIS_HYPOTHESIS_SEMANTICS,
         "direction_projection_source": candidate_scenarios_json.get("direction_projection_source"),
@@ -214,6 +237,8 @@ def build_material_pack(
             "promotion_requires_future_strategy_and_llm_stage": True,
             "no_large_model_call": True,
             "no_automatic_trading": True,
+            "weak_model_summary_is_review_input_not_advice": True,
+            "legacy_math_context_not_independent_from_weak_model": True,
         },
     }
     summary_json = {
@@ -226,6 +251,10 @@ def build_material_pack(
         "effective_strategy_count": vote_summary.effective_strategy_count,
         "strategy_signal_result_count": len(strategy_signal_results),
         "strategy_evidence_source": strategy_evidence.get("source"),
+        "weak_model_summary_status": normalized_weak_model_summary.get("status"),
+        "weak_model_quality_status": normalized_weak_model_summary.get("quality_status"),
+        "weak_model_run_id": normalized_weak_model_summary.get("weak_model_run_id"),
+        "legacy_math_context_status": legacy_math_context.get("status"),
     }
     if strategy_evidence.get("source") == "strategy_evidence_aggregation_result":
         summary_json["strategy_evidence_candidate_bias"] = strategy_evidence.get("candidate_bias")

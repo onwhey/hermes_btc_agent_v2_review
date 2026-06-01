@@ -86,9 +86,15 @@ def build_compacted_model_review_input_summary(
         "risk_gate_summary": evidence_summary.get("risk_gate_summary", {}),
         "evidence_missing": evidence_summary.get("evidence_missing", []),
         "model_review_focus": evidence_summary.get("model_review_focus", []),
+        "weak_model_summary": _compact_weak_model_summary(
+            material_json.get("weak_model_summary"),
+            aggressive=aggressive,
+            emergency=emergency,
+        ),
+        "weak_model_review_focus": _weak_model_review_focus(emergency=emergency),
         "material_summary": material_summary,
         "input_compaction": {
-            "version": "24c_strategy_evidence_compaction_v1",
+            "version": "27c_weak_model_compaction_v1",
             "mode": compaction_mode,
             "target_char_limit": PROMPT_TARGET_CHAR_LIMIT,
             "hard_char_limit": PROMPT_HARD_CHAR_LIMIT,
@@ -96,6 +102,8 @@ def build_compacted_model_review_input_summary(
             "strategy_evidence_chars_before_compaction": original_strategy_evidence_char_count,
             "full_material_json_not_sent": True,
             "full_strategy_evidence_not_sent": True,
+            "weak_model_summary_included": True,
+            "full_weak_model_result_raw_output_not_sent": True,
         },
         "not_trading_advice": True,
     }
@@ -571,6 +579,7 @@ def _compact_material_summary_for_model(
     summary = {
         "kline_window_summary": _compact_kline_window_summary(material_json.get("kline_window_summary")),
         "math_summary": _compact_math_material_summary(material_json, aggressive=aggressive, emergency=emergency),
+        "legacy_math_context": _compact_legacy_math_context(material_json.get("legacy_math_context")),
     }
     if emergency:
         return summary
@@ -581,6 +590,92 @@ def _compact_material_summary_for_model(
     )
     summary["validation_focus"] = compact_mapping(validation_plan_json, max_items=5)
     return summary
+
+
+def _compact_weak_model_summary(value: Any, *, aggressive: bool, emergency: bool) -> dict[str, Any]:
+    summary = as_mapping(value)
+    if not summary:
+        return {"status": "missing", "quality_status": "missing"}
+    max_items = 1 if emergency else (3 if aggressive else 5)
+    result = {
+        "status": compact_scalar(summary.get("status"), max_chars=60),
+        "weak_model_run_id": compact_scalar(summary.get("weak_model_run_id"), max_chars=90),
+        "weak_model_aggregation_id": compact_scalar(summary.get("weak_model_aggregation_id"), max_chars=90),
+        "quality_check_id": compact_scalar(summary.get("quality_check_id"), max_chars=90),
+        "quality_status": compact_scalar(summary.get("quality_status"), max_chars=60),
+        "directional_bias": compact_scalar(summary.get("directional_bias"), max_chars=60),
+        "directional_score": compact_scalar(summary.get("directional_score"), max_chars=40),
+        "directional_confidence": compact_scalar(summary.get("directional_confidence"), max_chars=40),
+        "risk_level": compact_scalar(summary.get("risk_level"), max_chars=60),
+        "trade_permission": compact_scalar(summary.get("trade_permission"), max_chars=60),
+        "veto_triggered": compact_scalar(summary.get("veto_triggered"), max_chars=20),
+        "veto_factors": compact_list(summary.get("veto_factors"), max_items=max_items),
+        "context_summary": compact_mapping(as_mapping(summary.get("context_summary")), max_items=5),
+        "quality_issues": _compact_weak_model_quality_issues(
+            summary.get("quality_issues"),
+            max_items=max_items,
+            emergency=emergency,
+        ),
+        "source_config_hashes": compact_list(summary.get("source_config_hashes"), max_items=max_items),
+        "excluded_values": compact_mapping(as_mapping(summary.get("excluded_values")), max_items=5),
+        "summary_text": compact_scalar(summary.get("summary_text"), max_chars=80 if emergency else 220),
+        "not_trading_advice": True,
+    }
+    return {key: item for key, item in result.items() if item not in (None, "", [], {})}
+
+
+def _compact_weak_model_quality_issues(value: Any, *, max_items: int, emergency: bool) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+    result: list[Any] = []
+    for item in value[:max_items]:
+        if not isinstance(item, Mapping):
+            result.append(compact_scalar(item, max_chars=80 if emergency else 140))
+            continue
+        result.append(
+            {
+                key: compact_scalar(item.get(key), max_chars=60 if emergency else 140)
+                for key in ("error_code", "severity", "field_name", "reason", "expected")
+                if item.get(key) not in (None, "", [], {})
+            }
+        )
+    return result
+
+
+def _weak_model_review_focus(*, emergency: bool) -> list[str]:
+    focus = [
+        "weak_model directional_score 是否过强",
+        "confidence 是否虚高",
+        "risk_level 与当前波动是否一致",
+        "trade_permission=allow 是否过松",
+        "confirmation 是否真的支持方向",
+        "quality_status 是否 warning / unchecked / critical",
+        "weak_model_summary 与策略证据是否冲突",
+        "weak_model_summary 与策略证据是否同源重复",
+        "是否存在双重计票风险",
+        "若弱模型和策略冲突，优先指出冲突，而不是强行综合",
+    ]
+    return focus[:4] if emergency else focus
+
+
+def _compact_legacy_math_context(value: Any) -> dict[str, Any]:
+    context = as_mapping(value)
+    if not context:
+        return {}
+    return {
+        key: compact_scalar(context.get(key), max_chars=180)
+        if not isinstance(context.get(key), list)
+        else compact_list(context.get(key), max_items=5)
+        for key in (
+            "source",
+            "status",
+            "weak_model_summary_status",
+            "covered_by_weak_model_roles",
+            "independent_evidence_weight",
+            "double_counting_warning",
+        )
+        if context.get(key) not in (None, "", [], {})
+    }
 
 
 def _compact_kline_window_summary(value: Any) -> dict[str, Any]:

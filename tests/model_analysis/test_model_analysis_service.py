@@ -867,6 +867,45 @@ def test_24c_prompt_includes_strategy_evidence_time_anchors_and_review_officer_r
     assert "strategy_evidence" in prompt.prompt_text
 
 
+def test_27c_prompt_includes_weak_model_summary_and_skepticism_rules() -> None:
+    base_payload = json.loads(material_pack().material_json)
+    base_payload["weak_model_summary"] = {
+        "status": "available",
+        "weak_model_run_id": "WMR-stage19",
+        "weak_model_aggregation_id": "WMA-stage19",
+        "quality_check_id": "WMQC-stage19",
+        "quality_status": "passed",
+        "directional_bias": "bearish",
+        "directional_score": -0.6,
+        "directional_confidence": 0.62,
+        "risk_level": "medium",
+        "trade_permission": "allow",
+        "veto_triggered": False,
+        "context_summary": {"regime": "range", "source_maturity_stage": "observe_only"},
+        "source_config_hashes": ["trend_strength_directional:hash-v1"],
+        "quality_issues": [],
+        "summary_text": "weak model compact summary",
+        "not_trading_advice": True,
+    }
+    base_payload["legacy_math_context"] = {
+        "source": "legacy_math_context",
+        "status": "deprecated_math_material",
+        "double_counting_warning": "legacy_math_context 与 weak_model_summary 可能同源，不得重复计票。",
+    }
+
+    prompt = build_model_review_prompt(material_pack(material_payload=base_payload), settings=AppSettings())
+    prompt_payload = json.loads(prompt.prompt_text)
+
+    weak_summary = prompt.input_summary["weak_model_summary"]
+    assert weak_summary["status"] == "available"
+    assert weak_summary["quality_status"] == "passed"
+    assert weak_summary["directional_score"] == -0.6
+    assert "weak_model directional_score 是否过强" in prompt.input_summary["weak_model_review_focus"]
+    assert "审查弱模型，而不是盲信弱模型" in prompt_payload["instructions"]
+    assert "duplicate_evidence_risk" in prompt_payload["required_output_json_skeleton"]
+    assert "raw_output_json" not in prompt.prompt_text
+
+
 def test_model_analysis_schema_uses_attempt_key_and_single_result_unique_key() -> None:
     from sqlalchemy import UniqueConstraint
 
