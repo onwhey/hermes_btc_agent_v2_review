@@ -232,13 +232,15 @@ def build_legacy_math_context_summary(weak_model_summary: Mapping[str, Any]) -> 
 
 
 def weak_model_summary_fingerprint_fields(summary: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Return bounded weak-model fields for material hash/fingerprint inputs."""
+    """Return bounded semantic weak-model fields for material fingerprints.
+
+    Trace identifiers such as WMR/WMA/WMQC ids stay in the material pack for
+    audit, but they are deliberately excluded here because rerunning 27A/27B can
+    create new ids without changing the weak-model conclusion.
+    """
 
     return {
         "status": summary.get("status"),
-        "weak_model_run_id": summary.get("weak_model_run_id"),
-        "weak_model_aggregation_id": summary.get("weak_model_aggregation_id"),
-        "quality_check_id": summary.get("quality_check_id"),
         "quality_status": summary.get("quality_status"),
         "directional_bias": summary.get("directional_bias"),
         "directional_score": summary.get("directional_score"),
@@ -248,8 +250,9 @@ def weak_model_summary_fingerprint_fields(summary: Mapping[str, Any]) -> Mapping
         "veto_triggered": summary.get("veto_triggered"),
         "veto_factors": _bounded_list(summary.get("veto_factors"), max_items=6),
         "context_summary": _bounded_mapping(summary.get("context_summary"), max_items=8),
-        "quality_issues": _bounded_quality_issue_codes(summary.get("quality_issues")),
+        "quality_issues": _bounded_quality_issue_identities(summary.get("quality_issues")),
         "source_config_hashes": _bounded_list(summary.get("source_config_hashes"), max_items=8),
+        "not_trading_advice": summary.get("not_trading_advice"),
     }
 
 
@@ -289,17 +292,18 @@ def _bounded_mapping(value: Any, *, max_items: int) -> Mapping[str, Any]:
     return {str(key): item for key, item in list(mapping.items())[:max_items]}
 
 
-def _bounded_quality_issue_codes(value: Any) -> list[str]:
+def _bounded_quality_issue_identities(value: Any) -> list[Mapping[str, str]]:
     issues = _json_list(value)
-    codes: list[str] = []
+    identities: list[Mapping[str, str]] = []
     for item in issues[:8]:
         if isinstance(item, Mapping):
             code = str(item.get("error_code", "") or "")
-            if code:
-                codes.append(code)
+            severity = str(item.get("severity", "") or "")
+            if code or severity:
+                identities.append({"error_code": code, "severity": severity})
         elif item:
-            codes.append(str(item)[:80])
-    return codes
+            identities.append({"error_code": str(item)[:80], "severity": ""})
+    return identities
 
 
 def _float_or_none(value: Any) -> float | None:

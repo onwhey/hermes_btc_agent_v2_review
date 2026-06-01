@@ -319,14 +319,12 @@ deprecated_math_material
 27C 后，20 不能只看策略是否变化。  
 20 判断是否复用旧 19 审查结果时，必须把 weak_model_summary 纳入材料变化判断。
 
-### 8.1 material hash 必须包含弱模型摘要
+### 8.1 material hash 必须包含弱模型语义摘要
 
 18 生成 material pack hash 时必须包含：
 
 ```text
-weak_model_run_id
-weak_model_aggregation_id
-quality_check_id
+status
 quality_status
 directional_bias
 directional_score
@@ -336,26 +334,34 @@ trade_permission
 veto_triggered
 veto_factors
 context_summary
+quality_issues(error_code/severity)
 source_config_hashes
+not_trading_advice
 ```
 
-否则 20 可能误判材料未变化。
+`weak_model_run_id`、`weak_model_aggregation_id`、`quality_check_id` 必须继续保留在
+material pack 中作为审计追踪字段，但不得纳入 material fingerprint / 20 复用判断。
+这些字段是流水 ID，不是语义内容；同一 SSR、同一弱模型结论重跑 27A/27B 时不应仅因
+流水 ID 变化而触发新的模型审查。
+
+否则 20 可能误判材料未变化，或因流水 ID 变化误判材料已变化。
 
 ### 8.2 触发重新审查的弱模型变化
 
 以下变化应视为 material pack 实质变化：
 
 ```text
-1. weak_model_aggregation_id 变化
-2. quality_check_id 变化
-3. quality_status 从 passed 变 warning / critical / unchecked
-4. directional_bias 变化
-5. directional_score 跨阈值变化，例如 neutral ↔ bullish/bearish
-6. directional_score 强度明显变化，例如 -0.75 → -0.60
-7. risk_level 变化
-8. trade_permission 变化
-9. veto_triggered 变化
-10. weak_model config_hash 变化
+1. status / quality_status 从 passed 变 warning / critical / unchecked
+2. directional_bias 变化
+3. directional_score 跨阈值变化，例如 neutral ↔ bullish/bearish
+4. directional_score 强度明显变化，例如 -0.75 → -0.60
+5. directional_confidence 变化
+6. risk_level 变化
+7. trade_permission 变化
+8. veto_triggered / veto_factors 变化
+9. context_summary 关键摘要变化
+10. quality_issues 的 error_code / severity 变化
+11. weak_model config_hash 变化
 ```
 
 ### 8.3 不允许错误复用

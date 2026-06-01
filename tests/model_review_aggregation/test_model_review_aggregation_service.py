@@ -273,6 +273,108 @@ def test_weak_model_summary_changes_make_material_fingerprint_different():
     assert first_fingerprint.fingerprint != second_fingerprint.fingerprint
 
 
+def test_weak_model_trace_ids_do_not_change_material_fingerprint():
+    first_material = _material_pack(
+        "AMP-first",
+        base_end_ms=BASE_TIME_MS,
+        weak_model_summary=_weak_model_summary(
+            weak_model_run_id="WMR-first",
+            weak_model_aggregation_id="WMA-first",
+            quality_check_id="WMQC-first",
+        ),
+    )
+    second_material = _material_pack(
+        "AMP-second",
+        base_end_ms=BASE_TIME_MS,
+        weak_model_summary=_weak_model_summary(
+            weak_model_run_id="WMR-second",
+            weak_model_aggregation_id="WMA-second",
+            quality_check_id="WMQC-second",
+        ),
+    )
+
+    first_fingerprint = build_material_fingerprint(first_material)
+    second_fingerprint = build_material_fingerprint(second_material)
+
+    assert first_fingerprint.fingerprint == second_fingerprint.fingerprint
+    assert "weak_model_run_id" not in first_fingerprint.details["weak_model_summary"]
+    assert "weak_model_aggregation_id" not in first_fingerprint.details["weak_model_summary"]
+    assert "quality_check_id" not in first_fingerprint.details["weak_model_summary"]
+
+    first_material_summary = json.loads(first_material.material_json)["weak_model_summary"]
+    second_material_summary = json.loads(second_material.material_json)["weak_model_summary"]
+    assert first_material_summary["weak_model_run_id"] == "WMR-first"
+    assert first_material_summary["weak_model_aggregation_id"] == "WMA-first"
+    assert first_material_summary["quality_check_id"] == "WMQC-first"
+    assert second_material_summary["weak_model_run_id"] == "WMR-second"
+    assert second_material_summary["weak_model_aggregation_id"] == "WMA-second"
+    assert second_material_summary["quality_check_id"] == "WMQC-second"
+
+
+def test_weak_model_directional_score_change_changes_material_fingerprint():
+    first_material = _material_pack(
+        "AMP-first",
+        base_end_ms=BASE_TIME_MS,
+        weak_model_summary=_weak_model_summary(directional_score=-0.60),
+    )
+    second_material = _material_pack(
+        "AMP-second",
+        base_end_ms=BASE_TIME_MS,
+        weak_model_summary=_weak_model_summary(directional_score=-0.30),
+    )
+
+    first_fingerprint = build_material_fingerprint(first_material)
+    second_fingerprint = build_material_fingerprint(second_material)
+
+    assert first_fingerprint.details["weak_model_summary"]["directional_score"] == -0.60
+    assert second_fingerprint.details["weak_model_summary"]["directional_score"] == -0.30
+    assert first_fingerprint.fingerprint != second_fingerprint.fingerprint
+
+
+def test_weak_model_quality_status_change_changes_material_fingerprint():
+    first_material = _material_pack(
+        "AMP-first",
+        base_end_ms=BASE_TIME_MS,
+        weak_model_summary=_weak_model_summary(quality_status="passed"),
+    )
+    second_material = _material_pack(
+        "AMP-second",
+        base_end_ms=BASE_TIME_MS,
+        weak_model_summary=_weak_model_summary(quality_status="warning"),
+    )
+
+    first_fingerprint = build_material_fingerprint(first_material)
+    second_fingerprint = build_material_fingerprint(second_material)
+
+    assert first_fingerprint.details["weak_model_summary"]["quality_status"] == "passed"
+    assert second_fingerprint.details["weak_model_summary"]["quality_status"] == "warning"
+    assert first_fingerprint.fingerprint != second_fingerprint.fingerprint
+
+
+def test_weak_model_source_config_hash_change_changes_material_fingerprint():
+    first_material = _material_pack(
+        "AMP-first",
+        base_end_ms=BASE_TIME_MS,
+        weak_model_summary=_weak_model_summary(source_config_hashes=["trend_strength_directional:hash-v1"]),
+    )
+    second_material = _material_pack(
+        "AMP-second",
+        base_end_ms=BASE_TIME_MS,
+        weak_model_summary=_weak_model_summary(source_config_hashes=["trend_strength_directional:hash-v2"]),
+    )
+
+    first_fingerprint = build_material_fingerprint(first_material)
+    second_fingerprint = build_material_fingerprint(second_material)
+
+    assert first_fingerprint.details["weak_model_summary"]["source_config_hashes"] == [
+        "trend_strength_directional:hash-v1"
+    ]
+    assert second_fingerprint.details["weak_model_summary"]["source_config_hashes"] == [
+        "trend_strength_directional:hash-v2"
+    ]
+    assert first_fingerprint.fingerprint != second_fingerprint.fingerprint
+
+
 def test_old_stage19_result_after_three_base_bars_is_expired_and_not_latest_review():
     old_material = _material_pack("AMP-old", base_end_ms=BASE_TIME_MS)
     current_material = _material_pack("AMP-current", base_end_ms=BASE_TIME_MS + 4 * BASE_INTERVAL_MS)
@@ -456,6 +558,29 @@ def _material_pack(
         data_window_json=json.dumps({"base_open_time_end_ms": base_end_ms}, ensure_ascii=False),
         created_at_utc=CREATED_AT,
     )
+
+
+def _weak_model_summary(**overrides):
+    summary = {
+        "status": "available",
+        "weak_model_run_id": "WMR-base",
+        "weak_model_aggregation_id": "WMA-base",
+        "quality_check_id": "WMQC-base",
+        "quality_status": "passed",
+        "directional_bias": "bearish",
+        "directional_score": -0.60,
+        "directional_confidence": 0.62,
+        "risk_level": "medium",
+        "trade_permission": "allow",
+        "veto_triggered": False,
+        "veto_factors": [],
+        "context_summary": {"regime": "range", "source_maturity_stage": "observe_only"},
+        "quality_issues": [{"error_code": "confidence_high", "severity": "warning"}],
+        "source_config_hashes": ["trend_strength_directional:hash-v1"],
+        "not_trading_advice": True,
+    }
+    summary.update(overrides)
+    return summary
 
 
 def _model_run(model_analysis_run_id, *, material_pack_id, status="success"):
