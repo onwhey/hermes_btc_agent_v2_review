@@ -24,6 +24,8 @@ from app.strategy.evidence_quality.service import StrategyEvidenceQualityGateSer
 from app.strategy.signal_service import StrategySignalService
 from app.strategy_advice.scheduler_service import StrategyAdviceSchedulerService
 from app.strategy_pipeline.types import StrategyPipelineRequest
+from app.weak_models.output_quality_service import WeakModelOutputQualityService
+from app.weak_models.service import WeakModelService
 
 
 def create_pipeline_stage17_service(
@@ -60,6 +62,18 @@ def create_pipeline_stage26b_service(*, settings: AppSettings) -> StrategyEviden
     """Create the 26B evidence quality gate service for explicit 25A use."""
 
     return StrategyEvidenceQualityGateService(settings=settings)
+
+
+def create_pipeline_stage27a_service() -> WeakModelService:
+    """Create the existing 27A weak-model service for explicit 25A use."""
+
+    return WeakModelService()
+
+
+def create_pipeline_stage27b_service() -> WeakModelOutputQualityService:
+    """Create the existing 27B output-quality service for explicit 25A use."""
+
+    return WeakModelOutputQualityService()
 
 
 def create_pipeline_stage16_service() -> StrategySignalService:
@@ -118,6 +132,8 @@ __all__ = [
     "create_pipeline_stage18_service",
     "create_pipeline_stage23f_service",
     "create_pipeline_stage26b_service",
+    "create_pipeline_stage27a_service",
+    "create_pipeline_stage27b_service",
     "create_pipeline_stage20_worker",
     "create_pipeline_stage20a_service",
     "create_pipeline_stage21_service",

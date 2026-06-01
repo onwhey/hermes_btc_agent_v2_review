@@ -14,6 +14,7 @@ none.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -24,12 +25,21 @@ from app.storage.mysql.models.strategy_aggregation import AnalysisMaterialPack, 
 from app.storage.mysql.models.strategy_pipeline import StrategyPipelineEventLog
 from app.storage.mysql.models.strategy_signal import StrategySignalRun
 from app.storage.mysql.models.strategy_signal_scheduler_event import StrategySignalSchedulerEventLog
+from app.storage.mysql.models.weak_model import WeakModelAggregation, WeakModelQualityCheck, WeakModelRun
 from app.strategy_pipeline.types import StrategyPipelineEventPayload
 
 try:
     from sqlalchemy import select
 except ImportError:  # pragma: no cover - dependencies are managed by pyproject.
     select = None  # type: ignore[assignment]
+
+
+@dataclass(frozen=True)
+class WeakModelPipelinePackage:
+    """Selected 27A rows for the stage-25 pipeline weak-model gate."""
+
+    run: Any
+    aggregation: Any
 
 
 class StrategyPipelineRepository:
@@ -140,6 +150,76 @@ class StrategyPipelineRepository:
 
         _require_sqlalchemy()
         stmt = select(StrategySignalRun).where(StrategySignalRun.run_id == run_id).limit(1)
+        return db_session.execute(stmt).scalar_one_or_none()
+
+    def get_latest_success_weak_model_package_for_strategy_run(
+        self,
+        db_session: Any,
+        *,
+        strategy_signal_run_id: str,
+        snapshot_id: str | None,
+        symbol: str,
+        base_interval: str,
+        higher_interval: str,
+        kline_slot_utc: datetime,
+    ) -> WeakModelPipelinePackage | None:
+        """Return the newest reusable 27A WMR/WMA package for one SSR.
+
+        The method is read-only. It accepts only `weak_model_run.run_status =
+        success` and requires the run plus aggregation to match the SSR,
+        snapshot, market scope, and exact base Kline slot. It never runs weak
+        models and never creates a missing WMA.
+        """
+
+        _require_sqlalchemy()
+        slot = ensure_utc_aware(kline_slot_utc)
+        stmt = (
+            select(WeakModelRun, WeakModelAggregation)
+            .join(
+                WeakModelAggregation,
+                WeakModelAggregation.weak_model_run_id == WeakModelRun.weak_model_run_id,
+            )
+            .where(WeakModelRun.strategy_signal_run_id == strategy_signal_run_id)
+            .where(WeakModelRun.symbol == symbol)
+            .where(WeakModelRun.base_interval == base_interval)
+            .where(WeakModelRun.higher_interval == higher_interval)
+            .where(WeakModelRun.kline_slot_utc == slot)
+            .where(WeakModelRun.run_status == "success")
+            .where(WeakModelAggregation.strategy_signal_run_id == strategy_signal_run_id)
+            .where(WeakModelAggregation.symbol == symbol)
+            .where(WeakModelAggregation.base_interval == base_interval)
+            .where(WeakModelAggregation.higher_interval == higher_interval)
+            .where(WeakModelAggregation.kline_slot_utc == slot)
+        )
+        if snapshot_id:
+            stmt = stmt.where(WeakModelRun.snapshot_id == snapshot_id).where(
+                WeakModelAggregation.snapshot_id == snapshot_id
+            )
+        stmt = stmt.order_by(
+            WeakModelRun.created_at_utc.desc(),
+            WeakModelRun.id.desc(),
+            WeakModelAggregation.id.desc(),
+        ).limit(1)
+        row = db_session.execute(stmt).first()
+        if row is None:
+            return None
+        return WeakModelPipelinePackage(run=row[0], aggregation=row[1])
+
+    def get_latest_weak_model_quality_check_by_run_id(
+        self,
+        db_session: Any,
+        *,
+        weak_model_run_id: str,
+    ) -> Any | None:
+        """Return the latest persisted 27B quality check for one WMR."""
+
+        _require_sqlalchemy()
+        stmt = (
+            select(WeakModelQualityCheck)
+            .where(WeakModelQualityCheck.weak_model_run_id == weak_model_run_id)
+            .order_by(WeakModelQualityCheck.updated_at_utc.desc(), WeakModelQualityCheck.id.desc())
+            .limit(1)
+        )
         return db_session.execute(stmt).scalar_one_or_none()
 
     def get_latest_reusable_stage17_scheduler_event(
@@ -363,5 +443,6 @@ def _flush_if_possible(db_session: Any) -> None:
 
 __all__ = [
     "StrategyPipelineRepository",
+    "WeakModelPipelinePackage",
     "create_default_strategy_pipeline_repository",
 ]

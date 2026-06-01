@@ -130,6 +130,16 @@ class FakePipelineService:
             kline_slot_source="scheduler_upstream_collect",
             strategy_signal_run_id="SSR-job-test",
             strategy_evidence_aggregation_id="SEA-job-test",
+            weak_model_run_id="WMR-job-test",
+            weak_model_aggregation_id="WMA-job-test",
+            weak_model_quality_check_id="WMQC-job-test",
+            weak_model_status="success",
+            weak_model_quality_status="passed",
+            weak_model_directional_score=-0.5,
+            weak_model_risk_level="medium",
+            weak_model_trade_permission="allow",
+            weak_model_pipeline_action="created",
+            weak_model_quality_pipeline_action="created",
             current_step="21a_21b_advice_notification",
             message="ok",
         )
@@ -179,6 +189,16 @@ def pipeline_result(
         kline_slot_source="scheduler_upstream_collect",
         strategy_signal_run_id="SSR-runner-test",
         strategy_evidence_aggregation_id="SEA-runner-test" if status == StrategyPipelineStatus.SUCCESS else None,
+        weak_model_run_id="WMR-runner-test",
+        weak_model_aggregation_id="WMA-runner-test",
+        weak_model_quality_check_id="WMQC-runner-test",
+        weak_model_status="success",
+        weak_model_quality_status="passed",
+        weak_model_directional_score=-0.5,
+        weak_model_risk_level="medium",
+        weak_model_trade_permission="allow",
+        weak_model_pipeline_action="created",
+        weak_model_quality_pipeline_action="created",
         material_pack_id="AMP-runner-test",
         review_aggregation_run_id="MRAG-runner-test",
         advice_id="ADV-runner-test",
@@ -242,6 +262,9 @@ def test_scheduler_enabled_triggers_stage25_and_bypasses_legacy_stage17() -> Non
     details = records[0].details["strategy_pipeline"]
     assert details["status"] == "success"
     assert details["strategy_evidence_aggregation_id"] == "SEA-runner-test"
+    assert details["weak_model_run_id"] == "WMR-runner-test"
+    assert details["weak_model_quality_check_id"] == "WMQC-runner-test"
+    assert details["weak_model_quality_status"] == "passed"
     assert details["old_stage17_auto_trigger_skipped_due_to_pipeline_enabled"] is True
     assert "strategy_signal_scheduler" not in records[0].details
     assert "strategy_aggregation" not in records[0].details

@@ -98,6 +98,7 @@ def resolve_stage17_result_or_reusable_duplicate(
                 error_message=getattr(stage17_result, "error_message", None),
             )
         state.strategy_signal_run_id = run_id
+        state.strategy_signal_snapshot_id = text_or_none(getattr(stage17_result, "snapshot_id", None))
         return Stage17ResolutionOutcome(should_continue=True)
 
     if status != StrategySignalSchedulerStatus.SKIPPED.value:
@@ -176,6 +177,7 @@ def record_stage17_retry_success(state: PipelineState, retry_result: Any) -> Sta
             error_message=getattr(retry_result, "error_message", None),
         )
     state.strategy_signal_run_id = run_id
+    state.strategy_signal_snapshot_id = text_or_none(getattr(retry_result, "snapshot_id", None))
     state.details["new_strategy_signal_run_id"] = run_id
     state.details["stage17_retry_result"] = compact_object(retry_result)
     return Stage17ResolutionOutcome(should_continue=True)
@@ -184,16 +186,20 @@ def record_stage17_retry_success(state: PipelineState, retry_result: Any) -> Sta
 def _record_reused_stage17_event(state: PipelineState, reusable_event: Any) -> None:
     event_id = text_or_none(getattr(reusable_event, "event_id", None))
     run_id = text_or_none(getattr(reusable_event, "run_id", None))
+    snapshot_id = text_or_none(getattr(reusable_event, "snapshot_id", None))
     state.strategy_signal_run_id = run_id
+    state.strategy_signal_snapshot_id = snapshot_id
     state.details.update(
         {
             "reused_stage17_duplicate": True,
             "reused_strategy_signal_run_id": run_id,
+            "reused_strategy_signal_snapshot_id": snapshot_id,
             "reused_stage17_event_id": event_id,
             "stage17_reuse_result": {
                 "event_id": event_id,
                 "status": status_value(getattr(reusable_event, "status", "")),
                 "run_id": run_id,
+                "snapshot_id": snapshot_id,
                 "created_at_utc": getattr(reusable_event, "created_at_utc", None),
                 "target_base_open_time_utc": getattr(reusable_event, "target_base_open_time_utc", None),
             },

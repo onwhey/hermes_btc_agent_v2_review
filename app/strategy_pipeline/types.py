@@ -33,6 +33,8 @@ PIPELINE_STEP_PREFLIGHT = "preflight"
 PIPELINE_STEP_STAGE17_16 = "17_16_strategy_signals"
 PIPELINE_STEP_STAGE23F = "24a_23f_evidence_aggregation"
 PIPELINE_STEP_STAGE26B = "26b_strategy_evidence_quality_gate"
+PIPELINE_STEP_STAGE27A = "27a_weak_model_run"
+PIPELINE_STEP_STAGE27B = "27b_weak_model_quality_check"
 PIPELINE_STEP_STAGE18 = "18_material_pack"
 PIPELINE_STEP_STAGE20 = "20c_19_20a_model_review"
 PIPELINE_STEP_STAGE21 = "21a_21b_advice_notification"
@@ -92,6 +94,16 @@ class StrategyPipelineEventPayload:
     current_step: str | None
     strategy_signal_run_id: str | None
     strategy_evidence_aggregation_id: str | None
+    weak_model_run_id: str | None
+    weak_model_aggregation_id: str | None
+    weak_model_quality_check_id: str | None
+    weak_model_status: str | None
+    weak_model_quality_status: str | None
+    weak_model_directional_score: float | None
+    weak_model_risk_level: str | None
+    weak_model_trade_permission: str | None
+    weak_model_pipeline_action: str | None
+    weak_model_quality_pipeline_action: str | None
     material_pack_id: str | None
     model_analysis_run_id: str | None
     review_aggregation_run_id: str | None
@@ -123,6 +135,16 @@ class StrategyPipelineResult:
     kline_slot_source: str | None = None
     strategy_signal_run_id: str | None = None
     strategy_evidence_aggregation_id: str | None = None
+    weak_model_run_id: str | None = None
+    weak_model_aggregation_id: str | None = None
+    weak_model_quality_check_id: str | None = None
+    weak_model_status: str | None = None
+    weak_model_quality_status: str | None = None
+    weak_model_directional_score: float | None = None
+    weak_model_risk_level: str | None = None
+    weak_model_trade_permission: str | None = None
+    weak_model_pipeline_action: str | None = None
+    weak_model_quality_pipeline_action: str | None = None
     material_pack_id: str | None = None
     model_analysis_run_id: str | None = None
     review_aggregation_run_id: str | None = None
@@ -184,6 +206,16 @@ def format_strategy_pipeline_result_lines(result: StrategyPipelineResult) -> lis
         f"kline_slot_source={result.kline_slot_source or ''}",
         f"strategy_signal_run_id={result.strategy_signal_run_id or ''}",
         f"strategy_evidence_aggregation_id={result.strategy_evidence_aggregation_id or ''}",
+        f"weak_model_run_id={result.weak_model_run_id or ''}",
+        f"weak_model_aggregation_id={result.weak_model_aggregation_id or ''}",
+        f"weak_model_quality_check_id={result.weak_model_quality_check_id or ''}",
+        f"weak_model_status={result.weak_model_status or ''}",
+        f"weak_model_quality_status={result.weak_model_quality_status or ''}",
+        f"weak_model_directional_score={'' if result.weak_model_directional_score is None else result.weak_model_directional_score}",
+        f"weak_model_risk_level={result.weak_model_risk_level or ''}",
+        f"weak_model_trade_permission={result.weak_model_trade_permission or ''}",
+        f"weak_model_pipeline_action={result.weak_model_pipeline_action or ''}",
+        f"weak_model_quality_pipeline_action={result.weak_model_quality_pipeline_action or ''}",
         f"material_pack_id={result.material_pack_id or ''}",
         f"model_analysis_run_id={result.model_analysis_run_id or ''}",
         f"review_aggregation_run_id={result.review_aggregation_run_id or ''}",
@@ -227,6 +259,8 @@ __all__ = [
     "PIPELINE_STEP_STAGE20",
     "PIPELINE_STEP_STAGE21",
     "PIPELINE_STEP_STAGE26B",
+    "PIPELINE_STEP_STAGE27A",
+    "PIPELINE_STEP_STAGE27B",
     "PIPELINE_STEP_STAGE23F",
     "StrategyPipelineEventPayload",
     "StrategyPipelineRequest",

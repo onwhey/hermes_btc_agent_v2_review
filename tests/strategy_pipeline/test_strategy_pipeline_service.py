@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
 
 from app.core.config import AppSettings
@@ -75,6 +76,7 @@ class FakeStage17Event:
 class FakeStrategySignalRun:
     run_id: str
     status: str
+    snapshot_id: str | None = "MCS-test"
 
 
 @dataclass
@@ -90,6 +92,29 @@ class FakeMaterialPack:
     id: int = 1
 
 
+@dataclass
+class FakeWeakModelAggregation:
+    weak_model_aggregation_id: str = "WMA-test"
+    weak_model_run_id: str = "WMR-test"
+    strategy_signal_run_id: str = "SSR-test"
+    snapshot_id: str = "MCS-test"
+    symbol: str = "BTCUSDT"
+    base_interval: str = "4h"
+    higher_interval: str = "1d"
+    kline_slot_utc: datetime = SLOT
+    directional_score: float = -0.5
+    directional_bias: str = "bearish_bias"
+    directional_confidence: float = 0.55
+    risk_level: str = "medium"
+    trade_permission: str = "allow"
+
+
+@dataclass
+class FakeWeakModelPackage:
+    run: Any
+    aggregation: Any
+
+
 class FakeRepository:
     def __init__(
         self,
@@ -99,6 +124,8 @@ class FakeRepository:
         stage17_events: list[FakeStage17Event] | None = None,
         strategy_signal_runs: dict[str, FakeStrategySignalRun] | None = None,
         material_packs: list[FakeMaterialPack] | None = None,
+        weak_model_package: FakeWeakModelPackage | None = None,
+        weak_model_quality_check: Any | None = None,
     ) -> None:
         self.order = order if order is not None else []
         self.latest_slot = latest_slot
@@ -106,6 +133,8 @@ class FakeRepository:
         self.stage17_events = stage17_events or []
         self.strategy_signal_runs = strategy_signal_runs or {}
         self.material_packs = material_packs or []
+        self.weak_model_package = weak_model_package
+        self.weak_model_quality_check = weak_model_quality_check
         self.created_events: list[Any] = []
         self.updated_events: list[Any] = []
 
@@ -124,6 +153,55 @@ class FakeRepository:
     def get_strategy_signal_run_by_run_id(self, db_session: Any, *, run_id: str) -> FakeStrategySignalRun | None:
         self.order.append("strategy_run_lookup")
         return self.strategy_signal_runs.get(run_id)
+
+    def get_latest_success_weak_model_package_for_strategy_run(
+        self,
+        db_session: Any,
+        *,
+        strategy_signal_run_id: str,
+        snapshot_id: str | None,
+        symbol: str,
+        base_interval: str,
+        higher_interval: str,
+        kline_slot_utc: datetime,
+    ) -> FakeWeakModelPackage | None:
+        self.order.append("27a_lookup")
+        package = self.weak_model_package
+        if package is None:
+            return None
+        run = package.run
+        aggregation = package.aggregation
+        if getattr(run, "strategy_signal_run_id", None) != strategy_signal_run_id:
+            return None
+        if snapshot_id and getattr(run, "snapshot_id", None) != snapshot_id:
+            return None
+        if getattr(run, "symbol", None) != symbol:
+            return None
+        if getattr(run, "base_interval", None) != base_interval:
+            return None
+        if getattr(run, "higher_interval", None) != higher_interval:
+            return None
+        if getattr(run, "kline_slot_utc", None) != kline_slot_utc:
+            return None
+        if getattr(run, "run_status", None) != "success":
+            return None
+        if getattr(aggregation, "weak_model_run_id", None) != getattr(run, "weak_model_run_id", None):
+            return None
+        return package
+
+    def get_latest_weak_model_quality_check_by_run_id(
+        self,
+        db_session: Any,
+        *,
+        weak_model_run_id: str,
+    ) -> Any | None:
+        self.order.append("27b_lookup")
+        quality_check = self.weak_model_quality_check
+        if quality_check is None:
+            return None
+        if getattr(quality_check, "weak_model_run_id", None) != weak_model_run_id:
+            return None
+        return quality_check
 
     def get_latest_reusable_material_pack_for_strategy_run(
         self,
@@ -462,6 +540,132 @@ class FakeStage26B:
         )
 
 
+class FakeStage27A:
+    def __init__(
+        self,
+        order: list[str],
+        *,
+        status: str = "success",
+        weak_model_run_id: str = "WMR-test",
+        aggregation: FakeWeakModelAggregation | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        self.order = order
+        self.status = status
+        self.weak_model_run_id = weak_model_run_id
+        self.aggregation = aggregation if aggregation is not None else FakeWeakModelAggregation(
+            weak_model_run_id=weak_model_run_id
+        )
+        self.error_code = error_code
+        self.error_message = error_message
+        self.requests: list[Any] = []
+
+    def run_weak_models_for_strategy_signal(self, db_session: Any, request: Any) -> Any:
+        self.order.append("27a")
+        self.requests.append(request)
+        aggregation = self.aggregation if self.status == "success" else None
+        return SimpleNamespace(
+            status=self.status,
+            weak_model_run_id=self.weak_model_run_id,
+            weak_model_aggregation_id=getattr(aggregation, "weak_model_aggregation_id", None),
+            strategy_signal_run_id=request.strategy_signal_run_id,
+            snapshot_id="MCS-test",
+            aggregation=aggregation,
+            database_action="run_created;aggregation_created" if self.status == "success" else "not_written",
+            error_code=self.error_code,
+            error_message=self.error_message,
+            details={},
+        )
+
+
+class FakeStage27B:
+    def __init__(
+        self,
+        order: list[str],
+        *,
+        status: str = "passed",
+        quality_check_id: str = "WMQC-WMR-test",
+        weak_model_run_id: str = "WMR-test",
+        weak_model_aggregation_id: str = "WMA-test",
+        raise_error: Exception | None = None,
+        empty_report: bool = False,
+    ) -> None:
+        self.order = order
+        self.status = status
+        self.quality_check_id = quality_check_id
+        self.weak_model_run_id = weak_model_run_id
+        self.weak_model_aggregation_id = weak_model_aggregation_id
+        self.raise_error = raise_error
+        self.empty_report = empty_report
+        self.requests: list[Any] = []
+
+    def check_weak_model_output_quality(self, db_session: Any, *, request: Any) -> Any:
+        self.order.append("27b")
+        self.requests.append(request)
+        if self.raise_error is not None:
+            raise self.raise_error
+        if self.empty_report:
+            return SimpleNamespace(results=())
+        return SimpleNamespace(
+            results=(
+                SimpleNamespace(
+                    status=self.status,
+                    quality_check_id=self.quality_check_id,
+                    weak_model_run_id=self.weak_model_run_id,
+                    weak_model_aggregation_id=self.weak_model_aggregation_id,
+                    database_action="created",
+                    error_code=None,
+                    error_message=None,
+                    details={},
+                ),
+            )
+        )
+
+
+def reusable_weak_model_package(
+    *,
+    weak_model_run_id: str = "WMR-reused",
+    weak_model_aggregation_id: str = "WMA-reused",
+    directional_score: float = -0.4,
+    risk_level: str = "low",
+    trade_permission: str = "allow",
+) -> FakeWeakModelPackage:
+    aggregation = FakeWeakModelAggregation(
+        weak_model_aggregation_id=weak_model_aggregation_id,
+        weak_model_run_id=weak_model_run_id,
+        directional_score=directional_score,
+        risk_level=risk_level,
+        trade_permission=trade_permission,
+    )
+    run = SimpleNamespace(
+        weak_model_run_id=weak_model_run_id,
+        strategy_signal_run_id="SSR-test",
+        snapshot_id="MCS-test",
+        symbol="BTCUSDT",
+        base_interval="4h",
+        higher_interval="1d",
+        kline_slot_utc=SLOT,
+        run_status="success",
+    )
+    return FakeWeakModelPackage(run=run, aggregation=aggregation)
+
+
+def reusable_quality_check(
+    *,
+    quality_check_id: str = "WMQC-reused",
+    weak_model_run_id: str = "WMR-reused",
+    weak_model_aggregation_id: str = "WMA-reused",
+    status: str = "passed",
+) -> Any:
+    return SimpleNamespace(
+        quality_check_id=quality_check_id,
+        weak_model_run_id=weak_model_run_id,
+        weak_model_aggregation_id=weak_model_aggregation_id,
+        status=status,
+    )
+
+
 class FakeStage20Worker:
     def __init__(self, order: list[str], *, result_kwargs: dict[str, Any] | None = None) -> None:
         self.order = order
@@ -560,14 +764,58 @@ def test_confirm_write_calls_existing_stage_services_in_pipeline_order() -> None
     )
 
     assert result.status == StrategyPipelineStatus.SUCCESS
-    assert order == ["17", "23f_lookup", "23f_create", "26b", "18", "20c", "20a", "21c"]
+    assert order == [
+        "17",
+        "23f_lookup",
+        "23f_create",
+        "26b",
+        "27a_lookup",
+        "27a",
+        "27b_lookup",
+        "27b",
+        "18",
+        "20c",
+        "20a",
+        "21c",
+    ]
     assert result.strategy_signal_run_id == "SSR-test"
     assert result.strategy_evidence_aggregation_id == "SEA-created"
+    assert result.weak_model_run_id == "WMR-test"
+    assert result.weak_model_aggregation_id == "WMA-test"
+    assert result.weak_model_quality_check_id == "WMQC-WMR-test"
+    assert result.weak_model_status == "success"
+    assert result.weak_model_quality_status == "passed"
+    assert result.weak_model_directional_score == -0.5
+    assert result.weak_model_risk_level == "medium"
+    assert result.weak_model_trade_permission == "allow"
+    assert result.weak_model_pipeline_action == "created"
+    assert result.weak_model_quality_pipeline_action == "created"
     assert result.material_pack_id == "AMP-test"
     assert result.model_analysis_run_id == "MAR-test"
     assert result.review_aggregation_run_id == "MRAG-test"
     assert result.advice_id == "ADV-test"
     assert result.review_id == "ADVR-test"
+
+
+def test_scheduler_trigger_source_uses_same_27a_27b_before_stage18_order() -> None:
+    order: list[str] = []
+    service = _build_full_success_service(order=order)
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(
+            kline_slot_utc=SLOT,
+            trigger_source="scheduler",
+            dry_run=False,
+            confirm_write=True,
+            created_by="scheduler_strategy_pipeline",
+        ),
+    )
+
+    assert result.status == StrategyPipelineStatus.SUCCESS
+    assert order.index("27a") < order.index("27b") < order.index("18")
+    assert result.weak_model_pipeline_action == "created"
+    assert result.weak_model_quality_pipeline_action == "created"
 
 
 def test_pipeline_reuses_existing_success_material_pack_after_stage18_already_exists() -> None:
@@ -613,6 +861,10 @@ def test_pipeline_reuses_existing_success_material_pack_after_stage18_already_ex
         "23f_lookup",
         "23f_create",
         "26b",
+        "27a_lookup",
+        "27a",
+        "27b_lookup",
+        "27b",
         "18",
         "18_material_reuse_lookup",
         "20c",
@@ -1485,7 +1737,19 @@ def test_pipeline_reuses_existing_23f_without_creating_duplicate() -> None:
 
     assert result.status == StrategyPipelineStatus.SUCCESS
     assert result.strategy_evidence_aggregation_id == "SEA-test"
-    assert order == ["17", "23f_lookup", "26b", "18", "20c", "20a", "21c"]
+    assert order == [
+        "17",
+        "23f_lookup",
+        "26b",
+        "27a_lookup",
+        "27a",
+        "27b_lookup",
+        "27b",
+        "18",
+        "20c",
+        "20a",
+        "21c",
+    ]
     assert stage23f.requests == []
 
 
@@ -1581,6 +1845,172 @@ def test_pipeline_records_26b_alert_failure_without_entering_stage18() -> None:
     assert final_payload.details["stage26b_result"]["alert_status"] == "submit_failed"
 
 
+def test_pipeline_reuses_existing_27a_and_27b_without_duplicate_generation() -> None:
+    order: list[str] = []
+    repository = FakeRepository(
+        order=order,
+        weak_model_package=reusable_weak_model_package(),
+        weak_model_quality_check=reusable_quality_check(),
+    )
+    stage27a = FakeStage27A(order)
+    stage27b = FakeStage27B(order)
+    service = _build_full_success_service(
+        order=order,
+        repository=repository,
+        stage27a_service=stage27a,
+        stage27b_service=stage27b,
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.SUCCESS
+    assert result.weak_model_run_id == "WMR-reused"
+    assert result.weak_model_aggregation_id == "WMA-reused"
+    assert result.weak_model_quality_check_id == "WMQC-reused"
+    assert result.weak_model_pipeline_action == "reused"
+    assert result.weak_model_quality_pipeline_action == "reused"
+    assert stage27a.requests == []
+    assert stage27b.requests == []
+    assert "27a" not in order
+    assert "27b" not in order
+    assert "18" in order
+
+
+def test_pipeline_warning_quality_allows_stage18_and_records_warning_material_expectation() -> None:
+    order: list[str] = []
+    stage18 = FakeStage18(order, details={"weak_model_summary": {"status": "warning", "quality_status": "warning"}})
+    service = _build_full_success_service(
+        order=order,
+        stage27b_service=FakeStage27B(order, status="warning"),
+        stage18_service=stage18,
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.SUCCESS
+    assert result.weak_model_quality_status == "warning"
+    assert stage18.calls == 1
+    assert order.index("27b") < order.index("18")
+
+
+def test_pipeline_blocks_critical_27b_before_stage18() -> None:
+    order: list[str] = []
+    stage18 = FakeStage18(order)
+    service = _build_full_success_service(
+        order=order,
+        stage27b_service=FakeStage27B(order, status="critical"),
+        stage18_service=stage18,
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.BLOCKED
+    assert result.current_step == "27b_weak_model_quality_check"
+    assert result.error_code == "weak_model_quality_critical"
+    assert stage18.calls == 0
+    assert "18" not in order
+
+
+def test_pipeline_blocks_27a_failure_before_stage18() -> None:
+    order: list[str] = []
+    stage18 = FakeStage18(order)
+    service = _build_full_success_service(
+        order=order,
+        stage27a_service=FakeStage27A(order, status="failed", error_code="weak_model_config_invalid"),
+        stage18_service=stage18,
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.BLOCKED
+    assert result.current_step == "27a_weak_model_run"
+    assert result.error_code == "weak_model_config_invalid"
+    assert result.weak_model_pipeline_action == "blocked"
+    assert stage18.calls == 0
+    assert "27b" not in order
+    assert "18" not in order
+
+
+def test_pipeline_blocks_27b_execution_failure_before_stage18() -> None:
+    order: list[str] = []
+    stage18 = FakeStage18(order)
+    service = _build_full_success_service(
+        order=order,
+        stage27b_service=FakeStage27B(order, raise_error=RuntimeError("27B db error")),
+        stage18_service=stage18,
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.BLOCKED
+    assert result.current_step == "27b_weak_model_quality_check"
+    assert result.error_code == "weak_model_quality_check_failed"
+    assert result.error_message == "27B db error"
+    assert stage18.calls == 0
+    assert "18" not in order
+
+
+def test_pipeline_blocks_when_weak_model_switch_is_disabled() -> None:
+    order: list[str] = []
+    service = _build_full_success_service(
+        order=order,
+        settings=AppSettings(
+            strategy_pipeline_enabled=True,
+            strategy_evidence_aggregation_enabled=True,
+            strategy_pipeline_weak_models_enabled=False,
+        ),
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.BLOCKED
+    assert result.current_step == "27a_weak_model_run"
+    assert result.error_code == "weak_model_disabled_by_config"
+    assert result.weak_model_pipeline_action == "blocked"
+    assert "18" not in order
+
+
+def test_pipeline_blocks_when_weak_model_quality_gate_switch_is_disabled() -> None:
+    order: list[str] = []
+    service = _build_full_success_service(
+        order=order,
+        settings=AppSettings(
+            strategy_pipeline_enabled=True,
+            strategy_evidence_aggregation_enabled=True,
+            strategy_pipeline_weak_model_quality_gate_enabled=False,
+        ),
+    )
+
+    result = service.run_strategy_pipeline(
+        FakeSession(),
+        request=StrategyPipelineRequest(kline_slot_utc=SLOT, dry_run=False, confirm_write=True),
+    )
+
+    assert result.status == StrategyPipelineStatus.BLOCKED
+    assert result.current_step == "27b_weak_model_quality_check"
+    assert result.error_code == "weak_model_quality_gate_disabled_by_config"
+    assert result.weak_model_quality_pipeline_action == "blocked"
+    assert "18" not in order
+
+
 def test_pipeline_result_preserves_non_trading_boundary_fields() -> None:
     service = _build_full_success_service(order=[])
 
@@ -1604,6 +2034,8 @@ def _build_full_success_service(
     stage17_service: FakeStage17 | None = None,
     stage23f_service: FakeStage23F | None = None,
     stage26b_service: FakeStage26B | None = None,
+    stage27a_service: FakeStage27A | None = None,
+    stage27b_service: FakeStage27B | None = None,
     stage18_service: FakeStage18 | None = None,
     stage20_worker: FakeStage20Worker | None = None,
     stage20a_service: FakeStage20A | None = None,
@@ -1620,6 +2052,8 @@ def _build_full_success_service(
         stage17_service=stage17_service or FakeStage17(order),
         stage23f_service=stage23f_service or FakeStage23F(order),
         stage26b_service=stage26b_service or FakeStage26B(order),
+        stage27a_service=stage27a_service or FakeStage27A(order),
+        stage27b_service=stage27b_service or FakeStage27B(order),
         stage18_service=stage18_service or FakeStage18(order),
         stage20_worker=stage20_worker or FakeStage20Worker(order),
         stage20a_service=stage20a_service or FakeStage20A(order),

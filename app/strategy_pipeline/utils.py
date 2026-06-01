@@ -24,7 +24,18 @@ class PipelineState:
         self.kline_slot_utc = kline_slot_utc
         self.kline_slot_source: str | None = None
         self.strategy_signal_run_id: str | None = None
+        self.strategy_signal_snapshot_id: str | None = None
         self.strategy_evidence_aggregation_id: str | None = None
+        self.weak_model_run_id: str | None = None
+        self.weak_model_aggregation_id: str | None = None
+        self.weak_model_quality_check_id: str | None = None
+        self.weak_model_status: str | None = None
+        self.weak_model_quality_status: str | None = None
+        self.weak_model_directional_score: float | None = None
+        self.weak_model_risk_level: str | None = None
+        self.weak_model_trade_permission: str | None = None
+        self.weak_model_pipeline_action: str | None = None
+        self.weak_model_quality_pipeline_action: str | None = None
         self.material_pack_id: str | None = None
         self.model_analysis_run_id: str | None = None
         self.review_aggregation_run_id: str | None = None
@@ -53,6 +64,9 @@ def compact_object(value: Any) -> dict[str, Any]:
         "status",
         "run_id",
         "snapshot_id",
+        "weak_model_run_id",
+        "weak_model_aggregation_id",
+        "quality_check_id",
         "aggregation_id",
         "aggregation_run_id",
         "material_pack_id",
@@ -119,4 +133,3 @@ __all__ = [
     "rollback_if_possible",
     "text_or_none",
 ]
-

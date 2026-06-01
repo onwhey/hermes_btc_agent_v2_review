@@ -1,6 +1,6 @@
 """Stage-25A manual strategy pipeline orchestration service.
 
-This file coordinates existing 17/16, 23F, 26B, 18, 20C/20A, and 21C services for a
+This file coordinates existing 17/16, 23F, 26B, 27A, 27B, 18, 20C/20A, and 21C services for a
 manual 25A run. It does not implement strategies, prompts, advice logic, Hermes
 rendering, exchange/account access, order endpoints, or automatic trading.
 """
@@ -50,6 +50,8 @@ from app.strategy_pipeline.types import (
     PIPELINE_STEP_PREFLIGHT,
     PIPELINE_STEP_STAGE17_16,
     PIPELINE_STEP_STAGE26B,
+    PIPELINE_STEP_STAGE27A,
+    PIPELINE_STEP_STAGE27B,
     PIPELINE_STEP_STAGE18,
     PIPELINE_STEP_STAGE20,
     PIPELINE_STEP_STAGE21,
@@ -68,10 +70,13 @@ from app.strategy_pipeline.stage_services import (
     create_pipeline_stage18_service,
     create_pipeline_stage23f_service,
     create_pipeline_stage26b_service,
+    create_pipeline_stage27a_service,
+    create_pipeline_stage27b_service,
     create_pipeline_stage20_worker,
     create_pipeline_stage20a_service,
     create_pipeline_stage21_service,
 )
+from app.strategy_pipeline.weak_model_stage import run_or_reuse_weak_model_stages_for_pipeline
 from app.strategy_pipeline.stage17_reuse import (
     Stage17ResolutionOutcome,
     record_stage17_retry_success,
@@ -101,6 +106,8 @@ class StrategyPipelineService:
         stage17_service: Any | None = None,
         stage23f_service: Any | None = None,
         stage26b_service: Any | None = None,
+        stage27a_service: Any | None = None,
+        stage27b_service: Any | None = None,
         stage18_service: Any | None = None,
         stage20_worker: Any | None = None,
         stage20a_service: Any | None = None,
@@ -113,6 +120,8 @@ class StrategyPipelineService:
         self._stage17_service = stage17_service
         self._stage23f_service = stage23f_service
         self._stage26b_service = stage26b_service
+        self._stage27a_service = stage27a_service
+        self._stage27b_service = stage27b_service
         self._stage18_service = stage18_service
         self._stage20_worker = stage20_worker
         self._stage20a_service = stage20a_service
@@ -278,6 +287,28 @@ class StrategyPipelineService:
                 error_code=getattr(stage26b, "error_code", None) or STRATEGY_EVIDENCE_QUALITY_ERROR_CODE,
                 error_message=getattr(stage26b, "error_message", None),
             )
+        self._update_event_progress(db_session, event_row=event_row, request=request, state=state)
+
+        weak_model_outcome = run_or_reuse_weak_model_stages_for_pipeline(
+            db_session,
+            request=request,
+            state=state,
+            settings=self._settings,
+            repository=self._repository,
+            weak_model_service=self._stage27a_service or create_pipeline_stage27a_service(),
+            quality_service=self._stage27b_service or create_pipeline_stage27b_service(),
+        )
+        if not weak_model_outcome.should_continue:
+            result = self._build_result(
+                request=request,
+                state=state,
+                status=weak_model_outcome.status,
+                current_step=weak_model_outcome.current_step or state.current_step or PIPELINE_STEP_STAGE27A,
+                message=weak_model_outcome.message,
+                error_code=weak_model_outcome.error_code,
+                error_message=weak_model_outcome.error_message,
+            )
+            return self._finish_result(db_session, event_row=event_row, request=request, result=result)
         self._update_event_progress(db_session, event_row=event_row, request=request, state=state)
 
         stage18 = self._run_stage18(db_session, request=request, state=state)
@@ -840,6 +871,16 @@ class StrategyPipelineService:
             current_step=result.current_step,
             strategy_signal_run_id=result.strategy_signal_run_id,
             strategy_evidence_aggregation_id=result.strategy_evidence_aggregation_id,
+            weak_model_run_id=result.weak_model_run_id,
+            weak_model_aggregation_id=result.weak_model_aggregation_id,
+            weak_model_quality_check_id=result.weak_model_quality_check_id,
+            weak_model_status=result.weak_model_status,
+            weak_model_quality_status=result.weak_model_quality_status,
+            weak_model_directional_score=result.weak_model_directional_score,
+            weak_model_risk_level=result.weak_model_risk_level,
+            weak_model_trade_permission=result.weak_model_trade_permission,
+            weak_model_pipeline_action=result.weak_model_pipeline_action,
+            weak_model_quality_pipeline_action=result.weak_model_quality_pipeline_action,
             material_pack_id=result.material_pack_id,
             model_analysis_run_id=result.model_analysis_run_id,
             review_aggregation_run_id=result.review_aggregation_run_id,
@@ -916,6 +957,16 @@ class StrategyPipelineService:
             kline_slot_source=state.kline_slot_source,
             strategy_signal_run_id=state.strategy_signal_run_id,
             strategy_evidence_aggregation_id=state.strategy_evidence_aggregation_id,
+            weak_model_run_id=state.weak_model_run_id,
+            weak_model_aggregation_id=state.weak_model_aggregation_id,
+            weak_model_quality_check_id=state.weak_model_quality_check_id,
+            weak_model_status=state.weak_model_status,
+            weak_model_quality_status=state.weak_model_quality_status,
+            weak_model_directional_score=state.weak_model_directional_score,
+            weak_model_risk_level=state.weak_model_risk_level,
+            weak_model_trade_permission=state.weak_model_trade_permission,
+            weak_model_pipeline_action=state.weak_model_pipeline_action,
+            weak_model_quality_pipeline_action=state.weak_model_quality_pipeline_action,
             material_pack_id=state.material_pack_id,
             model_analysis_run_id=state.model_analysis_run_id,
             review_aggregation_run_id=state.review_aggregation_run_id,
@@ -935,7 +986,7 @@ class StrategyPipelineService:
             message=message,
             error_code=error_code,
             error_message=error_message,
-            details=dict(state.details),
+            details=_state_details_with_weak_model_fields(state),
         )
 
     def _event_payload(
@@ -958,6 +1009,16 @@ class StrategyPipelineService:
             current_step=current_step,
             strategy_signal_run_id=state.strategy_signal_run_id,
             strategy_evidence_aggregation_id=state.strategy_evidence_aggregation_id,
+            weak_model_run_id=state.weak_model_run_id,
+            weak_model_aggregation_id=state.weak_model_aggregation_id,
+            weak_model_quality_check_id=state.weak_model_quality_check_id,
+            weak_model_status=state.weak_model_status,
+            weak_model_quality_status=state.weak_model_quality_status,
+            weak_model_directional_score=state.weak_model_directional_score,
+            weak_model_risk_level=state.weak_model_risk_level,
+            weak_model_trade_permission=state.weak_model_trade_permission,
+            weak_model_pipeline_action=state.weak_model_pipeline_action,
+            weak_model_quality_pipeline_action=state.weak_model_quality_pipeline_action,
             material_pack_id=state.material_pack_id,
             model_analysis_run_id=state.model_analysis_run_id,
             review_aggregation_run_id=state.review_aggregation_run_id,
@@ -971,8 +1032,29 @@ class StrategyPipelineService:
             error_code=None,
             error_message=None,
             trace_id=request.trace_id,
-            details=dict(state.details),
+            details=_state_details_with_weak_model_fields(state),
         )
+
+
+def _state_details_with_weak_model_fields(state: PipelineState) -> dict[str, Any]:
+    """Return pipeline details with weak-model ids exposed for audit logs."""
+
+    details = dict(state.details)
+    details.update(
+        {
+            "weak_model_run_id": state.weak_model_run_id,
+            "weak_model_aggregation_id": state.weak_model_aggregation_id,
+            "weak_model_quality_check_id": state.weak_model_quality_check_id,
+            "weak_model_status": state.weak_model_status,
+            "weak_model_quality_status": state.weak_model_quality_status,
+            "weak_model_directional_score": state.weak_model_directional_score,
+            "weak_model_risk_level": state.weak_model_risk_level,
+            "weak_model_trade_permission": state.weak_model_trade_permission,
+            "weak_model_pipeline_action": state.weak_model_pipeline_action,
+            "weak_model_quality_pipeline_action": state.weak_model_quality_pipeline_action,
+        }
+    )
+    return details
 
 
 def _is_stage18_already_exists_skip(stage18: Any) -> bool:
